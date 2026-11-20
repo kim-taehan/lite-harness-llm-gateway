@@ -250,6 +250,7 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
   - 비밀번호는 litellm 처럼 초대 링크(`/invitation/new` → 온보딩)에서 사용자가 정하거나, 관리자가 `/user/update` 로 정한다
   - 저장: 표준 라이브러리 PBKDF2-SHA256(소금·반복 횟수 포함 문자열). 로그인 시도 제한. 외부 유출 비밀번호 검사(pwnedpasswords)는 하지 않는다(폐쇄망)
   - 로그인 페이지 흐름의 세부(SSO 를 켰을 때 litellm 의 `/sso/key/generate` 동작과의 관계)는 `docs/litellm-inventory/K_sso_cli_contract.md` 를 보고 정한다
+  - **어떤 로그인 방식을 둘지는 빌드 시점에 정한다(사용자 결정 2026-11-21).** `LOGIN=sso,password ./build.sh`(기본 둘 다), `LOGIN=password`, `LOGIN=sso`. `-ldflags -X` 로 바이너리에 고정하고 실행 중에는 바꿀 수 없다. 꺼진 방식은 라우트를 등록하지 않는다(404, 로그인 페이지에도 없음). 값이 틀리면 빌드가 실패하고, 기동 로그에 빌드된 로그인 방식을 남긴다. Keycloak 주소·client id 같은 연결 정보는 고객사 환경마다 달라 환경 변수로 받는다
 - **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. 조직·고객 계층(`org_admin`, `customer`)은 만들지 않는다
 - **라우트 권한은 허용 목록**(역할별로 허용 경로를 적는다). litellm 의 viewer 쓰기 차단은 차단 목록이라 새 API 를 빠뜨리면 뚫린다
 - 세션 쿠키는 litellm 과 같이 `token` 쿠키로 둔다. 대시보드가 `document.cookie` 로 읽으므로 HttpOnly 로 할 수 없다(조사 B). SameSite=Lax
