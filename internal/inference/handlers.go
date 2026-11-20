@@ -1,15 +1,12 @@
 package inference
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
+	"time"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
@@ -19,11 +16,13 @@ import (
 type Handlers struct {
 	deployments *Deployments
 	upstream    *http.Client // 연결·응답 헤더 타임아웃을 정한 클라이언트(설계 4장: connect 5s, read 300s). 스트림 전체 시간은 막지 않는다
+	usage       usageSink
+	now         func() time.Time
 	logger      *slog.Logger
 }
 
-func NewHandlers(deployments *Deployments, upstream *http.Client, logger *slog.Logger) *Handlers {
-	return &Handlers{deployments: deployments, upstream: upstream, logger: logger}
+func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, now: now, logger: logger}
 }
 
 // Routes 는 추론 라우트다. litellm 은 LLM API 라우트를 역할과 무관하게 연다(키만 맞으면). 모델 권한은 핸들러가 본다
@@ -87,107 +86,6 @@ func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, erro
 		return Deployment{}, false, nil
 	}
 	return pick(candidates), true, nil
-}
-
-// relay 는 업스트림에 보내고 응답을 그대로 흘려 준다. 클라이언트가 끊으면 r.Context() 가 취소되어 업스트림 요청도 끊긴다(설계 4.2)
-func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, body map[string]any, requested string, stream bool) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		h.internalError(w, r, err)
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, d.chatURL(), bytes.NewReader(payload))
-	if err != nil {
-		h.internalError(w, r, err)
-		return
-	}
-	// 클라이언트의 Authorization 은 업스트림에 넘기지 않는다(설계 5장 4번)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.upstream.Do(req)
-	if err != nil {
-		if r.Context().Err() != nil {
-			return // 클라이언트가 먼저 끊었다
-		}
-		h.logger.Warn("업스트림 연결 실패", "deployment", d.ID, "err", err)
-		core.ProxyError{Status: 503, Type: "server_error", Param: nil,
-			Message: "Upstream unavailable for model=" + requested + ". The model server did not respond."}.Write(w)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 || !stream || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		h.relayWhole(w, resp, requested)
-		return
-	}
-	h.relayStream(w, r, resp, requested)
-}
-
-// relayWhole 은 스트림이 아닌 응답이다. 성공이면 model 을 요청한 이름으로 되돌린다(설계 5장 1번)
-func (h *Handlers) relayWhole(w http.ResponseWriter, resp *http.Response, requested string) {
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		core.ProxyError{Status: 502, Type: "server_error", Message: "Upstream response could not be read."}.Write(w)
-		return
-	}
-	if resp.StatusCode < 400 {
-		data = withModel(data, requested)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(data)
-}
-
-// relayStream 은 SSE 를 줄 단위로 읽어 바로 쓰고 이벤트마다 내보낸다. 모아서 보내지 않는다(설계 4.4)
-func (h *Handlers) relayStream(w http.ResponseWriter, r *http.Request, resp *http.Response, requested string) {
-	header := w.Header()
-	header.Set("Content-Type", "text/event-stream")
-	header.Set("Cache-Control", "no-cache")
-	header.Set("Connection", "keep-alive")
-	header.Set("X-Accel-Buffering", "no") // nginx 가 앞에 있어도 모으지 않게
-	w.WriteHeader(http.StatusOK)
-	flusher := http.NewResponseController(w)
-
-	reader := bufio.NewReaderSize(resp.Body, 64<<10)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			if payload, ok := bytes.CutPrefix(line, []byte("data: ")); ok && !bytes.HasPrefix(payload, []byte("[DONE]")) {
-				line = append(append([]byte("data: "), withModel(bytes.TrimRight(payload, "\r\n"), requested)...), '\n')
-			}
-			if _, werr := w.Write(line); werr != nil {
-				return // 클라이언트가 끊었다. defer 가 업스트림 본문을 닫는다
-			}
-			if len(bytes.TrimSpace(line)) == 0 {
-				_ = flusher.Flush() // 이벤트 끝(빈 줄)
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) && r.Context().Err() == nil {
-				h.logger.Warn("업스트림 스트림이 중간에 끊겼다", "err", err)
-			}
-			_ = flusher.Flush()
-			return
-		}
-	}
-}
-
-// withModel 은 JSON 객체의 model 을 바꾼다. 객체가 아니면 그대로 둔다
-func withModel(data []byte, model string) []byte {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber() // 숫자를 float 로 바꿔 값이 달라지지 않게
-	var obj map[string]any
-	if err := decoder.Decode(&obj); err != nil {
-		return data
-	}
-	if _, has := obj["model"]; !has {
-		return data
-	}
-	obj["model"] = model
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return data
-	}
-	return out
 }
 
 func readJSONObject(w http.ResponseWriter, r *http.Request) (map[string]any, error) {

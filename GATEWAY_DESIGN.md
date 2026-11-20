@@ -235,7 +235,7 @@ code 문자열은 litellm 이 실제로 내는 값과 맞춘다(계약 테스트
 4. 클라이언트의 `Authorization` 은 업스트림에 전달하지 않는다
 
 litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가 달라 따라 하지 않는다.
-미확인: Ollama `/v1` 의 `stream_options.include_usage` 지원(스트림 사용량 회계가 여기에 달려 있다), `tool_choice`, `reasoning_effort`, `json_schema`, `n`, `logprobs` 처리. 이전 저장소 `../gateway/docker-dev/` 의 실물 Ollama 로 확인해 결과를 4장 계약 테스트에 넣는다.
+확인함(2026-11-21, Ollama 0.40.13 · lfm3:1.7b): Ollama `/v1` 은 `stream_options.include_usage` 를 받아 마지막에 usage 청크(`choices: []`)를 준다. 그래서 스트림 사용량은 업스트림 값(`usage_source=provider`)으로 남는다. 미확인: `tool_choice`, `reasoning_effort`, `json_schema`, `n`, `logprobs` 처리. 이전 저장소 `../gateway/docker-dev/` 의 실물 Ollama 로 확인해 결과를 4장 계약 테스트에 넣는다.
 `num_ctx`(컨텍스트 길이)는 `/v1` 로 못 바꾼다(외부 지식, 미확인). 필요해지면 Modelfile 로 배포하거나 네이티브 경로를 후순위로 추가한다.
 
 ## 6. 인증과 권한

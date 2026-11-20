@@ -1,15 +1,18 @@
 package app
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"llm-gateway/internal/core"
 	"llm-gateway/internal/core/dbtest"
+	"llm-gateway/internal/limits"
 )
 
 func TestMain(m *testing.M) { os.Exit(dbtest.Main(m)) }
@@ -34,7 +37,8 @@ func testHandler(t *testing.T) (http.Handler, *core.Lifecycle) {
 	}
 	db, _ := dbtest.Open(t)
 	lifecycle := &core.Lifecycle{}
-	return Handler(cfg, lifecycle, db, slog.New(slog.NewTextHandler(io.Discard, nil))), lifecycle
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return Handler(cfg, lifecycle, db, startUsage(t, db, logger), logger), lifecycle
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
@@ -92,7 +96,8 @@ func TestStartupRefusedWithoutMasterKeyOrDatabase(t *testing.T) {
 func TestEveryRouteDeclaresAccess(t *testing.T) {
 	db, _ := dbtest.Open(t)
 	cfg, _ := LoadConfig(testEnv)
-	for _, r := range assemble(cfg, &core.Lifecycle{}, db, slog.New(slog.NewTextHandler(io.Discard, nil))).routes {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, r := range assemble(cfg, &core.Lifecycle{}, db, startUsage(t, db, logger), logger).routes {
 		if r.Handler == nil || r.Method == "" || r.Path == "" {
 			t.Errorf("빈 라우트: %+v", r)
 		}
@@ -109,4 +114,13 @@ func anyRoleAllowed(a core.Access) bool {
 		}
 	}
 	return false
+}
+
+// startUsage 는 시험마다 사용량 기록기를 띄우고 시험이 끝나면 남은 배치를 쓰고 닫는다
+func startUsage(t *testing.T, db *core.DB, logger *slog.Logger) *limits.UsageRecorder {
+	t.Helper()
+	usage := limits.NewUsageRecorder(db, logger, limits.UsageOptions{BatchSize: 100, FlushInterval: 20 * time.Millisecond, QueueCapacity: 100})
+	go usage.Run(context.WithoutCancel(t.Context()))
+	t.Cleanup(usage.Close)
+	return usage
 }

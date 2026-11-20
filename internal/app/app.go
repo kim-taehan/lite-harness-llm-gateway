@@ -64,7 +64,7 @@ type modules struct {
 	routes        []core.Route
 }
 
-func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) modules {
+func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, usage *limits.UsageRecorder, logger *slog.Logger) modules {
 	cache := auth.NewKeyCache(keyCacheTTL, time.Now)
 	users := auth.NewUsers(db, cache)
 	teams := auth.NewTeams(db, users, cache)
@@ -76,7 +76,7 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.L
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(lifecycle),
-			inference.NewHandlers(deployments, upstreamClient(), logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), usage, time.Now, logger).Routes(),
 			admin.NewHandlers(db, teams, users, keys, policies, deployments, time.Now, logger).Routes(),
 		),
 	}
@@ -92,9 +92,12 @@ func upstreamClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-// Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다
-func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) http.Handler {
-	m := assemble(cfg, lifecycle, db, logger)
+// usageOptions 는 설계 11.1 기본값이다(100건 또는 1초, 채널 1만)
+var usageOptions = limits.UsageOptions{BatchSize: 100, FlushInterval: time.Second, QueueCapacity: 10_000}
+
+// Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
+func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, usage *limits.UsageRecorder, logger *slog.Logger) http.Handler {
+	m := assemble(cfg, lifecycle, db, usage, logger)
 	mux := http.NewServeMux()
 	for _, route := range m.routes {
 		mux.Handle(route.Pattern(), m.authenticator.Guard(route))
@@ -131,10 +134,18 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err := core.Migrate(ctx, pool, logger); err != nil {
 		return fmt.Errorf("마이그레이션: %w", err)
 	}
+	db := core.NewDB(pool)
+	// 사용량 배치 쓰기. 종료 때 서버를 먼저 멈추고 채널을 비운 다음에야 DB 를 닫는다(설계 3.3 정상 종료 3·4번)
+	usage := limits.NewUsageRecorder(db, logger, usageOptions)
+	background, stopBackground := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopBackground()
+	go usage.Run(background)
+	defer usage.Close()
+
 	lifecycle := &core.Lifecycle{}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           Handler(cfg, lifecycle, core.NewDB(pool), logger),
+		Handler:           Handler(cfg, lifecycle, db, usage, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout 은 두지 않는다. LLM 스트림은 수 분 이어질 수 있다
 	}
