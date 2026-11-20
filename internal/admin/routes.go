@@ -20,14 +20,15 @@ type Handlers struct {
 	limits *limits.Policies
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
+	usage       *limits.UsageQuery
 	rows        rows
 	now         func() time.Time
 	logger      *slog.Logger
 }
 
 func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies,
-	deployments *inference.Deployments, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments,
+	deployments *inference.Deployments, usage *limits.UsageQuery, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments, usage: usage,
 		rows: rows{teams: teams, users: users, limits: policies}, now: now, logger: logger}
 }
 
@@ -39,6 +40,7 @@ var (
 	keyManagement = core.Roles(core.RoleInternalUser)
 	keyAliases    = core.Roles(core.RoleProxyAdminViewer, core.RoleInternalUser)
 	handlerDecide = core.Authenticated()
+	spendTracking = core.Roles(core.RoleInternalUser, core.RoleInternalUserViewer)
 )
 
 // Routes 는 관리 API 라우트 전부다. 새 엔드포인트는 여기에 한 줄을 더한다
@@ -76,6 +78,12 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
 		route(http.MethodPost, "/model/new", adminOnly, h.createModel),
 		route(http.MethodPost, "/model/delete", adminOnly, h.deleteModel),
+		// 사용량(K 9장). /spend/logs 는 litellm spend_tracking_routes(internal_user·viewer), 일별 사용량은 self_managed
+		route(http.MethodGet, "/user/daily/activity", handlerDecide, h.dailyActivity),
+		route(http.MethodGet, "/spend/logs", spendTracking, h.spendLogs),
+		// 아직 없는 기능은 빈 목록. litellm 처럼 /guardrails/list 는 internal_user_viewer 에게 401 이다(K 9.1)
+		route(http.MethodGet, "/guardrails/list", core.Roles(core.RoleInternalUser), h.emptyGuardrails),
+		route(http.MethodGet, "/v1/mcp/server", handlerDecide, h.emptyMCPServers),
 	}
 }
 

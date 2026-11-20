@@ -15,8 +15,8 @@ func (l *Lifecycle) BeginShutdown() { l.shuttingDown.Store(true) }
 
 func (l *Lifecycle) ShuttingDown() bool { return l.shuttingDown.Load() }
 
-// HealthRoutes 는 litellm 과 같은 liveness 경로다. 프로브는 키 없이 부르므로 litellm 처럼 공개한다
-func HealthRoutes(l *Lifecycle) []Route {
+// HealthRoutes 는 litellm 과 같은 liveness·readiness 경로다. 프로브는 키 없이 부르므로 litellm 처럼 공개한다
+func HealthRoutes(l *Lifecycle, db *DB) []Route {
 	liveness := func(w http.ResponseWriter, _ *http.Request) {
 		if l.ShuttingDown() {
 			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
@@ -29,5 +29,21 @@ func HealthRoutes(l *Lifecycle) []Route {
 		// liveliness 는 litellm 의 옛 이름이다. 클라이언트·프로브 호환을 위해 둘 다 받는다
 		{Method: http.MethodGet, Path: "/health/liveliness", Access: Public(), Handler: liveness},
 		{Method: http.MethodGet, Path: "/health/liveness", Access: Public(), Handler: liveness},
+		{Method: http.MethodGet, Path: "/health/readiness", Access: Public(), Handler: readiness(l, db)},
+	}
+}
+
+// readiness 는 DB 를 본다(설계 11.2). litellm 처럼 DB 가 안 붙으면 503 이고, 종료 중이면 503 shutting_down 이다
+func readiness(l *Lifecycle, db *DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if l.ShuttingDown() {
+			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "shutting_down"})
+			return
+		}
+		if err := db.pool.Ping(r.Context()); err != nil {
+			WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unhealthy", "db": "disconnected"})
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "healthy", "db": "connected"})
 	}
 }

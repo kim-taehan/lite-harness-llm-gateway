@@ -233,8 +233,11 @@ func routeDenied(r *http.Request, access core.Access, p Principal) (core.ProxyEr
 	if p.Role == core.RoleProxyAdmin {
 		return core.ProxyError{}, false
 	}
-	// viewer 의 쓰기는 핸들러가 판정하는 라우트(/team/update 등)에서도 라우트 단계에서 막는다(litellm RC:1086-1095)
-	if p.Role == core.RoleProxyAdminViewer && r.Method != http.MethodGet && r.Method != http.MethodHead {
+	// litellm RC:977-1095: proxy_admin_viewer 는 GET 을 모두 허용하고, 쓰기는 핸들러가 판정하는 라우트(/team/update 등)에서도 막는다
+	if p.Role == core.RoleProxyAdminViewer && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		return core.ProxyError{}, false
+	}
+	if p.Role == core.RoleProxyAdminViewer {
 		// 문구는 litellm 원문을 확인하지 못했다(J 6.1 4번은 상태만 확인)
 		return core.ProxyError{Status: 403, Type: "auth_error", Param: "None",
 			Message: "user not allowed to access this route, role= proxy_admin_viewer. Trying to access: " + r.URL.Path}, true
