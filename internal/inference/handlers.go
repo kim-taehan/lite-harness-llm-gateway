@@ -31,8 +31,12 @@ func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSin
 func (h *Handlers) Routes() []core.Route {
 	any := core.Authenticated()
 	return []core.Route{
-		{Method: http.MethodPost, Path: "/v1/chat/completions", Access: any, Handler: h.chat},
-		{Method: http.MethodPost, Path: "/chat/completions", Access: any, Handler: h.chat},
+		{Method: http.MethodPost, Path: "/v1/chat/completions", Access: any, Handler: h.proxy(apiChat)},
+		{Method: http.MethodPost, Path: "/chat/completions", Access: any, Handler: h.proxy(apiChat)},
+		{Method: http.MethodPost, Path: "/v1/responses", Access: any, Handler: h.proxy(apiResponses)},
+		{Method: http.MethodPost, Path: "/responses", Access: any, Handler: h.proxy(apiResponses)},
+		{Method: http.MethodPost, Path: "/v1/embeddings", Access: any, Handler: h.proxy(apiEmbeddings)},
+		{Method: http.MethodPost, Path: "/embeddings", Access: any, Handler: h.proxy(apiEmbeddings)},
 		{Method: http.MethodGet, Path: "/v1/models", Access: any, Handler: h.models},
 		{Method: http.MethodGet, Path: "/models", Access: any, Handler: h.models},
 		{Method: http.MethodGet, Path: "/model_group/info", Access: any, Handler: h.modelGroupInfo},
@@ -41,7 +45,12 @@ func (h *Handlers) Routes() []core.Route {
 
 const maxRequestBody = 32 << 20 // 긴 대화 기록·이미지를 담은 요청도 받는다
 
-func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) {
+// proxy 는 OpenAI API 하나를 중계하는 핸들러다. 모델 검사·배포 선택·한도·사용량 기록은 API 와 무관하게 같다
+func (h *Handlers) proxy(api upstreamAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { h.handle(w, r, api) }
+}
+
+func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAPI) {
 	body, err := readJSONObject(w, r)
 	if err != nil {
 		core.ProxyError{Status: 400, Message: "Invalid JSON body: " + err.Error(), Type: "invalid_request_error", Param: nil}.Write(w)
@@ -82,7 +91,7 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) {
 	defer permit.Release()
 	body["model"] = deployment.UpstreamModel
 	stream, _ := body["stream"].(bool)
-	h.relay(w, r, deployment, body, model, stream, permit)
+	h.relay(w, r, api, deployment, body, model, stream, permit)
 }
 
 func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, error) {

@@ -123,14 +123,14 @@ func pick(candidates []Deployment) Deployment {
 	return candidates[len(candidates)-1]
 }
 
-// chatURL 은 업스트림 Chat Completions 주소다. api_base 가 /v1 로 끝나면(OpenAI 호환 서버의 흔한 모양) 그 뒤에, 아니면 /v1 을 붙인다.
-// Ollama 도 /v1/chat/completions 로 보낸다(설계 5장: 네이티브 /api/chat 은 쓰지 않는다)
-func (d Deployment) chatURL() string {
+// endpoint 는 업스트림 OpenAI 호환 주소다(path 예: chat/completions). api_base 가 /v1 로 끝나면(OpenAI 호환 서버의 흔한 모양) 그 뒤에,
+// 아니면 /v1 을 붙인다. Ollama 도 /v1 로 보낸다(설계 5장: 네이티브 /api/chat 은 쓰지 않는다)
+func (d Deployment) endpoint(path string) string {
 	base := strings.TrimRight(d.BaseURL, "/")
 	if strings.HasSuffix(base, "/v1") {
-		return base + "/chat/completions"
+		return base + "/" + path
 	}
-	return base + "/v1/chat/completions"
+	return base + "/v1/" + path
 }
 
 func newDeploymentID() string {

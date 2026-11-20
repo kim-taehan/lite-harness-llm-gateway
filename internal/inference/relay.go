@@ -38,14 +38,34 @@ type exchange struct {
 	permit     *limits.Permit
 }
 
+// upstreamUsage 는 두 모양을 함께 읽는다: Chat Completions·Embeddings(prompt/completion), Responses(input/output)
 type upstreamUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
 }
+
+func (u upstreamUsage) tokens() (prompt, completion int) {
+	return u.PromptTokens + u.InputTokens, u.CompletionTokens + u.OutputTokens
+}
+
+// upstreamAPI 는 중계할 OpenAI API 하나다
+type upstreamAPI struct {
+	path string
+	// injectUsage 면 스트림에 stream_options.include_usage 를 켠다(Chat Completions). Responses 는 completed 이벤트에 늘 usage 가 있다
+	injectUsage bool
+}
+
+var (
+	apiChat       = upstreamAPI{path: "chat/completions", injectUsage: true}
+	apiResponses  = upstreamAPI{path: "responses"}
+	apiEmbeddings = upstreamAPI{path: "embeddings"}
+)
 
 // relay 는 업스트림에 보내고 응답을 그대로 흘려 준다. 클라이언트가 끊으면 r.Context() 가 취소되어 업스트림 요청도 끊긴다(설계 4.2).
 // 끝나면(끊겨도) 사용량을 기록한다
-func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, body map[string]any, requested string, stream bool, permit *limits.Permit) {
+func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI, d Deployment, body map[string]any, requested string, stream bool, permit *limits.Permit) {
 	p, _ := auth.PrincipalFrom(r.Context())
 	x := &exchange{requestID: newRequestID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
 	// litellm 과 같은 이름의 요청 ID 헤더(설계 11.3)
@@ -53,8 +73,9 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, b
 	defer func() { h.record(r, x) }()
 
 	// 스트림이면 업스트림이 마지막에 usage 청크를 주도록 켠다. 클라이언트가 켜지 않았으면 그 청크는 걸러 낸다(설계 4.4)
-	clientWantsUsage := false
-	if stream {
+	clientWantsUsage := true
+	if stream && api.injectUsage {
+		clientWantsUsage = false
 		options, _ := body["stream_options"].(map[string]any)
 		if options == nil {
 			options = map[string]any{}
@@ -69,7 +90,7 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, b
 		h.internalError(w, r, err)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, d.chatURL(), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, d.endpoint(api.path), bytes.NewReader(payload))
 	if err != nil {
 		x.fail(500, "internal_error")
 		h.internalError(w, r, err)
@@ -187,11 +208,18 @@ func (h *Handlers) streamLine(line []byte, x *exchange, clientWantsUsage bool) (
 	}
 	payload = bytes.TrimRight(payload, "\r\n")
 	var chunk struct {
-		Choices []json.RawMessage `json:"choices"`
-		Usage   *upstreamUsage    `json:"usage"`
+		Choices  []json.RawMessage `json:"choices"`
+		Usage    *upstreamUsage    `json:"usage"`
+		Delta    json.RawMessage   `json:"delta"` // Responses 의 *.delta 이벤트
+		Response *struct {
+			Usage *upstreamUsage `json:"usage"`
+		} `json:"response"` // Responses 의 response.completed 이벤트
 	}
 	if json.Unmarshal(payload, &chunk) == nil {
-		if len(chunk.Choices) > 0 {
+		if chunk.Response != nil && chunk.Response.Usage != nil {
+			x.usage = chunk.Response.Usage
+		}
+		if len(chunk.Choices) > 0 || len(chunk.Delta) > 0 {
 			x.chunks++
 			if x.firstToken == nil {
 				now := h.now()
@@ -219,7 +247,7 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		LatencyMS: int(h.now().Sub(x.started).Milliseconds()),
 	}
 	if x.usage != nil {
-		event.PromptTokens, event.CompletionTokens = x.usage.PromptTokens, x.usage.CompletionTokens
+		event.PromptTokens, event.CompletionTokens = x.usage.tokens()
 	} else if x.chunks > 0 {
 		// usage 를 받기 전에 끊겼다. 내용 청크 하나를 토큰 하나로 어림한다(Ollama 는 청크마다 토큰 하나를 보낸다)
 		event.CompletionTokens, event.Estimated = x.chunks, true
@@ -253,10 +281,21 @@ func withModel(data []byte, model string) []byte {
 	if err := decoder.Decode(&obj); err != nil {
 		return data
 	}
-	if _, has := obj["model"]; !has {
+	changed := false
+	if _, has := obj["model"]; has {
+		obj["model"] = model
+		changed = true
+	}
+	// Responses 스트림 이벤트는 response 객체 안에 model 이 있다
+	if inner, ok := obj["response"].(map[string]any); ok {
+		if _, has := inner["model"]; has {
+			inner["model"] = model
+			changed = true
+		}
+	}
+	if !changed {
 		return data
 	}
-	obj["model"] = model
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return data

@@ -28,6 +28,18 @@ func fakeOllama(t *testing.T) (*httptest.Server, *[]map[string]any) {
 		if r.Header.Get("Authorization") != "" {
 			t.Errorf("클라이언트 Authorization 이 업스트림으로 갔다")
 		}
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"object":"list","model":"%s","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":3}}`, body["model"])
+			return
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"model\":\"%s\",\"status\":\"in_progress\"}}\n\n", body["model"])
+			fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n")
+			fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"%s\",\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n\n", body["model"])
+			return
+		}
 		if stream, _ := body["stream"].(bool); stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, word := range []string{"Hel", "lo"} {
@@ -150,5 +162,56 @@ func TestModels_ShowsOnlyAllowedModelsAndGroupInfo(t *testing.T) {
 	info := api.ok("GET", "/model_group/info", nil)["data"].([]any)
 	if len(info) != 2 || info[0].(map[string]any)["max_input_tokens"] != 8192.0 {
 		t.Errorf("/model_group/info = %v", info)
+	}
+}
+
+func TestResponsesAndEmbeddings_RelayAndRecordUsage(t *testing.T) {
+	upstream, received := fakeOllama(t)
+	cfg, _ := LoadConfig(testEnv)
+	db, pool := dbtest.Open(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	id := newIdentity(db)
+	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	api := apiClient{t: t, h: h}
+	api.ok("POST", "/model/new", map[string]any{"model_name": "m", "litellm_params": map[string]any{"model": "ollama/tiny:1b", "api_base": upstream.URL}})
+
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"m","input":"hi","stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+testMasterKey)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 || strings.Contains(body, "tiny:1b") || !strings.Contains(body, "event: response.completed") || !strings.Contains(body, `"model":"m"`) {
+		t.Fatalf("responses 스트림: %d\n%s", rec.Code, body)
+	}
+	if _, injected := (*received)[0]["stream_options"]; injected {
+		t.Errorf("Responses 에는 stream_options 를 넣지 않는다: %v", (*received)[0])
+	}
+
+	status, emb := api.do("POST", "/v1/embeddings", map[string]any{"model": "m", "input": "hello"})
+	if status != 200 || emb.(map[string]any)["model"] != "m" {
+		t.Errorf("embeddings: %d %v", status, emb)
+	}
+
+	got := map[string][2]int{}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(got) < 2 && time.Now().Before(deadline) {
+		rows, err := pool.Query(t.Context(), "SELECT request_id, prompt_tokens, completion_tokens FROM request_log")
+		if err == nil {
+			for rows.Next() {
+				var id string
+				var p, c int
+				_ = rows.Scan(&id, &p, &c)
+				got[id] = [2]int{p, c}
+			}
+			rows.Close()
+		}
+		<-time.After(20 * time.Millisecond)
+	}
+	want := map[[2]int]bool{{4, 1}: true, {3, 0}: true}
+	for _, v := range got {
+		delete(want, v)
+	}
+	if len(want) != 0 {
+		t.Errorf("사용량(responses 4+1, embeddings 3+0) = %v", got)
 	}
 }
