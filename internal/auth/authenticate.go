@@ -22,6 +22,8 @@ type Principal struct {
 	// 허용 모델. 비어 있으면 모두 허용(litellm 과 같다). 마스터 키는 둘 다 비어 있다
 	KeyModels  []string
 	TeamModels []string
+	// 대시보드 세션 키로 들어왔을 때만 있다(litellm login_method). 로그아웃은 이것이 있어야 한다
+	UIMethod string
 }
 
 // IsAdmin 은 모든 관리 자원을 보는 역할이다(쓰기는 proxy_admin 만)
@@ -129,11 +131,17 @@ func (a *Authenticator) authenticateLogin(ctx context.Context, key string) (Prin
 	if err != nil {
 		return Principal{}, fmt.Errorf("로그인 키 사용자 조회: %w", err), true
 	}
+	if claims.UIMethod != "" && user.UISessionsRevokedAt != nil && !claims.IssuedAt.After(*user.UISessionsRevokedAt) {
+		// 로그아웃한 세션이다. 만료와 같은 문구로 답해 대시보드가 로그인 화면으로 보내게 한다
+		now := a.now().UTC()
+		return Principal{}, core.ProxyError{Status: 401, Type: "expired_key", Param: "sk-..." + key[len(key)-4:],
+			Message: "Authentication Error - Expired Key. Key Expiry time " + pyDatetime(*user.UISessionsRevokedAt) + " and current time " + pyDatetime(now)}, true
+	}
 	role := core.RoleInternalUser
 	if user.UserRole != nil {
 		role = *user.UserRole
 	}
-	p := Principal{UserID: user.UserID, Role: role, KeyToken: hashKey(key)}
+	p := Principal{UserID: user.UserID, Role: role, KeyToken: hashKey(key), UIMethod: claims.UIMethod}
 	if claims.TeamID == "" {
 		p.KeyModels = user.Models // 팀이 없으면 사용자 허용 모델(litellm 과 같다)
 		return p, nil, true

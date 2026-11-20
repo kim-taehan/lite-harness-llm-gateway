@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,11 +21,11 @@ type Users struct {
 
 func NewUsers(db *core.DB, cache *KeyCache) *Users { return &Users{db: db, cache: cache} }
 
-const userColumns = "user_id, user_email, user_alias, user_role, models, metadata, sso_user_id, created_at, updated_at"
+const userColumns = "user_id, user_email, user_alias, user_role, models, metadata, sso_user_id, ui_sessions_revoked_at, created_at, updated_at"
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.UserID, &u.UserEmail, &u.UserAlias, &u.UserRole, &u.Models, &u.Metadata, &u.SSOUserID, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.UserID, &u.UserEmail, &u.UserAlias, &u.UserRole, &u.Models, &u.Metadata, &u.SSOUserID, &u.UISessionsRevokedAt, &u.CreatedAt, &u.UpdatedAt)
 	return u, err
 }
 
@@ -286,6 +287,24 @@ func (u *Users) SetPassword(ctx context.Context, userID, password string) error 
 		return ErrUserNotFound
 	}
 	return err
+}
+
+// revokeUISessions 는 그 사용자의 지금까지 대시보드 세션을 모두 끊는다(로그아웃). 로그인 키는 DB 에 없어서 시각으로 가른다
+func (u *Users) revokeUISessions(ctx context.Context, userID string, at time.Time) error {
+	_, err := u.db.Q(ctx).Exec(ctx, "UPDATE app_user SET ui_sessions_revoked_at = $2 WHERE user_id = $1", userID, at)
+	return err
+}
+
+// ensureProxyAdmin 은 대시보드 관리자 로그인(admin + 마스터 키)의 사용자 행을 proxy_admin 으로 맞춘다. 없으면 만든다(litellm 과 같다)
+func (u *Users) ensureProxyAdmin(ctx context.Context, userID string) (User, error) {
+	user, err := u.one(ctx, `
+		INSERT INTO app_user (user_id, user_role) VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET user_role = excluded.user_role, updated_at = now()
+		RETURNING `+userColumns, userID, core.RoleProxyAdmin)
+	if err == nil {
+		u.cache.forgetUser(userID) // 역할이 바뀌었을 수 있다
+	}
+	return user, err
 }
 
 // ErrBadCredentials 는 아이디나 비밀번호가 틀렸다. 어느 쪽이 틀렸는지 알리지 않는다

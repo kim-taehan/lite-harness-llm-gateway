@@ -38,8 +38,10 @@ type User struct {
 	Models    []string
 	Metadata  map[string]any
 	SSOUserID *string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// 이 시각보다 먼저 발급된 대시보드 세션 키는 거부한다(로그아웃)
+	UISessionsRevokedAt *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type TeamMember struct {

@@ -54,6 +54,7 @@ type Login struct {
 	flows     *cliFlows
 	attempts  *loginAttempts
 	keys      *loginKeys
+	master    MasterKey   // 대시보드 관리자 로그인과 token JWT 서명
 	oidc      *oidcClient // SSO 를 넣지 않은 빌드면 nil
 	users     *Users
 	teams     *Teams
@@ -65,7 +66,7 @@ type Login struct {
 // NewLogin 은 SSO 가 들어간 빌드면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, methods LoginMethods, master MasterKey, oidc OIDCConfig, users *Users, teams *Teams,
 	client *http.Client, now func() time.Time, logger *slog.Logger) (*Login, error) {
-	l := &Login{methods: methods, flows: newCLIFlows(now), attempts: newLoginAttempts(now), keys: newLoginKeys(master), users: users, teams: teams,
+	l := &Login{methods: methods, flows: newCLIFlows(now), attempts: newLoginAttempts(now), keys: newLoginKeys(master), master: master, users: users, teams: teams,
 		publicURL: strings.TrimRight(oidc.PublicURL, "/"), now: now, logger: logger}
 	if methods.SSO {
 		if oidc.Issuer == "" || oidc.ClientID == "" || oidc.PublicURL == "" {
@@ -89,6 +90,7 @@ func (l *Login) Routes() []core.Route {
 		{Method: http.MethodPost, Path: "/sso/cli/complete/{login_id}", Access: public, Handler: l.complete},
 		{Method: http.MethodGet, Path: "/sso/cli/poll/{login_id}", Access: public, Handler: l.poll},
 	}
+	routes = append(routes, l.dashboardRoutes()...)
 	if l.methods.SSO {
 		routes = append(routes, core.Route{Method: http.MethodGet, Path: "/sso/callback", Access: public, Handler: l.callback})
 	}
@@ -111,9 +113,14 @@ func (l *Login) start(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]any{"login_id": loginID, "poll_secret": secret, "user_code": code, "expires_in": int(cliFlowTTL.Seconds())})
 }
 
-// signIn 은 브라우저 첫 화면이다. SSO 만 있으면 Keycloak 으로 보내고, 비밀번호가 있으면 로그인 화면을 보인다(둘 다면 둘 중 고른다)
+// signIn 은 브라우저 첫 화면이다. SSO 만 있으면 Keycloak 으로 보내고, 비밀번호가 있으면 로그인 화면을 보인다(둘 다면 둘 중 고른다).
+// source=litellm-cli 가 아니면 대시보드의 "Login with SSO" 다
 func (l *Login) signIn(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if q.Get("source") != "litellm-cli" {
+		l.webSignIn(w, r)
+		return
+	}
 	loginID := q.Get("key")
 	if !l.flowExists(w, loginID) {
 		return
@@ -159,7 +166,7 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	loginID, isCLI := strings.CutPrefix(state, "litellm-session-token:")
 	if !isCLI {
-		detail(w, http.StatusBadRequest, "Unsupported login state") // 대시보드 웹 SSO 는 뒤 단계
+		l.webCallback(w, r)
 		return
 	}
 	loginID, _, _ = strings.Cut(loginID, ":")
@@ -168,24 +175,31 @@ func (l *Login) callback(w http.ResponseWriter, r *http.Request) {
 		flowNotFound(w)
 		return
 	}
-	code := q.Get("code")
+	if user, ok := l.ssoUser(w, r, verifier); ok {
+		l.finishSignIn(w, r, loginID, user)
+	}
+}
+
+// ssoUser 는 콜백의 코드를 토큰으로 바꾸고 그 사용자를 저장한다(데스크탑·대시보드 공통)
+func (l *Login) ssoUser(w http.ResponseWriter, r *http.Request, verifier string) (User, bool) {
+	code := r.URL.Query().Get("code")
 	if code == "" {
 		core.ProxyError{Status: 400, Type: "auth_error", Param: "code", Message: "Missing authorization code in callback"}.Write(w)
-		return
+		return User{}, false
 	}
 	claims, err := l.oidc.exchange(r.Context(), code, verifier)
 	if err != nil {
 		l.logger.Warn("SSO 코드 교환 실패", "err", err)
 		core.ProxyError{Status: 401, Type: "auth_error", Param: "None", Message: err.Error()}.Write(w)
-		return
+		return User{}, false
 	}
 	user, err := l.users.upsertSSOUser(r.Context(), claims)
 	if err != nil {
 		l.logger.Error("SSO 사용자 저장 실패", "err", err)
 		detail(w, http.StatusInternalServerError, "Failed to retrieve user information from SSO")
-		return
+		return User{}, false
 	}
-	l.finishSignIn(w, r, loginID, user)
+	return user, true
 }
 
 func (l *Login) passwordSignIn(w http.ResponseWriter, r *http.Request) {

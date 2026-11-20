@@ -34,6 +34,18 @@ func (b browser) do(method, target string, form url.Values, header map[string]st
 	return rec
 }
 
+func (b browser) doJSON(method, target, body string, header map[string]string) *httptest.ResponseRecorder {
+	b.t.Helper()
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	b.h.ServeHTTP(rec, req)
+	return rec
+}
+
 func jsonOf(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var m map[string]any

@@ -358,6 +358,10 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - `/team/info`·`/team/list` 응답에 키 해시(`token`)를 넣지 않는다. litellm 은 팀의 키 목록에 해시를 그대로 노출한다
 - `/user/update` 에 없는 `user_id` 가 오면 만들지 않고 404 로 답한다. litellm 은 proxy_admin 이 부르면 새 사용자를 만든다
 - SSO 로 처음 들어온 사용자의 별칭은 litellm 기본(Keycloak `sub` UUID, K 2.4) 대신 `name`(없으면 `preferred_username`) 클레임을 쓴다. 데스크탑이 별칭을 이름으로 보이기 때문이다
+- 대시보드 세션 키도 데스크탑과 같은 자기 완결 로그인 키다(`L_dashboard_login_contract.md`). litellm 은 로그인마다 DB 에 가상 키(`team_id="litellm-dashboard"`, 예산 1 USD)를 하나씩 만들고 지우지 않는다. 그래서 세션 키에 1 USD 예산이 없고 `/key/list` 에 나올 일이 없다. 로그아웃은 그 사용자의 대시보드 세션을 **모두** 끊는다(사용자 행의 `ui_sessions_revoked_at` 보다 먼저 발급된 세션을 거부한다. litellm 은 그 세션 하나만). 데스크탑 로그인 키는 로그아웃과 상관없다
+- 대시보드 세션도 7일간 유효하다(litellm `LITELLM_UI_SESSION_DURATION` 기본 24시간)
+- 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 SSO 만 넣은 빌드에서도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 비밀번호를 넣은 빌드에서만 된다
+- 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 대시보드는 자기 출처로 API 를 부른다(nginx 가 대시보드와 API 를 같은 출처로 낸다)
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
 - `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)

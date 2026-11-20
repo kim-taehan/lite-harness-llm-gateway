@@ -24,7 +24,15 @@ type loginClaims struct {
 	UserID  string    `json:"user_id"`
 	TeamID  string    `json:"team_id,omitempty"`
 	Expires time.Time `json:"expires"`
+	// 대시보드 세션만 있다(데스크탑 키는 빈 값). litellm login_method 값: "username_password" 또는 "sso"
+	UIMethod string    `json:"ui_method,omitempty"`
+	IssuedAt time.Time `json:"issued_at,omitzero"`
 }
+
+const (
+	uiMethodPassword = "username_password"
+	uiMethodSSO      = "sso"
+)
 
 var errBadLoginKey = errors.New("로그인 키를 풀 수 없다")
 
