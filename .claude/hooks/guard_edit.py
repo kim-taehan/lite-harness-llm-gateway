@@ -78,7 +78,8 @@ def resulting_content(tool_name, tool_input, path):
 # ---------- Go ----------
 
 def check_go(rel, content):
-    is_test = rel.endswith("_test.go")
+    # 시험 파일과 시험 도우미 패키지(이름이 test 로 끝나는 폴더, 예: core/dbtest)는 관례 검사를 하지 않는다
+    is_test = rel.endswith("_test.go") or os.path.basename(os.path.dirname(rel)).endswith("test")
     parts = rel.split("/")
     module = parts[1] if parts[0] == "internal" and len(parts) > 2 else ("cmd" if parts[0] == "cmd" else None)
     code = strip_comments_and_strings(content)

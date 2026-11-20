@@ -83,6 +83,10 @@ class GuardEditTest(unittest.TestCase):
         src = go("auth", ["context", "time"], "func f() { _ = context.Background(); time.Sleep(1) }")
         self.assertAllowed(run("Write", "internal/auth/x_test.go", content=src))
 
+    def test_시험_도우미_패키지는_관례_검사를_하지_않는다(self):
+        src = go("dbtest", ["context"], "func f() { _ = context.Background() }")
+        self.assertAllowed(run("Write", "internal/core/dbtest/x.go", content=src))
+
     def test_테스트_파일도_의존_방향은_검사한다(self):
         src = go("core", ["llm-gateway/internal/auth"])
         self.assertBlocked(run("Write", "internal/core/x_test.go", content=src), "`core` → `auth`")

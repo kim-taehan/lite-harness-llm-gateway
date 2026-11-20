@@ -1,26 +1,40 @@
 package app
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/core/dbtest"
 )
+
+func TestMain(m *testing.M) { os.Exit(dbtest.Main(m)) }
+
+const testMasterKey = "sk-test"
+
+func testEnv(name string) string {
+	switch name {
+	case "GATEWAY_MASTER_KEY":
+		return testMasterKey
+	case "GATEWAY_DATABASE_URL":
+		return "postgres://unused" // 시험은 dbtest 의 DB 를 직접 넘긴다
+	}
+	return ""
+}
 
 func testHandler(t *testing.T) (http.Handler, *core.Lifecycle) {
 	t.Helper()
-	cfg, err := LoadConfig(func(name string) string {
-		if name == "GATEWAY_MASTER_KEY" {
-			return "sk-test"
-		}
-		return ""
-	})
+	cfg, err := LoadConfig(testEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
+	db, _ := dbtest.Open(t)
 	lifecycle := &core.Lifecycle{}
-	return Handler(cfg, lifecycle), lifecycle
+	return Handler(cfg, lifecycle, db, slog.New(slog.NewTextHandler(io.Discard, nil))), lifecycle
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
@@ -60,14 +74,24 @@ func TestUndeclaredPath_FastAPIStyle404(t *testing.T) {
 	}
 }
 
-func TestStartupRefusedWithoutMasterKey(t *testing.T) {
+func TestStartupRefusedWithoutMasterKeyOrDatabase(t *testing.T) {
 	if _, err := LoadConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("마스터 키 없이 설정이 만들어졌다")
+	}
+	noDB := func(name string) string {
+		if name == "GATEWAY_DATABASE_URL" {
+			return ""
+		}
+		return testEnv(name)
+	}
+	if _, err := LoadConfig(noDB); err != ErrNoDatabaseURL {
+		t.Fatalf("DB 주소 없이: %v", err)
 	}
 }
 
 func TestEveryRouteDeclaresAccess(t *testing.T) {
-	for _, r := range routes(&core.Lifecycle{}) {
+	db, _ := dbtest.Open(t)
+	for _, r := range routes(&core.Lifecycle{}, db, slog.New(slog.NewTextHandler(io.Discard, nil))) {
 		if r.Handler == nil || r.Method == "" || r.Path == "" {
 			t.Errorf("빈 라우트: %+v", r)
 		}

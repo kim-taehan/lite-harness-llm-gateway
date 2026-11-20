@@ -12,11 +12,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"llm-gateway/internal/admin"
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/limits"
 )
 
 // version 은 빌드 때 build.sh 가 -ldflags 로 넣는다
@@ -26,26 +31,34 @@ var version = "dev"
 type Config struct {
 	Listen       string         // GATEWAY_LISTEN, 기본 :4000 (litellm 기본 포트)
 	MasterKey    auth.MasterKey // GATEWAY_MASTER_KEY, 필수
+	DatabaseURL  string         // GATEWAY_DATABASE_URL, 필수
 	DrainTimeout time.Duration  // 정상 종료 때 진행 중인 요청을 기다리는 시간
 }
+
+// ErrNoDatabaseURL 은 DB 주소가 없을 때다. 신원·한도의 진실 원천이 PostgreSQL 이라 없이는 기동하지 않는다
+var ErrNoDatabaseURL = errors.New("GATEWAY_DATABASE_URL 이 없다. PostgreSQL 없이는 기동하지 않는다")
 
 func LoadConfig(getenv func(string) string) (Config, error) {
 	masterKey, err := auth.NewMasterKey(getenv("GATEWAY_MASTER_KEY"))
 	if err != nil {
 		return Config{}, err
 	}
+	databaseURL := getenv("GATEWAY_DATABASE_URL")
+	if databaseURL == "" {
+		return Config{}, ErrNoDatabaseURL
+	}
 	listen := getenv("GATEWAY_LISTEN")
 	if listen == "" {
 		listen = ":4000"
 	}
-	return Config{Listen: listen, MasterKey: masterKey, DrainTimeout: 60 * time.Second}, nil
+	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second}, nil
 }
 
-// Handler 는 모든 모듈의 라우트를 권한 검사로 감싸 등록한 핸들러다
-func Handler(cfg Config, lifecycle *core.Lifecycle) http.Handler {
+// Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다
+func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) http.Handler {
 	authenticator := auth.NewAuthenticator(cfg.MasterKey)
 	mux := http.NewServeMux()
-	for _, route := range routes(lifecycle) {
+	for _, route := range routes(lifecycle, db, logger) {
 		mux.Handle(route.Pattern(), authenticator.Guard(route))
 	}
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
@@ -54,8 +67,14 @@ func Handler(cfg Config, lifecycle *core.Lifecycle) http.Handler {
 }
 
 // routes 는 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
-func routes(lifecycle *core.Lifecycle) []core.Route {
-	return core.HealthRoutes(lifecycle)
+func routes(lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) []core.Route {
+	users := auth.NewUsers(db)
+	teams := auth.NewTeams(db, users)
+	policies := limits.NewPolicies(db, time.Now)
+	return slices.Concat(
+		core.HealthRoutes(lifecycle),
+		admin.NewHandlers(db, teams, users, policies, logger).Routes(),
+	)
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다
@@ -76,10 +95,19 @@ func Run(stdout, stderr io.Writer) int {
 }
 
 func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("DB 연결 설정: %w", err)
+	}
+	defer pool.Close()
+	// 기동 시 마이그레이션. 여러 대가 동시에 떠도 advisory lock 으로 한 대만 적용한다(설계 2장)
+	if err := core.Migrate(ctx, pool, logger); err != nil {
+		return fmt.Errorf("마이그레이션: %w", err)
+	}
 	lifecycle := &core.Lifecycle{}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           Handler(cfg, lifecycle),
+		Handler:           Handler(cfg, lifecycle, core.NewDB(pool), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout 은 두지 않는다. LLM 스트림은 수 분 이어질 수 있다
 	}
