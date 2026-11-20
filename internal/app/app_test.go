@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 	"llm-gateway/internal/core/dbtest"
 	"llm-gateway/internal/limits"
@@ -38,7 +39,8 @@ func testHandler(t *testing.T) (http.Handler, *core.Lifecycle) {
 	db, _ := dbtest.Open(t)
 	lifecycle := &core.Lifecycle{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return Handler(cfg, lifecycle, db, startUsage(t, db, logger), logger), lifecycle
+	id := newIdentity(db)
+	return Handler(cfg, lifecycle, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger), lifecycle
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
@@ -97,7 +99,8 @@ func TestEveryRouteDeclaresAccess(t *testing.T) {
 	db, _ := dbtest.Open(t)
 	cfg, _ := LoadConfig(testEnv)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, r := range assemble(cfg, &core.Lifecycle{}, db, startUsage(t, db, logger), logger).routes {
+	id := newIdentity(db)
+	for _, r := range assemble(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger).routes {
 		if r.Handler == nil || r.Method == "" || r.Path == "" {
 			t.Errorf("빈 라우트: %+v", r)
 		}
@@ -123,4 +126,15 @@ func startUsage(t *testing.T, db *core.DB, logger *slog.Logger) *limits.UsageRec
 	go usage.Run(context.WithoutCancel(t.Context()))
 	t.Cleanup(usage.Close)
 	return usage
+}
+
+// testLogin 은 비밀번호 로그인만 있는 로그인이다(시험에는 Keycloak 이 없다)
+func testLogin(t *testing.T, cfg Config, id identity) *auth.Login {
+	t.Helper()
+	cfg.Login = auth.LoginMethods{Password: true}
+	login, err := newLogin(t.Context(), cfg, id, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return login
 }

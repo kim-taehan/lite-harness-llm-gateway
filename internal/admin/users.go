@@ -105,6 +105,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 		UserRole  core.Change[core.Role]      `json:"user_role"`
 		Models    core.Change[[]string]       `json:"models"`
 		Metadata  core.Change[map[string]any] `json:"metadata"`
+		Password  *string                     `json:"password"`
 		limitFields
 	}
 	raw, ok := requestBody(w, r, &req)
@@ -142,6 +143,12 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if user, err = h.users.Update(ctx, userID, patch); err != nil {
 			return err
+		}
+		// litellm: 관리자가 /user/update 로 비밀번호를 정할 수 있다(해시로 저장, 응답에는 싣지 않는다)
+		if req.Password != nil {
+			if err := h.users.SetPassword(ctx, userID, *req.Password); err != nil {
+				return err
+			}
 		}
 		policy, err = h.limits.Apply(ctx, limits.ScopeUser, userID, req.patch())
 		return err

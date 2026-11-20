@@ -5,6 +5,12 @@
 # C 라이브러리를 쓰지 않아(CGO_ENABLED=0) 대상 서버에 아무것도 설치하지 않아도 돈다.
 set -eu
 VERSION="${VERSION:-dev}"
+# 로그인 방식은 빌드 시점에 정한다(설계 6장): sso, password, 또는 sso,password(기본). 실행 중에는 바꿀 수 없다
+LOGIN="${LOGIN:-sso,password}"
+case "$LOGIN" in
+  sso|password|sso,password|password,sso) ;;
+  *) echo "LOGIN 값이 틀렸다: '$LOGIN' (sso, password, sso,password 중 하나)" >&2; exit 1 ;;
+esac
 TARGETS="linux/amd64 linux/arm64 darwin/arm64 darwin/amd64"
 
 build_all() {
@@ -15,7 +21,7 @@ build_all() {
     os="${target%/*}"
     arch="${target#*/}"
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false \
-      -ldflags="-s -w -X llm-gateway/internal/app.version=$VERSION" -o "$out/llm-gateway-$os-$arch" ./cmd/llm-gateway
+      -ldflags="-s -w -X llm-gateway/internal/app.version=$VERSION -X llm-gateway/internal/app.loginMethods=$LOGIN" -o "$out/llm-gateway-$os-$arch" ./cmd/llm-gateway
   done
   (cd "$out" && shasum -a 256 llm-gateway-* > SHA256SUMS)
 }

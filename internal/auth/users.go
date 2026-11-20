@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 
@@ -268,4 +269,94 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// SetPassword 는 비밀번호를 정한다(관리자 /user/update, 초대 온보딩). 빈 문자열이면 비밀번호 로그인을 막는다
+func (u *Users) SetPassword(ctx context.Context, userID, password string) error {
+	var stored *string
+	if password != "" {
+		hashed, err := hashPassword(password)
+		if err != nil {
+			return err
+		}
+		stored = &hashed
+	}
+	tag, err := u.db.Q(ctx).Exec(ctx, "UPDATE app_user SET password_hash = $2, updated_at = now() WHERE user_id = $1", userID, stored)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return err
+}
+
+// ErrBadCredentials 는 아이디나 비밀번호가 틀렸다. 어느 쪽이 틀렸는지 알리지 않는다
+var ErrBadCredentials = errors.New("아이디 또는 비밀번호가 틀렸다")
+
+// checkPassword 는 이메일(대소문자 무시) 또는 user_id 와 비밀번호로 사용자를 찾는다
+func (u *Users) checkPassword(ctx context.Context, login, password string) (User, error) {
+	var hash *string
+	var userID string
+	err := u.db.Q(ctx).QueryRow(ctx,
+		"SELECT user_id, password_hash FROM app_user WHERE lower(user_email) = lower($1) OR user_id = $1 ORDER BY (user_id = $1) DESC LIMIT 1", login).
+		Scan(&userID, &hash)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && hash == nil) {
+		// 사용자가 없어도 같은 시간이 걸리게 한 번 계산한다(아이디가 있는지 알아내는 것을 막는다)
+		verifyPassword(dummyPasswordHash(), password)
+		return User{}, ErrBadCredentials
+	}
+	if err != nil {
+		return User{}, err
+	}
+	if !verifyPassword(*hash, password) {
+		return User{}, ErrBadCredentials
+	}
+	return u.Find(ctx, userID)
+}
+
+// dummyPasswordHash 는 시간 맞추기용이다. 어떤 비밀번호와도 맞지 않는다. 처음 쓸 때 한 번만 만든다(기동을 늦추지 않게)
+var dummyPasswordHash = sync.OnceValue(func() string {
+	h, _ := hashPassword(randomURLSafe(32))
+	return h
+})
+
+// upsertSSOUser 는 SSO 콜백의 사용자다(K 2.4). user_id 는 이메일이고, 없으면 internal_user_viewer 로 만든다(litellm 기본).
+// 있으면 이메일만 갱신하고 별칭은 비어 있을 때만 채운다. 역할은 바꾸지 않는다
+func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
+	email := strings.ToLower(c.Email)
+	userID := email
+	if userID == "" {
+		userID = c.PreferredUsername
+	}
+	// litellm 기본은 별칭이 Keycloak sub(UUID)가 된다(K 2.4). 화면에 UUID 가 보이지 않게 이름 클레임을 쓴다(설계 9장 차이)
+	alias := c.Name
+	if alias == "" {
+		alias = c.PreferredUsername
+	}
+	viewer := core.RoleInternalUserViewer
+	var result User
+	err := u.db.InTx(ctx, func(ctx context.Context) error {
+		existing, err := u.Find(ctx, userID)
+		if errors.Is(err, ErrUserNotFound) {
+			result, err = u.one(ctx, `
+				INSERT INTO app_user (user_id, user_email, user_alias, user_role, sso_user_id, metadata)
+				VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+userColumns,
+				userID, nullIfEmpty(email), nullIfEmpty(alias), viewer, c.Subject, map[string]any{"auth_provider": "generic"})
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		result, err = u.one(ctx, `
+			UPDATE app_user SET user_email = coalesce($2, user_email), user_alias = coalesce(user_alias, $3),
+			       sso_user_id = coalesce(sso_user_id, $4), updated_at = now()
+			WHERE user_id = $1 RETURNING `+userColumns, existing.UserID, nullIfEmpty(email), nullIfEmpty(alias), c.Subject)
+		return err
+	})
+	return result, err
+}
+
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }

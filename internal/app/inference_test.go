@@ -49,7 +49,8 @@ func TestChat_RelaysStreamRecordsUsageAndHidesUnrequestedUsageChunk(t *testing.T
 	cfg, _ := LoadConfig(testEnv)
 	db, pool := dbtest.Open(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := Handler(cfg, &core.Lifecycle{}, db, startUsage(t, db, logger), logger)
+	id := newIdentity(db)
+	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
 	api := apiClient{t: t, h: h}
 
 	api.ok("POST", "/model/new", map[string]any{"model_name": "chat-small",

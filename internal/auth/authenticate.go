@@ -57,11 +57,12 @@ type Authenticator struct {
 	users     *Users
 	teams     *Teams
 	cache     *KeyCache
+	logins    *loginKeys
 	now       func() time.Time
 }
 
 func NewAuthenticator(masterKey MasterKey, keys *Keys, users *Users, teams *Teams, cache *KeyCache, now func() time.Time) *Authenticator {
-	return &Authenticator{masterKey: masterKey, keys: keys, users: users, teams: teams, cache: cache, now: now}
+	return &Authenticator{masterKey: masterKey, keys: keys, users: users, teams: teams, cache: cache, logins: newLoginKeys(masterKey), now: now}
 }
 
 // Authenticate 는 신원을 돌려준다. 거절은 litellm 과 같은 오류 본문(*core.ProxyError)이고, 그 밖의 error 는 예상 밖 실패(DB 등)다.
@@ -75,6 +76,11 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 		return Principal{}, core.AuthError(reasonMalformedKey)
 	case a.masterKey.Matches(key):
 		return masterPrincipal, nil
+	case strings.HasPrefix(key, loginKeyPrefix):
+		if principal, err, ok := a.authenticateLogin(ctx, key); ok {
+			return principal, err
+		}
+		fallthrough // 풀 수 없는 로그인 키는 litellm 처럼 가상 키 형식 오류로 답한다
 	case !strings.HasPrefix(key, "sk-"):
 		// 해시를 그대로 키로 쓰는 것을 막는다
 		return Principal{}, core.ProxyError{Status: 401, Type: "auth_error", Param: "None",
@@ -102,6 +108,53 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 	}
 	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, TeamID: deref(k.TeamID),
 		KeyModels: k.Models, TeamModels: resolved.teamModels}, nil
+}
+
+// authenticateLogin 은 SSO·비밀번호 로그인 키다(K 4장). 요청마다 사용자·팀 행을 다시 읽어 지금 권한을 쓴다.
+// ok=false 는 키를 풀 수 없다는 뜻이다
+func (a *Authenticator) authenticateLogin(ctx context.Context, key string) (Principal, error, bool) {
+	claims, err := a.logins.open(key)
+	if err != nil {
+		return Principal{}, nil, false
+	}
+	if now := a.now().UTC(); claims.Expires.Before(now) {
+		return Principal{}, core.ProxyError{Status: 401, Type: "expired_key", Param: "sk-..." + key[len(key)-4:],
+			Message: "Authentication Error - Expired Key. Key Expiry time " + pyDatetime(claims.Expires) + " and current time " + pyDatetime(now)}, true
+	}
+	user, err := a.users.Find(ctx, claims.UserID)
+	if errors.Is(err, ErrUserNotFound) {
+		return Principal{}, core.ProxyError{Status: 401, Type: "auth_error", Param: "user_id",
+			Message: "Authentication Error, user '" + claims.UserID + "' no longer exists."}, true
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("로그인 키 사용자 조회: %w", err), true
+	}
+	role := core.RoleInternalUser
+	if user.UserRole != nil {
+		role = *user.UserRole
+	}
+	p := Principal{UserID: user.UserID, Role: role, KeyToken: hashKey(key)}
+	if claims.TeamID == "" {
+		p.KeyModels = user.Models // 팀이 없으면 사용자 허용 모델(litellm 과 같다)
+		return p, nil, true
+	}
+	team, err := a.teams.Find(ctx, claims.TeamID)
+	if err != nil && !errors.Is(err, ErrTeamNotFound) {
+		return Principal{}, fmt.Errorf("로그인 키 팀 조회: %w", err), true
+	}
+	teamIDs, terr := a.users.TeamIDs(ctx, []string{user.UserID})
+	if terr != nil {
+		return Principal{}, fmt.Errorf("로그인 키 팀 조회: %w", terr), true
+	}
+	if err != nil || !containsString(teamIDs[user.UserID], claims.TeamID) {
+		return Principal{}, core.ProxyError{Status: 403, Type: "auth_error", Param: "None",
+			Message: "Team '" + claims.TeamID + "' is not in your team memberships."}, true
+	}
+	if team.Blocked {
+		return Principal{}, core.AuthError("Team=" + team.TeamID + " is blocked. Update via `/team/unblock` if you're an admin."), true
+	}
+	p.TeamID, p.TeamModels = team.TeamID, team.Models
+	return p, nil, true
 }
 
 // resolve 는 키와 그 소유자 역할·팀 차단 여부를 캐시나 DB 에서 읽는다
