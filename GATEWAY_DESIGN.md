@@ -244,7 +244,12 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
 - **마스터 키**: 환경 변수·시크릿으로만 주입. 없으면 **기동을 거부한다**(litellm 은 override 로 풀 수 있다)
 - **Keycloak JWT**: API 를 JWT 로 직접 호출할 수 있게 한다. 서명은 Keycloak JWKS(내부 주소)로 검증하고 캐시한다. litellm 에서 유료로 막힌 핵심 기능이다
 - **SSO(OIDC, PKCE)**: Keycloak 전용. 그룹 → 팀·역할 매핑. 신규 사용자 기본값. **사용자 수 제한 없음**
-- **비상 관리자 비밀번호 로그인**: 하나만, 로그인 시도 제한. 외부 유출 비밀번호 검사(pwnedpasswords)는 하지 않는다
+- **아이디·비밀번호 로그인(사용자 결정 2026-11-21)**: SSO 와 함께, **모든 사용자**가 게이트웨이 계정(app_user)의 아이디·비밀번호로도 로그인한다(이전의 "비상 관리자 하나만"을 넓힘)
+  - 데스크탑: CLI SSO 흐름의 브라우저 단계(`/sso/key/generate`)에서 로그인 페이지를 보이고 "회사 계정(SSO)"·"아이디·비밀번호" 중 고른다. 어느 쪽이든 같은 방식으로 키를 발급해 `/sso/cli/poll` 로 넘긴다. 데스크탑 코드는 바꾸지 않는다
+  - 대시보드: litellm 의 아이디·비밀번호 로그인(`/login`)을 그대로 받는다
+  - 비밀번호는 litellm 처럼 초대 링크(`/invitation/new` → 온보딩)에서 사용자가 정하거나, 관리자가 `/user/update` 로 정한다
+  - 저장: 표준 라이브러리 PBKDF2-SHA256(소금·반복 횟수 포함 문자열). 로그인 시도 제한. 외부 유출 비밀번호 검사(pwnedpasswords)는 하지 않는다(폐쇄망)
+  - 로그인 페이지 흐름의 세부(SSO 를 켰을 때 litellm 의 `/sso/key/generate` 동작과의 관계)는 `docs/litellm-inventory/K_sso_cli_contract.md` 를 보고 정한다
 - **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. 조직·고객 계층(`org_admin`, `customer`)은 만들지 않는다
 - **라우트 권한은 허용 목록**(역할별로 허용 경로를 적는다). litellm 의 viewer 쓰기 차단은 차단 목록이라 새 API 를 빠뜨리면 뚫린다
 - 세션 쿠키는 litellm 과 같이 `token` 쿠키로 둔다. 대시보드가 `document.cookie` 로 읽으므로 HttpOnly 로 할 수 없다(조사 B). SameSite=Lax
