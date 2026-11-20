@@ -17,7 +17,7 @@ import (
 // 요청마다 사용자·팀 행을 다시 읽어 역할·팀·차단을 반영하므로 발급 뒤 바뀐 권한도 바로 적용된다
 const (
 	loginKeyPrefix = "litellm_login_"
-	loginKeyTTL    = 24 * time.Hour // litellm CLI_JWT_EXPIRATION_HOURS 기본
+	loginKeyTTL    = 7 * 24 * time.Hour // litellm 기본(CLI_JWT_EXPIRATION_HOURS 24시간)보다 길게: 데스크탑 재로그인을 주 1회로(사용자 결정, 설계 9장)
 )
 
 type loginClaims struct {

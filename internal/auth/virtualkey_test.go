@@ -185,3 +185,21 @@ func TestTeamDelete_ArchivesTeamKeys(t *testing.T) {
 		t.Errorf("팀 키 사본이 없다: %v", err)
 	}
 }
+
+func TestLoginKey_ValidForSevenDays(t *testing.T) {
+	w := newKeyWorld(t)
+	_, _, _ = w.users.Create(t.Context(), NewUser{UserID: ptr("kim")})
+	master, _ := NewMasterKey(testMasterKey)
+	key, err := newLoginKeys(master).issue(loginClaims{UserID: "kim", Expires: w.now.Add(loginKeyTTL)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.now = w.now.Add(7*24*time.Hour - time.Minute)
+	if code, body := w.call(key, core.Authenticated()); code != 200 {
+		t.Errorf("7일 안: %d %v", code, body)
+	}
+	w.now = w.now.Add(2 * time.Minute)
+	if code, body := w.call(key, core.Authenticated()); code != 401 || body["type"] != "expired_key" {
+		t.Errorf("7일 뒤: %d %v", code, body)
+	}
+}

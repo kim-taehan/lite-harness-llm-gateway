@@ -358,6 +358,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - `/team/info`·`/team/list` 응답에 키 해시(`token`)를 넣지 않는다. litellm 은 팀의 키 목록에 해시를 그대로 노출한다
 - `/user/update` 에 없는 `user_id` 가 오면 만들지 않고 404 로 답한다. litellm 은 proxy_admin 이 부르면 새 사용자를 만든다
 - SSO 로 처음 들어온 사용자의 별칭은 litellm 기본(Keycloak `sub` UUID, K 2.4) 대신 `name`(없으면 `preferred_username`) 클레임을 쓴다. 데스크탑이 별칭을 이름으로 보이기 때문이다
+- 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
 - `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)
 - 팀원은 `team_member` 한 곳에만 둔다. litellm 은 팀의 `members_with_roles` 와 사용자의 `teams` 두 곳에 따로 저장해 v1·v2 목록이 어긋날 수 있다. 응답 모양은 litellm 과 같게 두 필드 모두 `team_member` 에서 만든다
