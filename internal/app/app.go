@@ -76,7 +76,7 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, usage *limits.
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(lifecycle),
-			inference.NewHandlers(deployments, upstreamClient(), usage, time.Now, logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(db, teams, users, keys, policies, deployments, time.Now, logger).Routes(),
 		),
 	}

@@ -35,6 +35,7 @@ type exchange struct {
 	status     string
 	httpStatus int
 	errorCode  string
+	permit     *limits.Permit
 }
 
 type upstreamUsage struct {
@@ -44,9 +45,9 @@ type upstreamUsage struct {
 
 // relay 는 업스트림에 보내고 응답을 그대로 흘려 준다. 클라이언트가 끊으면 r.Context() 가 취소되어 업스트림 요청도 끊긴다(설계 4.2).
 // 끝나면(끊겨도) 사용량을 기록한다
-func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, body map[string]any, requested string, stream bool) {
+func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, d Deployment, body map[string]any, requested string, stream bool, permit *limits.Permit) {
 	p, _ := auth.PrincipalFrom(r.Context())
-	x := &exchange{requestID: newRequestID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200}
+	x := &exchange{requestID: newRequestID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
 	// litellm 과 같은 이름의 요청 ID 헤더(설계 11.3)
 	w.Header().Set("x-litellm-call-id", x.requestID)
 	defer func() { h.record(r, x) }()
@@ -228,6 +229,7 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		event.TTFTMS = &ms
 	}
 	event.Cost = cost(x.deployment, event.PromptTokens, event.CompletionTokens)
+	x.permit.AddTokens(event.PromptTokens + event.CompletionTokens)
 	h.usage.Record(event)
 }
 

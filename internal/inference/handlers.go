@@ -10,6 +10,7 @@ import (
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/limits"
 )
 
 // Handlers 는 OpenAI 표준 추론 라우트다. 클라이언트는 주소와 키만 바꾼다(설계 1장)
@@ -17,12 +18,13 @@ type Handlers struct {
 	deployments *Deployments
 	upstream    *http.Client // 연결·응답 헤더 타임아웃을 정한 클라이언트(설계 4장: connect 5s, read 300s). 스트림 전체 시간은 막지 않는다
 	usage       usageSink
+	gate        *limits.Gate
 	now         func() time.Time
 	logger      *slog.Logger
 }
 
-func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, now: now, logger: logger}
+func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, gate *limits.Gate, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, gate: gate, now: now, logger: logger}
 }
 
 // Routes 는 추론 라우트다. litellm 은 LLM API 라우트를 역할과 무관하게 연다(키만 맞으면). 모델 권한은 핸들러가 본다
@@ -66,9 +68,21 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) {
 			Message: r.URL.Path + ": Invalid model name passed in model=" + model + ". Call `/v1/models` to view available models for your key."}.Write(w)
 		return
 	}
+	// 배포를 고른 뒤 한도를 본다. 동시성 한도가 배포 단위라 어느 배포인지 알아야 하기 때문이다(설계 4.1)
+	permit, err := h.gate.Admit(r.Context(), limits.Subject{KeyToken: p.KeyToken, TeamID: p.TeamID, UserID: p.UserID})
+	var rejected core.ProxyError
+	switch {
+	case errors.As(err, &rejected):
+		rejected.Write(w)
+		return
+	case err != nil:
+		h.internalError(w, r, err)
+		return
+	}
+	defer permit.Release()
 	body["model"] = deployment.UpstreamModel
 	stream, _ := body["stream"].(bool)
-	h.relay(w, r, deployment, body, model, stream)
+	h.relay(w, r, deployment, body, model, stream, permit)
 }
 
 func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, error) {

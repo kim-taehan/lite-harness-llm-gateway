@@ -16,6 +16,8 @@ type ProxyError struct {
 	Message string
 	Type    string
 	Param   any // litellm 은 null 또는 문자열 "None" 등을 쓴다
+	// Headers 는 오류와 함께 보낼 응답 헤더다(예: 429 의 retry-after)
+	Headers map[string]string
 }
 
 // AuthError 는 인증 실패다. litellm 은 관리 라우트 역할 거부도 같은 401 auth_error 로 돌려준다
@@ -26,6 +28,9 @@ func AuthError(reason string) ProxyError {
 func (e ProxyError) Error() string { return e.Message }
 
 func (e ProxyError) Write(w http.ResponseWriter) {
+	for k, v := range e.Headers {
+		w.Header().Set(k, v)
+	}
 	WriteJSON(w, e.Status, map[string]any{"error": map[string]any{
 		"message": e.Message,
 		"type":    e.Type,
