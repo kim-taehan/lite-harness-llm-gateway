@@ -1,9 +1,11 @@
 package ai.airgap.gateway
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan
 import org.springframework.boot.runApplication
 
 @SpringBootApplication
+@ConfigurationPropertiesScan
 class LlmGatewayApplication
 
 fun main(args: Array<String>) {

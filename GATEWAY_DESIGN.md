@@ -58,6 +58,8 @@ llm-gateway/
   - `request_log` 에는 기록 시점에 `key_id`·`user_id`·`team_id` 를 함께 남긴다. 사용량 집계는 `limits` 가 자기 테이블만으로 하고, 이름 같은 표시 정보는 `admin` 이 `auth` 에서 받아 붙인다
   - 대시보드 응답처럼 여러 모듈 값을 합친 모양은 `admin` 이 조립한다
 - **라우트 권한은 라우트와 함께 선언한다.** 각 모듈이 라우트를 등록할 때 필요한 역할을 같이 적고, `auth` 의 필터가 모인 선언으로 검사한다. 선언 없는 라우트는 거부하고, 모든 라우트에 선언이 있는지 테스트로 확인한다
+  - 선언 도구(`declaredRoutes { GET(path, Access, handler) }`, `Access`, `Role`)는 `core` 에 둔다. `core` 의 헬스 라우트도 선언해야 하는데 `core` 는 `auth` 를 볼 수 없기 때문이다. 검사(`RouteAccessFilter`)는 `auth` 에 있다
+  - 선언이 없는 경로는 필터가 404 로 끝낸다. 선언을 빠뜨린 라우트는 열리는 대신 동작하지 않는다
 - **의존은 한 방향, 순환 금지.** `admin → inference·auth·limits → core`, `inference → auth·limits → core`
 - **포트는 바깥과 닿는 곳에만 둔다.** Ollama(`LlmProvider`), DB 저장소, Redis(`CounterStore`), Keycloak, 시계. 모듈 안을 헥사고날 계층으로 다시 나누지 않는다
 - **모듈 간 호출은 직접 호출이 기본이다.** 결과가 필요 없는 알림만 이벤트로 보낸다
@@ -206,8 +208,8 @@ OpenAI 오류 형식을 쓴다(litellm 과 같다). 모듈은 `sealed` 실패를
 
 | 실패 | HTTP | type | code |
 |---|---|---|---|
-| 키 없음·형식 오류·없는 키 | 401 | `authentication_error` | `invalid_api_key` |
-| 만료·차단된 키 | 401 | `authentication_error` | `key_expired` / `key_blocked` |
+| 키 없음·형식 오류·없는 키, 관리 라우트 역할 거부 | 401 | `auth_error` | `"401"` (message 는 `Authentication Error, …`, param 은 문자열 `"None"`) |
+| 만료·차단된 키 | 401 | `auth_error` | `"401"` |
 | 허용되지 않은 모델·경로 | 403 | `permission_error` | `model_not_allowed` / `forbidden` |
 | 없는 모델 | 404 | `invalid_request_error` | `model_not_found` |
 | 요청 형식 오류·컨텍스트 초과 | 400 | `invalid_request_error` | `bad_request` / `context_length_exceeded` |
@@ -218,6 +220,9 @@ OpenAI 오류 형식을 쓴다(litellm 과 같다). 모듈은 `sealed` 실패를
 | 업스트림 타임아웃 | 504 | `server_error` | `upstream_timeout` |
 
 code 문자열은 litellm 이 실제로 내는 값과 맞춘다(계약 테스트로 확인, 다르면 litellm 쪽을 따른다).
+- 인증 행은 litellm 소스로 확인했다(`auth/auth_exception_handler.py` `_as_proxy_exception`, `_types.py` `ProxyException.to_dict`). litellm 의 `code` 는 OpenAI 코드가 아니라 HTTP 상태 문자열이다. 나머지 행은 해당 기능을 만들 때 같은 방법으로 확인해 고친다
+- 관리 라우트에서 역할이 모자라면 litellm 은 403 이 아니라 401 을 준다(`auth/route_checks.py`). 대시보드가 이 상태로 동작하므로 따른다
+- 등록되지 않은 경로는 `404 {"detail":"Not Found"}`(FastAPI 기본)
 
 ### 4.4 스트리밍 프레임 (WebFlux 를 고른 이유가 가장 크게 드러나는 곳)
 - 업스트림 SSE 를 `Flow` 로 받아 클라이언트로 중계한다. 백프레셔는 Netty 가 맡는다
@@ -337,9 +342,9 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
    - **동작 보장**: `home`, `api-keys`, `teams`, `users`, `models-and-endpoints`, `model-hub-table`, `usage`, `logs`, `playground`, `change-password`, `ui-theme`, `api-reference`
    - **빈 응답(확정)**: `guardrails`, `guardrails-monitor`, `policies`, `tool-policies`, `workflows` (사용자 결정. 가드레일 엔진과 정책 기능은 1차에 만들지 않는다)
    - **빈 응답(제안, 미확정)**: `mcp-servers`, `agents`, `skills`, `memory`, `prompts`, `organizations`, `projects`, `tag-management`, `vector-stores`, `lens`, `cost-optimization`, `logging-and-alerts`(외부 SaaS 콜백), `telemetry`(폐쇄망 원칙상 반드시 숨김)
-   - **쓰는지 확인 필요(그때까지 빈 응답, M4 후보)**: `budgets`(별도 예산 객체 필요), `cost-tracking`, `router-settings`, `caching`, `admin-panel`, `access-groups`, `model-insights`, `old-usage`, `transform-request`, `search-tools`
+   - **쓰는지 확인 필요(그때까지 빈 응답, M5 후보)**: `budgets`(별도 예산 객체 필요), `cost-tracking`, `router-settings`, `caching`, `admin-panel`, `access-groups`, `model-insights`, `old-usage`, `transform-request`, `search-tools`
 2. 동작을 보장할 화면이 부르는 엔드포인트만 구현한다. 나머지 화면의 엔드포인트는 대시보드가 부르는 경로 전부를 빈 응답으로 받아 준다(목록은 대시보드 소스에서 뽑는다). 모양의 근거는 대시보드의 타입 클라이언트(`ui/litellm-dashboard/src/lib/http/schema.d.ts`, OpenAPI 에서 생성)와 litellm OpenAPI 스냅샷(`litellm/proxy/_lazy_openapi_snapshot.json`)이다. 이 둘로 **계약 테스트**를 만든다(요청·응답 필드가 같은지)
-3. 대시보드를 새 게이트웨이에 실제로 붙여 화면마다 브라우저로 확인한다(M2·M3 종료 기준)
+3. 대시보드를 새 게이트웨이에 실제로 붙여 화면마다 브라우저로 확인한다(M3·M4 종료 기준)
 
 규모: **대시보드 화면은 전부 쓴다**(사용자 결정). 대시보드가 부르는 관리 엔드포인트 전부(조사 추정 최대 약 269개, 정규식 추정이라 동적 경로는 놓쳤을 수 있음)를 처음부터 등록하고, 실제 구현(필수 최소 41개부터)과 빈 응답 중 하나로 답한다.
 
@@ -348,6 +353,12 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 안 만드는 기능의 화면이 관리자 메뉴에 그대로 남는다. 빈 응답이 화면을 깨뜨리지 않는지 **화면마다 브라우저로 확인**해야 하고, 깨지는 화면은 그 엔드포인트 응답의 모양을 조정한다(UI 는 고치지 않는다). 확인 전에는 몇 개가 깨질지 알 수 없다
 - **이번에는 백엔드만 바꾼다**(사용자 결정). 대시보드는 지금 소스(`ui/litellm-dashboard`)와 지금 배포 방식(`ui/Dockerfile` 의 nginx 컨테이너가 정적 파일을 서빙)을 그대로 쓰고, nginx 의 백엔드 주소만 새 게이트웨이로 바꾼다. 코드는 수정하지 않고, upstream 대시보드 업데이트는 따라가지 않고 고정한다. 프런트를 어떻게 할지는 나중에 정한다
 - litellm 의 모양을 따르므로 응답에 litellm 의 유료 기능 빈자리 필드가 남을 수 있다. 계약 테스트에서 필요한 필드만 본다
+
+**litellm 과 다르게 하는 것(버그라서 따르지 않는다, 사용자 결정)** — 근거는 `docs/litellm-inventory/H_team_user_contract.md`
+- `/team/info`·`/team/list` 응답에 키 해시(`token`)를 넣지 않는다. litellm 은 팀의 키 목록에 해시를 그대로 노출한다
+- `/user/update` 에 없는 `user_id` 가 오면 만들지 않고 404 로 답한다. litellm 은 proxy_admin 이 부르면 새 사용자를 만든다
+- `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)
+- 팀원은 `team_member` 한 곳에만 둔다. litellm 은 팀의 `members_with_roles` 와 사용자의 `teams` 두 곳에 따로 저장해 v1·v2 목록이 어긋날 수 있다. 응답 모양은 litellm 과 같게 두 필드 모두 `team_member` 에서 만든다
 
 ## 10. 폐쇄망 검증
 
@@ -410,10 +421,11 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 
 | 단계 | 내용 | 끝났다는 기준 |
 |---|---|---|
-| M1 | 추론 프록시: chat(스트리밍)·models·embeddings, 키 인증, 예산·제한, 배치 기록, 헬스, `/metrics`. 키는 시드/CLI 로 임시 발급 | OpenAI SDK 가 주소·키만 바꿔 동작, 클라이언트 끊김 시 업스트림 취소 확인 |
-| M2 | 관리 API 필수 41: 키·팀·사용자·모델·사용량 | 운영자가 키를 발급·차단하고 사용량을 본다 |
-| M3 | Keycloak SSO·JWT 직접 인증, 그룹 매핑, 대시보드 | SSO 로그인으로 키 발급, JWT 로 API 호출 |
-| M4 | 후순위 필요한 것만: `/v1/completions`, `/v1/responses`, `/v1/messages`, 이미지·음성, openai-compatible 프로바이더. **빈 응답으로 둔 화면을 필요할 때 실제 기능으로 교체**(예: 예산 객체, 비용 설정, 라우터 설정, 가드레일). 교체는 화면 단위로 하나씩 | 사용자가 요청한 것만. 교체한 화면은 브라우저에서 동작 확인 |
+| M1 | 신원 기반: DB(R2DBC·Flyway), 마스터 키 인증, 라우트 권한 선언, 오류 envelope, 팀·사용자·팀원 관리 API(litellm 모양) | 마스터 키로 팀·사용자를 만들고 팀에 사용자를 넣고 조회한다. 다른 키·키 없음은 401 |
+| M2 | 키 발급·수정·차단·삭제·조회(`/key/*`), 키 검증(30초 캐시) | 발급한 키로 인증되고, 차단하면 401 |
+| M3 | 추론 프록시: chat(스트리밍)·models·embeddings, 모델 관리 API, 예산·제한, 배치 기록, 사용량 조회, `/metrics` | OpenAI SDK 가 주소·키만 바꿔 동작, 클라이언트 끊김 시 업스트림 취소 확인, 운영자가 사용량을 본다 |
+| M4 | Keycloak SSO·JWT 직접 인증, 그룹 매핑, 대시보드 | SSO 로그인으로 키 발급, JWT 로 API 호출 |
+| M5 | 후순위 필요한 것만: `/v1/completions`, `/v1/responses`, `/v1/messages`, 이미지·음성, openai-compatible 프로바이더. **빈 응답으로 둔 화면을 필요할 때 실제 기능으로 교체**(예: 예산 객체, 비용 설정, 라우터 설정, 가드레일). 교체는 화면 단위로 하나씩 | 사용자가 요청한 것만. 교체한 화면은 브라우저에서 동작 확인 |
 
 **빈 응답 → 실제 기능 교체를 쉽게 하는 구조**: 관리 API 의 경로마다 핸들러를 한 곳(`admin/routes`)에 등록하고, 빈 응답용 핸들러(`StubHandler`)를 실제 핸들러로 바꾸는 것만으로 교체되게 한다. 경로·요청·응답 모양은 대시보드가 이미 기대하는 것이라 바뀌지 않는다. 기능이 늘어도 UI 는 손대지 않는다.
 

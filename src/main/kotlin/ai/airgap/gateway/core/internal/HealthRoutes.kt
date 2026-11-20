@@ -1,5 +1,7 @@
 package ai.airgap.gateway.core.internal
 
+import ai.airgap.gateway.core.Access
+import ai.airgap.gateway.core.declaredRoutes
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.HttpStatus
@@ -7,16 +9,16 @@ import org.springframework.http.MediaType
 import org.springframework.web.reactive.function.server.ServerRequest
 import org.springframework.web.reactive.function.server.ServerResponse
 import org.springframework.web.reactive.function.server.bodyValueAndAwait
-import org.springframework.web.reactive.function.server.coRouter
 
 @Configuration(proxyBeanMethods = false)
 class HealthRoutes(private val shutdownState: ShutdownState) {
 
     @Bean
-    fun healthRouter() = coRouter {
+    fun healthRouter() = declaredRoutes {
         // liveliness 는 litellm 의 옛 이름이다. 클라이언트·프로브 호환을 위해 둘 다 받는다
-        GET("/health/liveliness", ::liveness)
-        GET("/health/liveness", ::liveness)
+        // 프로브는 키 없이 부르므로 litellm 과 같이 인증하지 않는다
+        GET("/health/liveliness", Access.Public, ::liveness)
+        GET("/health/liveness", Access.Public, ::liveness)
     }
 
     private suspend fun liveness(@Suppress("UNUSED_PARAMETER") request: ServerRequest): ServerResponse =
