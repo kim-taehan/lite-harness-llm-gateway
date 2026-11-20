@@ -2,7 +2,8 @@
 """PreToolUse(Edit|Write|MultiEdit) 훅. 편집 결과 파일 전체를 만들어 보고 개발 표준·아키텍처 위반이면 막는다.
 
 종료 코드 2 + stderr 는 Claude 에게 이유로 전달되고 편집은 적용되지 않는다.
-규칙의 근거는 CLAUDE.md(코딩 원칙·코틀린 관례)와 GATEWAY_DESIGN.md(3장 모듈 규칙, 8장 스키마, 10장 폐쇄망)다.
+규칙의 근거는 CLAUDE.md(Go 관례)와 GATEWAY_DESIGN.md(3장 모듈 규칙, 8장 스키마, 10장 폐쇄망)다.
+정확한 경계 검사는 internal/app/architecture_test.go 이고, 이 훅은 편집 시점에 빨리 막는 앞단이다.
 """
 import json
 import os
@@ -10,21 +11,20 @@ import re
 import subprocess
 import sys
 
-BASE_PACKAGE = "ai.airgap.gateway"
-MODULES = ("inference", "auth", "limits", "admin", "core")
-# 설계 3장: admin → inference·auth·limits → core, inference → auth·limits → core
+MODULE_PATH = "llm-gateway"
+# 설계 3장: app(조립) → admin → inference → auth·limits → core. architecture_test.go 와 같은 표
 ALLOWED_DEPS = {
     "core": set(),
     "auth": {"core"},
     "limits": {"core"},
     "inference": {"auth", "limits", "core"},
     "admin": {"inference", "auth", "limits", "core"},
+    "app": {"admin", "inference", "auth", "limits", "core"},
 }
-VAGUE_PACKAGE_NAMES = {"util", "utils", "common", "helper", "helpers", "manager", "managers", "misc"}
+VAGUE_NAMES = {"util", "utils", "common", "helper", "helpers", "manager", "managers", "misc", "shared"}
 PRIVATE_HOST = re.compile(
     r"^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0|\[::1\]|[^/:]*\.(local|internal|svc|cluster\.local)(:|/|$))"
 )
-MIGRATION_DIR = "src/main/resources/db/migration/"
 
 
 def main():
@@ -40,9 +40,9 @@ def main():
     if content is None:
         return 0
 
-    if rel.endswith(".kt") and rel.startswith("src/"):
-        violations = check_kotlin(rel, content)
-    elif rel.startswith(MIGRATION_DIR):
+    if rel.endswith(".go") and (rel.startswith("internal/") or rel.startswith("cmd/")):
+        violations = check_go(rel, content)
+    elif rel.endswith(".sql") and "/migrations/" in "/" + rel:
         violations = check_migration(project, rel, content)
     else:
         violations = []
@@ -75,86 +75,59 @@ def resulting_content(tool_name, tool_input, path):
     return current
 
 
-# ---------- Kotlin ----------
+# ---------- Go ----------
 
-def check_kotlin(rel, content):
-    is_main = rel.startswith("src/main/")
+def check_go(rel, content):
+    is_test = rel.endswith("_test.go")
+    parts = rel.split("/")
+    module = parts[1] if parts[0] == "internal" and len(parts) > 2 else ("cmd" if parts[0] == "cmd" else None)
     code = strip_comments_and_strings(content)
     violations = []
 
-    package = find_package(content)
-    module = module_of(package)
-    violations += check_package(rel, package, module)
-    violations += check_dependencies(code, package, module)
-
-    if "!!" in code:
-        violations.append("`!!` 를 쓰지 않는다. `?.`·`?:`·`requireNotNull(이유)` 를 쓴다")
-    if re.search(r"\bGlobalScope\b", code):
-        violations.append("`GlobalScope` 금지. 요청 안은 요청 코루틴, 백그라운드는 애플리케이션 스코프에 둔다")
-
-    if is_main:
-        if re.search(r"\brunBlocking\b", code):
-            violations.append("`runBlocking` 은 운영 코드에서 쓰지 않는다(이벤트 루프 블로킹)")
-        if re.search(r"\bThread\.sleep\b", code):
-            violations.append("`Thread.sleep` 금지. `delay` 를 쓴다")
-        if re.search(r"@Autowired\b", code):
-            violations.append("필드·세터 주입(`@Autowired`) 금지. 생성자 주입을 쓴다")
-        if re.search(r"\bimport\s+java\.sql\.|\bJdbcTemplate\b|\bDriverManager\b|\bDataSource\b", code):
-            violations.append("런타임 DB 접근은 R2DBC 만 쓴다. JDBC 는 Flyway 기동 마이그레이션 전용이다(설계 2장)")
-        if re.search(r"catch\s*\(\s*\w+\s*:\s*(Exception|Throwable)\s*\)", code) and "CancellationException" not in code:
-            violations.append(
-                "`catch (e: Exception|Throwable)` 이 CancellationException 까지 삼킨다. "
-                "CancellationException 을 먼저 잡아 다시 던지거나 더 좁은 예외를 잡는다"
-            )
-        violations += check_external_urls(content)
-    return violations
-
-
-def find_package(content):
-    m = re.search(r"^\s*package\s+([\w.]+)", content, re.M)
-    return m.group(1) if m else None
-
-
-def module_of(package):
-    if not package or not package.startswith(BASE_PACKAGE + "."):
-        return None
-    return package[len(BASE_PACKAGE) + 1:].split(".")[0]
-
-
-def check_package(rel, package, module):
-    if package is None:
-        return ["package 선언이 없다"]
-    violations = []
-    expected_dir = package.replace(".", "/")
-    if "/" + expected_dir + "/" not in "/" + rel:
-        violations.append(f"package `{package}` 와 파일 위치가 다르다. 경로에 `{expected_dir}/` 가 있어야 한다")
-    if package != BASE_PACKAGE and not package.startswith(BASE_PACKAGE + "."):
-        violations.append(f"패키지는 `{BASE_PACKAGE}` 아래에 둔다")
-    elif module is not None and module not in MODULES:
-        violations.append(f"모듈 `{module}` 은 설계에 없다. 모듈은 {', '.join(MODULES)} 뿐이다(새 모듈은 설계 문서부터)")
-    segments = package.split(".")
-    vague = [s for s in segments if s in VAGUE_PACKAGE_NAMES]
+    if parts[0] == "internal" and len(parts) > 2 and module not in ALLOWED_DEPS:
+        violations.append(f"모듈 `internal/{module}` 은 설계에 없다. 모듈은 {', '.join(ALLOWED_DEPS)} 뿐이다(새 모듈은 설계 문서부터)")
+    vague = [p for p in parts[:-1] if p in VAGUE_NAMES]
     if vague:
         violations.append(f"뭉뚱그린 패키지 이름 `{vague[0]}` 금지. 기능별로 나눈다")
+    violations += check_imports(content, module)
+
+    if is_test:
+        return violations
+    if re.search(r"\bcontext\.(Background|TODO)\(\)", code) and module not in ("app", "cmd"):
+        violations.append(
+            "`context.Background()`·`TODO()` 는 조립 지점(internal/app, cmd)에서만 쓴다. "
+            "요청·작업의 ctx 를 받아 넘겨야 클라이언트가 끊을 때 업스트림·DB 까지 취소된다(설계 4.2)"
+        )
+    if re.search(r"\btime\.Sleep\(", code):
+        violations.append("`time.Sleep` 금지. ctx 와 함께 `select { case <-ctx.Done(): case <-timer.C: }` 로 기다린다")
+    if re.search(r"\bhttp\.(DefaultClient|Get|Post|Head|PostForm)\b", code):
+        violations.append("`http.DefaultClient`·`http.Get` 류 금지(타임아웃이 없다). 타임아웃을 정한 `*http.Client` 를 주입한다")
+    if re.search(r'^\s*"log"\s*$', import_block(content), re.M):
+        violations.append('표준 `log` 패키지 금지. 구조 로그 `log/slog` 를 쓴다(설계 11.3)')
+    violations += check_external_urls(content)
     return violations
 
 
-def check_dependencies(code, package, module):
-    """import 와 완전한 이름 참조 모두에서 다른 모듈 참조를 찾는다."""
+def import_block(content):
+    m = re.search(r"^import\s*\((.*?)^\)", content, re.S | re.M)
+    singles = re.findall(r'^import\s+(?:\w+\s+)?("[^"]+")', content, re.M)
+    return (m.group(1) if m else "") + "\n" + "\n".join(singles)
+
+
+def check_imports(content, module):
     violations = []
-    refs = set(re.findall(r"\b" + re.escape(BASE_PACKAGE) + r"\.(\w+)((?:\.\w+)*)", code))
-    for target, rest in sorted(refs):
-        if target not in MODULES or target == module:
+    for target in re.findall(r'"' + re.escape(MODULE_PATH) + r'/([^"]+)"', import_block(content)):
+        segments = target.split("/")
+        if module == "cmd":
+            if target != "internal/app":
+                violations.append(f"cmd 는 `internal/app` 만 가져온다 (가져온 것: {target})")
             continue
-        internal = ".internal" in rest + "."
-        if internal:
-            violations.append(f"`{target}.internal` 은 `{target}` 모듈만 쓴다. 공개 API(모듈 최상위 패키지)를 쓴다")
-        if module is None:
-            # 루트 패키지(애플리케이션 클래스·앱 수준 테스트)는 공개 API 만 쓰면 된다
+        if segments[0] != "internal" or len(segments) < 2 or module is None:
             continue
-        if target not in ALLOWED_DEPS.get(module, set()):
+        to = segments[1]
+        if to != module and to not in ALLOWED_DEPS.get(module, set()):
             allowed = ", ".join(sorted(ALLOWED_DEPS.get(module, set()))) or "없음"
-            violations.append(f"`{module}` → `{target}` 의존 금지. `{module}` 이 기댈 수 있는 모듈: {allowed}(설계 3장)")
+            violations.append(f"`{module}` → `{to}` 의존 금지. `{module}` 이 가져올 수 있는 모듈: {allowed}(설계 3장)")
     return violations
 
 
@@ -175,7 +148,7 @@ def strip_comments_and_strings(source):
 
 
 def _scan(source, keep_strings):
-    """문자열 안의 // 를 주석으로 보지 않도록 한 글자씩 읽는다. 지운 자리는 공백·빈 문자열로 둔다."""
+    """문자열 안의 // 를 주석으로 보지 않도록 한 글자씩 읽는다. Go 의 "…", `…`, '…' 를 다룬다."""
     out = []
     i, n = 0, len(source)
     while i < n:
@@ -186,10 +159,10 @@ def _scan(source, keep_strings):
             end = source.find("*/", i + 2)
             i = n if end < 0 else end + 2
             out.append(" ")
-        elif source.startswith('"""', i):
-            end = source.find('"""', i + 3)
-            end = n if end < 0 else end + 3
-            out.append(source[i:end] if keep_strings else '""')
+        elif source[i] == "`":
+            end = source.find("`", i + 1)
+            end = n if end < 0 else end + 1
+            out.append(source[i:end] if keep_strings else "``")
             i = end
         elif source[i] in "\"'":
             quote, j = source[i], i + 1
@@ -204,15 +177,15 @@ def _scan(source, keep_strings):
     return "".join(out)
 
 
-# ---------- Flyway ----------
+# ---------- 마이그레이션 ----------
 
 def check_migration(project, rel, content):
     violations = []
     name = os.path.basename(rel)
-    if not re.match(r"^V\d+__[a-z0-9_]+\.sql$", name):
-        violations.append("마이그레이션 파일 이름은 `V<번호>__<snake_case>.sql`")
+    if not re.match(r"^\d{4}_[a-z0-9_]+\.sql$", name):
+        violations.append("마이그레이션 파일 이름은 `<4자리 번호>_<snake_case>.sql` (예: 0001_identity.sql)")
     if is_committed(project, rel):
-        violations.append("이미 커밋된 마이그레이션은 고치지 않는다. 새 버전 파일을 추가한다(설계 8.1)")
+        violations.append("이미 커밋된 마이그레이션은 고치지 않는다. 새 번호 파일을 추가한다(설계 8.1)")
     sql = re.sub(r"--[^\n]*", "", content)
     if re.search(r"\b(UPDATE\s+\w+\s+SET|DELETE\s+FROM|INSERT\s+INTO)\b", sql, re.I):
         violations.append("마이그레이션은 스키마만 바꾼다. 행을 쓰는 INSERT·UPDATE·DELETE 금지(설계 8.1)")

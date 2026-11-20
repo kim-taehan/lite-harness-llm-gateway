@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop 훅. 소스가 바뀌었으면 컴파일(경고=오류)과 모듈 경계 테스트를 돌리고, 실패하면 작업을 끝내지 못하게 한다.
+"""Stop 훅. 소스가 바뀌었으면 gofmt·vet·빌드·테스트(모듈 경계 테스트 포함)를 돌리고, 실패하면 작업을 끝내지 못하게 한다.
 
 - 마지막으로 통과한 소스 상태와 같으면 다시 돌리지 않는다(.claude/.cache/verified)
 - 같은 실패로 연속 3번 막았으면 더 막지 않고 사용자에게 넘긴다(무한 반복 방지)
@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-WATCHED = ("src", "build.gradle.kts", "settings.gradle.kts", "gradle")
+WATCHED = ("cmd", "internal", "go.mod", "go.sum")
 MAX_BLOCKS = 3
 
 
@@ -37,11 +37,11 @@ def main():
     write(blocks_file, str(blocks))
     if blocks > MAX_BLOCKS:
         write(blocks_file, "0")
-        print(json.dumps({"systemMessage": "검증 훅: 컴파일·모듈 경계 검사가 계속 실패한다. 사용자 확인이 필요하다."}))
+        print(json.dumps({"systemMessage": "검증 훅: gofmt·vet·테스트가 계속 실패한다. 사용자 확인이 필요하다."}))
         return 0
 
     sys.stderr.write(
-        "검증 훅: 작업을 끝내기 전에 고쳐야 한다(컴파일 경고=오류, Spring Modulith 경계).\n"
+        "검증 훅: 작업을 끝내기 전에 고쳐야 한다(gofmt·vet·테스트, 모듈 경계 테스트 포함).\n"
         + tail(output, 60)
         + "\n고친 뒤 끝내면 다시 검사한다. 원인이 훅이나 규칙 쪽이라고 판단되면 사용자에게 알린다.\n"
     )
@@ -67,29 +67,22 @@ def source_state(project):
 
 
 def run_checks(project):
-    result = subprocess.run(
-        ["./gradlew", "--console=plain", "--warn", "compileKotlin", "compileTestKotlin",
-         "test", "--tests", "*ModuleStructureTest"],
-        cwd=project, capture_output=True, text=True, timeout=540,
-    )
-    output = "\n".join(
-        line for line in (result.stdout + result.stderr).splitlines()
-        if not line.startswith("WARNING:") and "Sharing is only supported" not in line
-    )
-    return result.returncode == 0, output + modulith_violations(project)
-
-
-def modulith_violations(project):
-    """경계 테스트가 실패했으면 테스트 리포트에서 위반 내용을 꺼낸다(gradle 출력에는 요약만 나온다)."""
-    import glob
-    import html
-    import re
-    for path in glob.glob(os.path.join(project, "build/test-results/test/*ModuleStructureTest.xml")):
-        with open(path, encoding="utf-8") as f:
-            m = re.search(r'<failure message="(.*?)"', f.read(), re.S)
-        if m:
-            return "\n[Modulith 위반]\n" + html.unescape(m.group(1))[:3000]
-    return ""
+    env = dict(os.environ)
+    # Claude Code 의 셸에는 go 가 PATH 에 없을 수 있다(Homebrew 설치)
+    env["PATH"] = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/go/bin", os.path.expanduser("~/go/bin"), env.get("PATH", "")])
+    steps = [
+        ("gofmt", ["gofmt", "-l", "cmd", "internal"]),
+        ("vet", ["go", "vet", "./..."]),
+        ("test", ["go", "test", "-count=1", "./..."]),
+    ]
+    for name, command in steps:
+        result = subprocess.run(command, cwd=project, capture_output=True, text=True, env=env, timeout=540)
+        output = (result.stdout + result.stderr).strip()
+        failed = result.returncode != 0 or (name == "gofmt" and output)
+        if failed:
+            hint = "\n(gofmt -w 로 고친다)" if name == "gofmt" else ""
+            return False, f"[{name}]\n{output}{hint}"
+    return True, ""
 
 
 def tail(text, lines):

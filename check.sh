@@ -1,0 +1,13 @@
+#!/bin/sh
+# 커밋·릴리스 전 점검을 한 번에 — 서식 · vet · 테스트(모듈 경계 포함) · 취약점(govulncheck) · 다른 OS vet · 재현 가능한 빌드.
+# 하나라도 실패하면 멈춘다. deploy-server 의 check.sh 와 같은 순서다.
+set -eu
+echo "== 서식"; test -z "$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "gofmt 필요" >&2; exit 1; }
+echo "== vet"; go vet ./...
+echo "== 테스트"; go test -count=1 ./...
+echo "== 취약점 (govulncheck)"; GOFLAGS=-mod=mod go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+echo "== 다른 운영체제용 vet"
+GOOS=linux GOARCH=amd64 go vet ./... && GOOS=linux GOARCH=arm64 go vet ./...
+echo "== 재현 가능한 빌드"; ./build.sh check > /dev/null && echo "같은 소스를 두 번 빌드해 sha256 이 모두 같다"
+echo "== 하네스 훅 테스트"; python3 .claude/hooks/test_guard_edit.py 2>&1 | tail -1
+echo "점검 통과 ($(go version))"

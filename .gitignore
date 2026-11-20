@@ -1,47 +1,14 @@
-HELP.md
-.gradle
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
-
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
-
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
+# 빌드 결과
 /dist/
-/nbdist/
-/.nb-gradle/
+/dist-check-*/
 
-### VS Code ###
+# 편집기
+.idea/
 .vscode/
 
-### Kotlin ###
-.kotlin
-
-### omc ###
+# omc
 .omc/
 
-### Claude Code ###
+# Claude Code
 .claude/.cache/
 .claude/settings.local.json
