@@ -21,6 +21,7 @@ import (
 	"llm-gateway/internal/admin"
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/inference"
 	"llm-gateway/internal/limits"
 )
 
@@ -69,14 +70,26 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.L
 	teams := auth.NewTeams(db, users, cache)
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
+	deployments := inference.NewDeployments(db)
 	return modules{
 		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(lifecycle),
-			admin.NewHandlers(db, teams, users, keys, policies, time.Now, logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), logger).Routes(),
+			admin.NewHandlers(db, teams, users, keys, policies, deployments, time.Now, logger).Routes(),
 		),
 	}
+}
+
+// upstreamClient 는 업스트림(Ollama 등) 호출용이다. 연결 5초, 응답 헤더 300초(로컬 모델은 첫 토큰이 느리다. 설계 4장).
+// 전체 시간 제한(Client.Timeout)은 두지 않는다. 스트림은 수 분 이어지고, 클라이언트가 끊으면 요청 ctx 로 취소된다
+func upstreamClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.ResponseHeaderTimeout = 300 * time.Second
+	transport.Proxy = nil // 폐쇄망: 환경 변수 프록시를 타지 않는다
+	return &http.Client{Transport: transport}
 }
 
 // Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다

@@ -423,6 +423,8 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | M4 | Keycloak SSO·JWT 직접 인증, 그룹 매핑, 대시보드 | SSO 로그인으로 키 발급, JWT 로 API 호출 |
 | M5 | 후순위 필요한 것만: `/v1/completions`, `/v1/responses`, `/v1/messages`, 이미지·음성, openai-compatible 프로바이더. **빈 응답으로 둔 화면을 필요할 때 실제 기능으로 교체**(예: 예산 객체, 비용 설정, 라우터 설정, 가드레일). 교체는 화면 단위로 하나씩 | 사용자가 요청한 것만. 교체한 화면은 브라우저에서 동작 확인 |
 
+**순서 변경(2026-11-21, 사용자 결정): lite 데스크탑에서 쓰는 기능을 먼저 만든다.** 데스크탑은 API 키(기본) 또는 SSO CLI 흐름으로 붙고 `/v1/models`, `/v1/chat/completions`(스트리밍), `/model_group/info` 를 부른다. 그래서 M3 의 추론 경로 핵심(모델 배포 등록 `/model/new`, 위 세 라우트, 모델 접근 검사, 스트림 중계·끊김 취소)을 M2 직후 먼저 만들었다. 이어서 데스크탑 SSO(`/sso/cli/start`·`/sso/cli/poll`·`/sso/key/generate`, M4 의 일부)와 계정 화면이 부르는 `/v2/user/info`·`/key/info`·`/team/info`·`/user/daily/activity`·`/spend/logs` 를 먼저 하고, 예산·속도 제한·사용량 기록·대시보드 나머지는 그 뒤에 한다.
+
 **빈 응답 → 실제 기능 교체를 쉽게 하는 구조**: 관리 API 의 경로마다 핸들러를 한 곳(`admin/routes`)에 등록하고, 빈 응답용 핸들러(`StubHandler`)를 실제 핸들러로 바꾸는 것만으로 교체되게 한다. 경로·요청·응답 모양은 대시보드가 이미 기대하는 것이라 바뀌지 않는다. 기능이 늘어도 UI 는 손대지 않는다.
 
 **제외**(조사 A·F·B): files·batches·fine_tuning·assistants·vector_stores·realtime·A2A·MCP(약 5.4만 줄)·프로바이더 패스스루(약 1.8만 줄, 기본 업스트림이 외부 주소)·자동 라우터(약 1.2만 줄)·외부 SaaS 콜백 약 58종·외부 SaaS 가드레일 약 40종·조직·SCIM·알림·청구 내보내기.

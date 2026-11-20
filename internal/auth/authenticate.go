@@ -19,6 +19,9 @@ type Principal struct {
 	KeyToken string
 	TeamID   string
 	Master   bool
+	// 허용 모델. 비어 있으면 모두 허용(litellm 과 같다). 마스터 키는 둘 다 비어 있다
+	KeyModels  []string
+	TeamModels []string
 }
 
 // IsAdmin 은 모든 관리 자원을 보는 역할이다(쓰기는 proxy_admin 만)
@@ -97,7 +100,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 	if resolved.teamBlocked {
 		return Principal{}, core.AuthError("Team=" + deref(k.TeamID) + " is blocked. Update via `/team/unblock` if you're an admin.")
 	}
-	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, TeamID: deref(k.TeamID)}, nil
+	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, TeamID: deref(k.TeamID),
+		KeyModels: k.Models, TeamModels: resolved.teamModels}, nil
 }
 
 // resolve 는 키와 그 소유자 역할·팀 차단 여부를 캐시나 DB 에서 읽는다
@@ -128,6 +132,7 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 			return resolvedKey{}, err
 		}
 		r.teamBlocked = err == nil && team.Blocked
+		r.teamModels = team.Models
 	}
 	a.cache.entries.put(token, r)
 	return r, nil

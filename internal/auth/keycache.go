@@ -86,6 +86,7 @@ type resolvedKey struct {
 	key         Key
 	role        core.Role // 키 소유자의 역할. 사용자 행이 없으면 빈 문자열(litellm 의 role=None)
 	teamBlocked bool
+	teamModels  []string
 }
 
 // KeyCache 는 키 검증 결과 캐시다. 키·팀·사용자를 바꾸는 쪽이 그 자리에서 지운다

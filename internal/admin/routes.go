@@ -7,6 +7,7 @@ import (
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/inference"
 	"llm-gateway/internal/limits"
 )
 
@@ -17,13 +18,16 @@ type Handlers struct {
 	users  *auth.Users
 	keys   *auth.Keys
 	limits *limits.Policies
-	rows   rows
-	now    func() time.Time
-	logger *slog.Logger
+	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
+	deployments *inference.Deployments
+	rows        rows
+	now         func() time.Time
+	logger      *slog.Logger
 }
 
-func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies,
+func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies,
+	deployments *inference.Deployments, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments,
 		rows: rows{teams: teams, users: users, limits: policies}, now: now, logger: logger}
 }
 
@@ -70,6 +74,8 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/key/unblock", keyManagement, h.unblockKey),
 		// 키는 sk-… 나 sha256 hex 라 / 가 없다
 		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
+		route(http.MethodPost, "/model/new", adminOnly, h.createModel),
+		route(http.MethodPost, "/model/delete", adminOnly, h.deleteModel),
 	}
 }
 
