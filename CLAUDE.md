@@ -51,3 +51,16 @@
 - 패키지는 기능별로 나눈다(`inference`, `auth`, `limits`, `admin`, `core`). `util`·`common` 에 모아 두지 않는다
 - 테스트는 내부 구현이 아니라 동작(결과)을 본다. 코루틴 테스트는 `runTest`, 업스트림·DB·시계는 가짜로 바꾼다
 - 컴파일러 경고는 0 으로 유지한다
+
+## 하네스(훅)
+
+개발 표준과 아키텍처는 문서만이 아니라 훅으로 강제한다(`.claude/settings.json`, `.claude/hooks/`).
+
+| 시점 | 훅 | 막는 것 |
+|---|---|---|
+| Edit·Write 직전 | `guard_edit.py` | 편집 결과 파일 전체를 검사한다. 모듈 의존 방향 위반, 다른 모듈 `internal` 참조, 설계에 없는 모듈·`util` 류 패키지, 패키지와 경로 불일치, `!!`, `GlobalScope`, 운영 코드의 `runBlocking`·`Thread.sleep`·`@Autowired`·JDBC, 취소를 삼키는 `catch (e: Exception)`, 외부 URL, 커밋된 Flyway 파일 수정, 마이그레이션의 행 쓰기 |
+| 작업 종료 | `verify_on_stop.py` | 소스가 바뀌었으면 컴파일(경고=오류)과 `ModuleStructureTest` 를 돌려 실패하면 끝내지 못하게 한다. 같은 상태는 다시 돌리지 않고, 연속 3번 막으면 사용자에게 넘긴다 |
+
+- 훅이 막으면 우회하지 않는다. 규칙이 틀렸다고 보이면 사용자에게 알리고 훅과 이 표를 함께 고친다
+- 훅을 고치면 `python3 .claude/hooks/test_guard_edit.py` 로 확인한다
+- 훅은 빠른 정적 검사다. 정확한 경계 검사는 Spring Modulith 테스트이고, CI 에서도 `./gradlew test` 를 돌린다

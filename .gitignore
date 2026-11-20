@@ -41,3 +41,7 @@ out/
 
 ### omc ###
 .omc/
+
+### Claude Code ###
+.claude/.cache/
+.claude/settings.local.json
