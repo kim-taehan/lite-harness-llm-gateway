@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"llm-gateway/internal/core"
 	"llm-gateway/internal/core/dbtest"
@@ -13,8 +14,9 @@ func TestMain(m *testing.M) { os.Exit(dbtest.Main(m)) }
 
 func newIdentity(t *testing.T) (*Teams, *Users) {
 	db, _ := dbtest.Open(t)
-	users := NewUsers(db)
-	return NewTeams(db, users), users
+	cache := NewKeyCache(time.Minute, time.Now)
+	users := NewUsers(db, cache)
+	return NewTeams(db, users, cache), users
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -116,10 +118,10 @@ func TestRemoveAndUpdateMember(t *testing.T) {
 	if members["t1"][0].Role != TeamRoleAdmin {
 		t.Errorf("역할이 바뀌지 않았다")
 	}
-	if _, err := teams.RemoveMember(ctx, "t1", ptr("u1"), nil); err != nil {
+	if _, err := teams.RemoveMember(ctx, "t1", ptr("u1"), nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := teams.RemoveMember(ctx, "t1", ptr("u1"), nil); !errors.Is(err, ErrNotMember) {
+	if _, err := teams.RemoveMember(ctx, "t1", ptr("u1"), nil, ""); !errors.Is(err, ErrNotMember) {
 		t.Errorf("두 번째 제거: %v", err)
 	}
 	if _, err := teams.UpdateMember(ctx, "nope", ptr("u1"), nil, nil); !errors.Is(err, ErrTeamNotFound) {
@@ -133,13 +135,13 @@ func TestDeleteTeams_AllOrNothing(t *testing.T) {
 	_, _ = teams.Create(ctx, NewTeam{TeamID: ptr("t1")}, "")
 
 	var notFound *NotFoundError
-	if err := teams.Delete(ctx, []string{"t1", "missing"}); !errors.As(err, &notFound) || notFound.ID != "missing" {
+	if err := teams.Delete(ctx, []string{"t1", "missing"}, ""); !errors.As(err, &notFound) || notFound.ID != "missing" {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := teams.Find(ctx, "t1"); err != nil {
 		t.Errorf("하나가 없는데 다른 팀이 지워졌다")
 	}
-	if err := teams.Delete(ctx, []string{"t1"}); err != nil {
+	if err := teams.Delete(ctx, []string{"t1"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := teams.Find(ctx, "t1"); !errors.Is(err, ErrTeamNotFound) {

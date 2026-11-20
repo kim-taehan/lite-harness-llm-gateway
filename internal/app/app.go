@@ -54,27 +54,41 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second}, nil
 }
 
+// keyCacheTTL 은 litellm 기본(60초)과 같다. 다른 인스턴스에서 바꾼 키는 이 시간 안에 반영된다(설계 3.2)
+const keyCacheTTL = 60 * time.Second
+
+// modules 는 조립한 모듈이다. 한 번 만들어 권한 검사와 라우트가 함께 쓴다
+type modules struct {
+	authenticator *auth.Authenticator
+	routes        []core.Route
+}
+
+func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) modules {
+	cache := auth.NewKeyCache(keyCacheTTL, time.Now)
+	users := auth.NewUsers(db, cache)
+	teams := auth.NewTeams(db, users, cache)
+	keys := auth.NewKeys(db, cache)
+	policies := limits.NewPolicies(db, time.Now)
+	return modules{
+		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
+		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
+		routes: slices.Concat(
+			core.HealthRoutes(lifecycle),
+			admin.NewHandlers(db, teams, users, keys, policies, time.Now, logger).Routes(),
+		),
+	}
+}
+
 // Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다
 func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) http.Handler {
-	authenticator := auth.NewAuthenticator(cfg.MasterKey)
+	m := assemble(cfg, lifecycle, db, logger)
 	mux := http.NewServeMux()
-	for _, route := range routes(lifecycle, db, logger) {
-		mux.Handle(route.Pattern(), authenticator.Guard(route))
+	for _, route := range m.routes {
+		mux.Handle(route.Pattern(), m.authenticator.Guard(route))
 	}
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { core.WriteRouteNotFound(w) })
 	return mux
-}
-
-// routes 는 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
-func routes(lifecycle *core.Lifecycle, db *core.DB, logger *slog.Logger) []core.Route {
-	users := auth.NewUsers(db)
-	teams := auth.NewTeams(db, users)
-	policies := limits.NewPolicies(db, time.Now)
-	return slices.Concat(
-		core.HealthRoutes(lifecycle),
-		admin.NewHandlers(db, teams, users, policies, logger).Routes(),
-	)
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다

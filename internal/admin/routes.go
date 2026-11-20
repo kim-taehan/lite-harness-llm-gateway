@@ -3,6 +3,7 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
@@ -14,20 +15,26 @@ type Handlers struct {
 	db     *core.DB
 	teams  *auth.Teams
 	users  *auth.Users
+	keys   *auth.Keys
 	limits *limits.Policies
 	rows   rows
+	now    func() time.Time
 	logger *slog.Logger
 }
 
-func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, policies *limits.Policies, logger *slog.Logger) *Handlers {
-	return &Handlers{db: db, teams: teams, users: users, limits: policies, rows: rows{teams: teams, users: users, limits: policies}, logger: logger}
+func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies,
+		rows: rows{teams: teams, users: users, limits: policies}, now: now, logger: logger}
 }
 
-// M1 에는 마스터 키(proxy_admin)만 있다. 쓰기는 proxy_admin, 읽기는 proxy_admin 과 proxy_admin_viewer 로 선언한다.
-// 팀 admin 셀프 관리 같은 비관리자 경로는 키가 생기는 M2 에서 litellm 규칙(H 2.4)대로 넓힌다
+// 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.
+// proxy_admin 은 모두 통과하고, proxy_admin_viewer 의 쓰기는 auth.Guard 가 403 으로 막는다.
+// Authenticated 는 인증만 되면 라우트 단계를 통과하고 권한은 핸들러가 판정한다(litellm 의 info·self_managed 라우트)
 var (
-	write = core.Roles(core.RoleProxyAdmin)
-	read  = core.Roles(core.RoleProxyAdmin, core.RoleProxyAdminViewer)
+	adminOnly     = core.Roles(core.RoleProxyAdmin)
+	keyManagement = core.Roles(core.RoleInternalUser)
+	keyAliases    = core.Roles(core.RoleProxyAdminViewer, core.RoleInternalUser)
+	handlerDecide = core.Authenticated()
 )
 
 // Routes 는 관리 API 라우트 전부다. 새 엔드포인트는 여기에 한 줄을 더한다
@@ -36,23 +43,33 @@ func (h *Handlers) Routes() []core.Route {
 		return core.Route{Method: method, Path: path, Access: access, Handler: handler}
 	}
 	return []core.Route{
-		route(http.MethodPost, "/team/new", write, h.createTeam),
-		route(http.MethodPost, "/team/update", write, h.updateTeam),
-		route(http.MethodPost, "/team/delete", write, h.deleteTeams),
-		route(http.MethodPost, "/team/block", write, h.blockTeam),
-		route(http.MethodPost, "/team/unblock", write, h.unblockTeam),
-		route(http.MethodPost, "/team/member_add", write, h.addMember),
-		route(http.MethodPost, "/team/member_delete", write, h.deleteMember),
-		route(http.MethodPost, "/team/member_update", write, h.updateMember),
-		route(http.MethodGet, "/team/info", read, h.teamInfo),
-		route(http.MethodGet, "/team/list", read, h.listTeamsV1),
-		route(http.MethodGet, "/v2/team/list", read, h.listTeamsV2),
-		route(http.MethodPost, "/user/new", write, h.createUser),
-		route(http.MethodPost, "/user/update", write, h.updateUser),
-		route(http.MethodPost, "/user/delete", write, h.deleteUsers),
-		route(http.MethodGet, "/user/info", read, h.userInfo),
-		route(http.MethodGet, "/v2/user/info", read, h.userInfoV2),
-		route(http.MethodGet, "/user/list", read, h.listUsers),
+		route(http.MethodPost, "/team/new", adminOnly, h.createTeam),
+		route(http.MethodPost, "/team/update", handlerDecide, h.updateTeam),
+		route(http.MethodPost, "/team/delete", adminOnly, h.deleteTeams),
+		route(http.MethodPost, "/team/block", adminOnly, h.blockTeam),
+		route(http.MethodPost, "/team/unblock", adminOnly, h.unblockTeam),
+		route(http.MethodPost, "/team/member_add", handlerDecide, h.addMember),
+		route(http.MethodPost, "/team/member_delete", handlerDecide, h.deleteMember),
+		route(http.MethodPost, "/team/member_update", handlerDecide, h.updateMember),
+		route(http.MethodGet, "/team/info", handlerDecide, h.teamInfo),
+		route(http.MethodGet, "/team/list", handlerDecide, h.listTeamsV1),
+		route(http.MethodGet, "/v2/team/list", handlerDecide, h.listTeamsV2),
+		route(http.MethodPost, "/user/new", adminOnly, h.createUser),
+		route(http.MethodPost, "/user/update", adminOnly, h.updateUser),
+		route(http.MethodPost, "/user/delete", adminOnly, h.deleteUsers),
+		route(http.MethodGet, "/user/info", handlerDecide, h.userInfo),
+		route(http.MethodGet, "/v2/user/info", handlerDecide, h.userInfoV2),
+		route(http.MethodGet, "/user/list", handlerDecide, h.listUsers),
+		route(http.MethodPost, "/key/generate", keyManagement, h.generateKey),
+		route(http.MethodPost, "/key/update", keyManagement, h.updateKey),
+		route(http.MethodPost, "/key/delete", keyManagement, h.deleteKeys),
+		route(http.MethodGet, "/key/info", handlerDecide, h.keyInfo),
+		route(http.MethodGet, "/key/list", handlerDecide, h.listKeys),
+		route(http.MethodGet, "/key/aliases", keyAliases, h.keyAliases),
+		route(http.MethodPost, "/key/block", keyManagement, h.blockKey),
+		route(http.MethodPost, "/key/unblock", keyManagement, h.unblockKey),
+		// 키는 sk-… 나 sha256 hex 라 / 가 없다
+		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
 	}
 }
 

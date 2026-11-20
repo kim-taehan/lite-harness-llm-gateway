@@ -1,0 +1,774 @@
+package admin
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"llm-gateway/internal/auth"
+	"llm-gateway/internal/core"
+	"llm-gateway/internal/limits"
+)
+
+// litellm 가상 키 관리 API(docs/litellm-inventory/J_key_contract.md 3장).
+// regenerate 는 litellm 에서도 유료 기능이고 유예 기간 표가 필요해 뒤 단계로 미룬다(설계 12장 M5)
+
+// 팀 일반 멤버(role=user)가 기본으로 부를 수 있는 키 라우트(litellm TMP:18-23)
+var defaultTeamMemberKeyRoutes = []string{"/key/info", "/key/health"}
+
+func teamMemberPermissionError(route, teamID string) core.ProxyError {
+	return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: route,
+		Message: fmt.Sprintf("Team member does not have permissions for endpoint: %s. You only have access to the following endpoints: %s for team %s. "+
+			"To create keys for this team, ask a team admin to grant you access.", route, pyList(defaultTeamMemberKeyRoutes), teamID)}
+}
+
+func pyList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = pyString(s)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// plainProxyError 는 detail 이 문자열인 HTTPException 을 litellm 이 감싼 모양이다(message 에 repr 이 없다)
+func plainProxyError(status int, message string) core.ProxyError {
+	return core.ProxyError{Status: status, Message: message, Type: "internal_server_error"}
+}
+
+func aliasTakenError(alias string) core.ProxyError {
+	return core.ProxyError{Status: 400, Type: "bad_request_error", Param: "key_alias",
+		Message: "Key with alias '" + alias + "' already exists. Unique key aliases across all keys are required."}
+}
+
+type keyFields struct {
+	KeyAlias      core.Change[string]         `json:"key_alias"`
+	Duration      core.Change[string]         `json:"duration"`
+	Models        core.Change[[]string]       `json:"models"`
+	UserID        core.Change[string]         `json:"user_id"`
+	TeamID        core.Change[string]         `json:"team_id"`
+	Metadata      core.Change[map[string]any] `json:"metadata"`
+	Blocked       core.Change[bool]           `json:"blocked"`
+	KeyType       *string                     `json:"key_type"`
+	AllowedRoutes []string                    `json:"allowed_routes"`
+	limitFields
+}
+
+func (h *Handlers) generateKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Key *string `json:"key"`
+		keyFields
+	}
+	if _, ok := requestBody(w, r, &req); !ok {
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	teamID := nonEmpty(req.TeamID.Value) // litellm: team_id "" 는 null
+	userID := req.UserID.Value
+	if !p.IsAdmin() {
+		if denial, denied := h.checkKeyGeneration(ctx, p, req.keyFields, teamID, &userID); denied {
+			denial.Write(w)
+			return
+		}
+	}
+	input := auth.NewKey{Key: req.Key, KeyAlias: nonEmpty(req.KeyAlias.Value), UserID: userID, TeamID: teamID,
+		Models: req.Models.Or(nil), Metadata: req.Metadata.Or(nil), KeyType: derefOr(req.KeyType, "default"),
+		AllowedRoutes: req.AllowedRoutes, Blocked: req.Blocked.Value, CreatedBy: p.UserID}
+	if d := req.Duration.Value; d != nil && *d != "" {
+		expires, err := expiresAfter(*d, h.now().UTC())
+		if err != nil {
+			plainProxyError(500, err.Error()).Write(w)
+			return
+		}
+		input.Expires = &expires
+	}
+
+	var plain string
+	var key auth.Key
+	err := h.db.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if plain, key, err = h.keys.Generate(ctx, input); err != nil {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, key.Token, req.patch())
+		return err
+	})
+	var invalid *limits.InvalidError
+	var badKey *auth.InvalidCustomKeyError
+	switch {
+	case err == nil:
+		kr, err := h.rows.keyRowOf(ctx, key)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		// 원문은 이 응답에서만 한 번 나간다. token·token_id 는 해시다(litellm 과 같다)
+		kr["key"] = plain
+		kr["token_id"] = key.Token
+		core.WriteJSON(w, http.StatusOK, kr)
+	case errors.As(err, &invalid):
+		proxyError(400, invalid.Message).Write(w)
+	case errors.As(err, &badKey):
+		proxyError(400, badKey.Message).Write(w)
+	case errors.Is(err, auth.ErrKeyAliasTaken):
+		aliasTakenError(*input.KeyAlias).Write(w)
+	case errors.Is(err, auth.ErrTeamNotFound):
+		plainProxyError(400, "Unable to find team object in database. Team ID: "+derefOr(teamID, "")).Write(w)
+	default:
+		h.internalError(w, r, err)
+	}
+}
+
+// checkKeyGeneration 은 비관리자의 키 생성 권한이다(J 3.1). userID 를 기본값(호출자)으로 채운다
+func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req keyFields, teamID *string, userID **string) (core.ProxyError, bool) {
+	if len(req.AllowedRoutes) > 0 || (req.KeyType != nil && *req.KeyType == "management") {
+		return plainProxyError(403, pyDict("error", "Only proxy admins can set `allowed_routes` on a key. Use `key_type` to pick a preset route bucket instead.")), true
+	}
+	if *userID == nil {
+		self := p.UserID
+		*userID = &self
+	}
+	if teamID == nil {
+		if **userID != p.UserID {
+			return plainProxyError(403, fmt.Sprintf("User can only create keys for themselves. Got user_id=%s, Your ID=%s", **userID, p.UserID)), true
+		}
+		return core.ProxyError{}, false
+	}
+	if _, err := h.teams.Find(ctx, *teamID); errors.Is(err, auth.ErrTeamNotFound) {
+		return plainProxyError(400, "Team not found for team_id="+*teamID+". Non-admin users cannot create keys for non-existent teams."), true
+	}
+	role, member, err := h.teamRole(ctx, *teamID, p.UserID)
+	if err != nil {
+		return plainProxyError(500, "Internal Server Error"), true
+	}
+	if !member {
+		return plainProxyError(400, "User="+p.UserID+" not assigned to team="+*teamID), true
+	}
+	if role != auth.TeamRoleAdmin {
+		return teamMemberPermissionError("/key/generate", *teamID), true
+	}
+	if **userID != p.UserID {
+		if _, isMember, _ := h.teamRole(ctx, *teamID, **userID); !isMember {
+			return plainProxyError(400, "User="+**userID+" not assigned to team="+*teamID), true
+		}
+	}
+	return core.ProxyError{}, false
+}
+
+func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Key *string `json:"key"`
+		keyFields
+	}
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if req.Key == nil && req.KeyAlias.Value == nil {
+		validationError{{Type: "value_error", Loc: []any{"body"}, Msg: "Value error, Either 'key' or 'key_alias' must be provided", Input: raw}}.write(w)
+		return
+	}
+	// /key/update 는 litellm 에서 auth_error·"None" 으로 감싼다(KM:4069-4088)
+	authStyle := func(status int, message string) core.ProxyError {
+		return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	key, err := h.keyTarget(ctx, req.Key, req.KeyAlias.Value)
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		message, param := "Key not found.", "key"
+		if req.Key == nil {
+			message, param = "Key not found. No key with key_alias='"+*req.KeyAlias.Value+"'.", "key_alias"
+		}
+		core.ProxyError{Status: 404, Message: message, Type: "not_found_error", Param: param}.Write(w)
+		return
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	if !p.IsAdmin() {
+		if denial, denied := h.checkKeyUpdate(ctx, p, key, req.keyFields); denied {
+			denial.Write(w)
+			return
+		}
+	}
+	patch := auth.KeyPatch{KeyAlias: req.KeyAlias, UserID: req.UserID, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked, UpdatedBy: p.UserID}
+	if req.Key == nil {
+		patch.KeyAlias = core.Change[string]{} // alias 로 찾았으면 그 alias 는 바꾸는 값이 아니다
+	}
+	// litellm: team_id "" 는 보내지 않은 것으로 본다
+	if req.TeamID.Set && (req.TeamID.Value == nil || *req.TeamID.Value != "") {
+		patch.TeamID = req.TeamID
+	}
+	// litellm: duration null 이나 "-1" 은 만료 해제, "" 는 무시, 값이 있으면 지금부터
+	if req.Duration.Set {
+		switch d := req.Duration.Value; {
+		case d == nil || *d == "-1":
+			patch.Expires = core.Change[time.Time]{Set: true}
+		case *d != "":
+			expires, err := expiresAfter(*d, h.now().UTC())
+			if err != nil {
+				authStyle(400, "Authentication Error, "+err.Error()).Write(w)
+				return
+			}
+			patch.Expires = core.To(expires)
+		}
+	}
+
+	var updated auth.Key
+	err = h.db.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if updated, err = h.keys.Update(ctx, key.Token, patch); err != nil {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, key.Token, req.patch())
+		return err
+	})
+	var invalid *limits.InvalidError
+	switch {
+	case err == nil:
+		kr, err := h.rows.keyRowOf(ctx, updated)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		kr["key"] = derefOr(req.Key, key.Token)
+		core.WriteJSON(w, http.StatusOK, kr)
+	case errors.As(err, &invalid):
+		authStyle(400, pyDict("error", invalid.Message)).Write(w)
+	case errors.Is(err, auth.ErrKeyAliasTaken):
+		aliasTakenError(*req.KeyAlias.Value).Write(w)
+	case errors.Is(err, auth.ErrTeamNotFound):
+		authStyle(400, "Team not found for team_id="+derefOr(req.TeamID.Value, "")+". Non-admin users cannot set keys to non-existent teams.").Write(w)
+	default:
+		h.internalError(w, r, err)
+	}
+}
+
+func (h *Handlers) keyTarget(ctx context.Context, key, alias *string) (auth.Key, error) {
+	if key != nil {
+		return h.keys.Find(ctx, auth.TokenOf(*key))
+	}
+	return h.keys.FindByAlias(ctx, *alias)
+}
+
+// checkKeyUpdate 는 비관리자의 키 수정 권한이다(J 3.3): 팀 키는 팀 admin, 개인 키는 작성자이자 소유자만. 예산 변경은 admin 만
+func (h *Handlers) checkKeyUpdate(ctx context.Context, p auth.Principal, key auth.Key, req keyFields) (core.ProxyError, bool) {
+	authStyle := func(status int, message string) core.ProxyError {
+		return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
+	}
+	if req.UserID.Set {
+		switch v := req.UserID.Value; {
+		case v == nil:
+			return authStyle(403, "Non-admin users cannot remove the user_id from a key."), true
+		case key.UserID == nil || *v != *key.UserID:
+			return authStyle(403, fmt.Sprintf("Non-admin caller is not allowed to rebind the key from user=%s to user=%s", derefOr(key.UserID, "None"), *v)), true
+		}
+	}
+	adminDenied := authStyle(403, pyDict("error", fmt.Sprintf("Only proxy admins, team admins, or org admins can call /key/update. user_role=%s, user_id=%s", p.Role, p.UserID)))
+	if key.TeamID != nil {
+		role, member, err := h.teamRole(ctx, *key.TeamID, p.UserID)
+		if err != nil {
+			return plainProxyError(500, "Internal Server Error"), true
+		}
+		if !member {
+			return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: "/key/update",
+				Message: fmt.Sprintf("User %s does not belong to team %s. Team-scoped key management endpoints can only be used for keys in your own team.", p.UserID, *key.TeamID)}, true
+		}
+		if role != auth.TeamRoleAdmin {
+			return teamMemberPermissionError("/key/update", *key.TeamID), true
+		}
+		return core.ProxyError{}, false
+	}
+	creator := key.CreatedBy != nil && key.UserID != nil && *key.CreatedBy == p.UserID && *key.UserID == p.UserID
+	budgetChange := req.MaxBudget.Set || req.SoftBudget.Set
+	if !creator || budgetChange {
+		return adminDenied, true
+	}
+	return core.ProxyError{}, false
+}
+
+func (h *Handlers) deleteKeys(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Keys       []string `json:"keys"`
+		KeyAliases []string `json:"key_aliases"`
+	}
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if len(req.Keys) == 0 && len(req.KeyAliases) == 0 {
+		validationError{{Type: "value_error", Loc: []any{"body"}, Msg: "Value error, At least one of 'keys' or 'key_aliases' must be provided.", Input: raw}}.write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	found, err := h.deleteTargets(ctx, req.Keys, req.KeyAliases)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	if len(found) == 0 {
+		proxyError(404, "No keys found").Write(w)
+		return
+	}
+	for _, k := range found {
+		allowed, err := h.canModifyKey(ctx, p, k)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if !allowed {
+			proxyError(403, "You are not authorized to delete this key").Write(w)
+			return
+		}
+	}
+	tokens := make([]string, len(found))
+	for i, k := range found {
+		tokens[i] = k.Token
+	}
+	err = h.db.InTx(ctx, func(ctx context.Context) error {
+		if _, err := h.keys.Delete(ctx, tokens, p.UserID); err != nil {
+			return err
+		}
+		return h.limits.Delete(ctx, limits.ScopeKey, tokens)
+	})
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	// litellm 은 일부만 찾았어도 요청 목록을 그대로 돌려준다(J 3.4)
+	deleted := req.Keys
+	if len(deleted) == 0 {
+		deleted = req.KeyAliases
+	}
+	core.WriteJSON(w, http.StatusOK, row{"deleted_keys": deleted})
+}
+
+func (h *Handlers) deleteTargets(ctx context.Context, keys, aliases []string) ([]auth.Key, error) {
+	tokens := make([]string, len(keys))
+	for i, k := range keys {
+		tokens[i] = auth.TokenOf(k)
+	}
+	found, err := h.keys.FindAll(ctx, tokens)
+	if err != nil {
+		return nil, err
+	}
+	for _, alias := range aliases {
+		k, err := h.keys.FindByAlias(ctx, alias)
+		if errors.Is(err, auth.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, k)
+	}
+	return found, nil
+}
+
+// canModifyKey 는 litellm can_modify_verification_token 이다: proxy_admin, 팀 키면 팀 admin 이나 소유자, 개인 키면 소유자
+func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Key) (bool, error) {
+	if p.IsAdmin() {
+		return true, nil
+	}
+	if k.UserID != nil && *k.UserID == p.UserID && p.UserID != "" {
+		return true, nil
+	}
+	if k.TeamID != nil {
+		return h.isTeamAdmin(ctx, p, *k.TeamID)
+	}
+	return false, nil
+}
+
+func (h *Handlers) keyInfo(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	p := principal(ctx)
+	query := r.URL.Query().Get("key")
+	token := auth.TokenOf(query)
+	if query == "" {
+		token = p.KeyToken // 없으면 호출자 자신의 키
+	}
+	notFound := core.ProxyError{Status: 404, Message: "Key not found in database", Type: "not_found_error", Param: "key"}
+	key, err := h.keys.Find(ctx, token)
+	var info row
+	switch {
+	case err == nil:
+		allowed, err := h.canViewKey(ctx, p, key)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if !allowed {
+			plainProxyError(403, "You are not allowed to access this key's info. Your role="+string(p.Role)).Write(w)
+			return
+		}
+		if info, err = h.rows.keyRowOf(ctx, key); err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		info["status"] = keyStatus(key, h.now().UTC())
+	case errors.Is(err, auth.ErrKeyNotFound):
+		// litellm: 지운 키는 사본을 status=deleted 로 200 응답한다
+		deleted, err := h.keys.FindDeleted(ctx, token)
+		if errors.Is(err, auth.ErrKeyNotFound) || token == "" {
+			notFound.Write(w)
+			return
+		}
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if allowed, err := h.canViewKey(ctx, p, deleted.Key); err != nil || !allowed {
+			notFound.Write(w)
+			return
+		}
+		info = keyRow(deleted.Key, limits.Policy{})
+		info["status"] = "deleted"
+		info["deleted_at"] = deleted.DeletedAt.UTC()
+		info["deleted_by"] = deleted.DeletedBy
+	default:
+		h.internalError(w, r, err)
+		return
+	}
+	delete(info, "token") // litellm /key/info 는 token 을 뺀다
+	core.WriteJSON(w, http.StatusOK, row{"key": query, "info": info})
+}
+
+// canViewKey 는 litellm _can_user_query_key_info 다: admin·viewer, 호출 키 자신, 키 소유자, 키 팀의 멤버
+func (h *Handlers) canViewKey(ctx context.Context, p auth.Principal, k auth.Key) (bool, error) {
+	if p.CanViewAll() || k.Token == p.KeyToken || (k.UserID != nil && p.UserID != "" && *k.UserID == p.UserID) {
+		return true, nil
+	}
+	if k.TeamID == nil {
+		return false, nil
+	}
+	_, member, err := h.teamRole(ctx, *k.TeamID, p.UserID)
+	return member, err
+}
+
+var keySortColumns = []string{"spend", "max_budget", "created_at", "updated_at", "token", "key_alias"}
+
+func (h *Handlers) listKeys(w http.ResponseWriter, r *http.Request) {
+	var errs validationError
+	page := queryInt(r, "page", 1, 1, 0, &errs)
+	size := queryInt(r, "size", 10, 1, 100, &errs)
+	if len(errs) > 0 {
+		errs.write(w)
+		return
+	}
+	q := r.URL.Query()
+	status := q.Get("status")
+	if status != "" && !slices.Contains([]string{"active", "expired", "revoked", "deleted"}, status) {
+		proxyError(400, "Invalid status value. Supported: 'active', 'expired', 'revoked', 'deleted'.").Write(w)
+		return
+	}
+	sortBy := q.Get("sort_by")
+	if sortBy != "" && !slices.Contains(keySortColumns, sortBy) {
+		proxyError(400, "Invalid sort_by value. Supported: "+strings.Join(keySortColumns, ", ")+".").Write(w)
+		return
+	}
+	order := auth.SortDesc
+	switch q.Get("sort_order") {
+	case "", "desc":
+	case "asc":
+		order = auth.SortAsc
+	default:
+		proxyError(400, "Invalid sort_order value. Supported: 'asc', 'desc'.").Write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	substring := q.Get("substring_matching") == "true"
+	query := auth.KeyQuery{TeamID: queryString(r, "team_id"), KeyHash: queryString(r, "key_hash"), KeyAlias: queryString(r, "key_alias"),
+		AliasContains: substring, Search: queryString(r, "search"), Status: status, SortBy: sortBy, SortOrder: order,
+		Page: page, PageSize: size, Now: h.now().UTC()}
+	if p.CanViewAll() {
+		query.UserID, query.UserIDContains = queryString(r, "user_id"), substring
+	} else if denial, denied := h.restrictKeyList(ctx, p, r, &query); denied {
+		denial.Write(w)
+		return
+	}
+	if status == "deleted" {
+		h.writeDeletedKeys(w, r, query)
+		return
+	}
+	result, err := h.keys.Page(ctx, query)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	keys, err := h.listedKeys(ctx, result.Items, q.Get("return_full_object") == "true" || q.Get("expand") == "user", q.Get("expand") == "user")
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, row{"keys": keys, "total_count": result.Total, "current_page": page, "total_pages": totalPages(result.Total, size)})
+}
+
+// restrictKeyList 는 비관리자가 볼 수 있는 키로 좁힌다(J 3.6 가시성)
+func (h *Handlers) restrictKeyList(ctx context.Context, p auth.Principal, r *http.Request, q *auth.KeyQuery) (core.ProxyError, bool) {
+	if p.UserID == "" {
+		return core.ProxyError{Status: 403, Type: "bad_request_error", Param: "user_id",
+			Message: "You are not authorized to access this endpoint. No 'user_id' is associated with your API key."}, true
+	}
+	if uid := queryString(r, "user_id"); uid != nil && *uid != p.UserID {
+		return core.ProxyError{Status: 403, Type: "internal_server_error", Param: "None", Message: "You are not authorized to check another user's keys"}, true
+	}
+	memberTeams, adminTeams, err := h.teamsOf(ctx, p.UserID)
+	if err != nil {
+		return plainProxyError(500, "Internal Server Error"), true
+	}
+	if q.TeamID != nil && !slices.Contains(memberTeams, *q.TeamID) {
+		return core.ProxyError{Status: 403, Type: "internal_server_error", Param: "None", Message: "You are not authorized to check this team's keys"}, true
+	}
+	query := r.URL.Query()
+	q.Visible = &auth.KeyVisibility{UserID: p.UserID, CreatedBy: query.Get("include_created_by_keys") == "true",
+		MemberTeams: memberTeams, AdminTeams: adminTeams, IncludeTeams: query.Get("include_team_keys") == "true"}
+	return core.ProxyError{}, false
+}
+
+// listedKeys 는 /key/list 원소다. full 이 아니면 litellm 처럼 해시 문자열 배열이다
+func (h *Handlers) listedKeys(ctx context.Context, keys []auth.Key, full, expandUser bool) ([]any, error) {
+	result := make([]any, len(keys))
+	if !full {
+		for i, k := range keys {
+			result[i] = k.Token
+		}
+		return result, nil
+	}
+	rows, err := h.rows.keyRows(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	users := map[string]row{}
+	if expandUser {
+		if users, err = h.ownerRows(ctx, keys); err != nil {
+			return nil, err
+		}
+	}
+	for i, kr := range rows {
+		// /key/list 원소는 litellm UserAPIKeyAuth 직렬화라 조직이 org_id 로 나가고 팀 정보 칸이 더 붙는다(J 2.3)
+		delete(kr, "organization_id")
+		kr["org_id"] = nil
+		kr["team_alias"], kr["team_models"], kr["team_blocked"], kr["api_key"], kr["user_role"] = nil, []string{}, false, nil, nil
+		if expandUser {
+			k := keys[i]
+			kr["user"] = users[derefOr(k.UserID, "")]
+			if creator, ok := users[derefOr(k.CreatedBy, "")]; ok {
+				kr["created_by_user"] = row{"user_id": creator["user_id"], "user_email": creator["user_email"], "user_alias": creator["user_alias"]}
+			} else {
+				kr["created_by_user"] = nil
+			}
+		}
+		result[i] = kr
+	}
+	return result, nil
+}
+
+func (h *Handlers) ownerRows(ctx context.Context, keys []auth.Key) (map[string]row, error) {
+	var ids []string
+	for _, k := range keys {
+		for _, id := range []*string{k.UserID, k.CreatedBy} {
+			if id != nil && !slices.Contains(ids, *id) {
+				ids = append(ids, *id)
+			}
+		}
+	}
+	users, err := h.users.FindAll(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	userRows, err := h.rows.userRows(ctx, users)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]row{}
+	for i, u := range users {
+		result[u.UserID] = userRows[i]
+	}
+	return result, nil
+}
+
+func (h *Handlers) writeDeletedKeys(w http.ResponseWriter, r *http.Request, q auth.KeyQuery) {
+	result, err := h.keys.PageDeleted(r.Context(), q)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	keys := make([]any, len(result.Items))
+	for i, d := range result.Items {
+		kr := keyRow(d.Key, limits.Policy{})
+		kr["deleted_at"] = d.DeletedAt.UTC()
+		kr["deleted_by"] = d.DeletedBy
+		keys[i] = kr
+	}
+	core.WriteJSON(w, http.StatusOK, row{"keys": keys, "total_count": result.Total, "current_page": q.Page, "total_pages": totalPages(result.Total, q.PageSize)})
+}
+
+func (h *Handlers) keyAliases(w http.ResponseWriter, r *http.Request) {
+	var errs validationError
+	page := queryInt(r, "page", 1, 1, 0, &errs)
+	size := queryInt(r, "size", 50, 1, 100, &errs)
+	if len(errs) > 0 {
+		errs.write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	var visible *auth.KeyVisibility
+	if !p.CanViewAll() {
+		memberTeams, _, err := h.teamsOf(ctx, p.UserID)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		visible = &auth.KeyVisibility{UserID: p.UserID, MemberTeams: memberTeams}
+	}
+	result, err := h.keys.Aliases(ctx, visible, queryString(r, "search"), queryString(r, "team_id"), page, size)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, row{"aliases": nonNil(result.Items), "total_count": result.Total, "current_page": page,
+		"total_pages": totalPages(result.Total, size), "size": size})
+}
+
+func (h *Handlers) blockKey(w http.ResponseWriter, r *http.Request)   { h.setKeyBlocked(w, r, true) }
+func (h *Handlers) unblockKey(w http.ResponseWriter, r *http.Request) { h.setKeyBlocked(w, r, false) }
+
+// setKeyBlocked 는 litellm 처럼 권한을 존재 확인보다 먼저 본다(J 3.8). 개인 키는 소유자도 막을 수 없다
+func (h *Handlers) setKeyBlocked(w http.ResponseWriter, r *http.Request, blocked bool) {
+	var req struct {
+		Key *string `json:"key"`
+	}
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if req.Key == nil {
+		validationError{missing(raw, "key")}.write(w)
+		return
+	}
+	if !validKeyFormat(*req.Key) {
+		core.ProxyError{Status: 400, Message: "Invalid key format.", Type: "bad_request_error", Param: "key"}.Write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	token := auth.TokenOf(*req.Key)
+	route := "/key/block"
+	if !blocked {
+		route = "/key/unblock"
+	}
+	key, err := h.keys.Find(ctx, token)
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		if p.IsAdmin() {
+			core.ProxyError{Status: 404, Message: "Key not found.", Type: "not_found_error", Param: "key"}.Write(w)
+		} else {
+			detailError(404, "Key not found: "+token).Write(w)
+		}
+		return
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	allowed := p.IsAdmin()
+	if !allowed && key.TeamID != nil {
+		if allowed, err = h.isTeamAdmin(ctx, p, *key.TeamID); err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+	}
+	if !allowed {
+		detailError(403, fmt.Sprintf("Only proxy admins, team admins, or org admins can call %s. user_role=%s, user_id=%s", route, p.Role, p.UserID)).Write(w)
+		return
+	}
+	updated, err := h.keys.SetBlocked(ctx, token, blocked, p.UserID)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	kr, err := h.rows.keyRowOf(ctx, updated)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, kr)
+}
+
+// resetKeySpend 는 litellm 처럼 값 검증을 권한 검사보다 먼저 한다. 오류는 (B) 모양이다(J 3.10)
+func (h *Handlers) resetKeySpend(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ResetTo *float64 `json:"reset_to"`
+	}
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if req.ResetTo == nil {
+		validationError{missing(raw, "reset_to")}.write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	input := r.PathValue("key")
+	key, err := h.keys.Find(ctx, auth.TokenOf(input))
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		detailError(404, "Key "+input+" not found.").Write(w)
+		return
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	policies, err := h.limits.Find(ctx, limits.ScopeKey, []string{key.Token})
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	policy := policies[key.Token]
+	resetTo := *req.ResetTo
+	switch {
+	case resetTo < 0:
+		detailError(400, "reset_to must be >= 0").Write(w)
+		return
+	case resetTo > policy.Spend:
+		detailError(400, fmt.Sprintf("reset_to (%v) must be <= current spend (%v)", resetTo, policy.Spend)).Write(w)
+		return
+	case policy.MaxBudget != nil && resetTo > *policy.MaxBudget:
+		detailError(400, fmt.Sprintf("reset_to (%v) must be <= budget (%v)", resetTo, *policy.MaxBudget)).Write(w)
+		return
+	}
+	allowed := p.IsAdmin()
+	if !allowed && key.TeamID != nil {
+		if allowed, err = h.isTeamAdmin(ctx, p, *key.TeamID); err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+	}
+	if !allowed {
+		detailError(403, "You must be a proxy admin or team admin to reset key spend").Write(w)
+		return
+	}
+	previous, err := h.limits.SetSpend(ctx, limits.ScopeKey, key.Token, resetTo)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, row{"key_hash": key.Token, "spend": resetTo, "previous_spend": previous,
+		"max_budget": policy.MaxBudget, "budget_reset_at": utc(policy.BudgetResetAt)})
+}
+
+func nonEmpty(s *string) *string {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return s
+}

@@ -23,6 +23,8 @@ func AuthError(reason string) ProxyError {
 	return ProxyError{Status: http.StatusUnauthorized, Message: "Authentication Error, " + reason, Type: "auth_error", Param: "None"}
 }
 
+func (e ProxyError) Error() string { return e.Message }
+
 func (e ProxyError) Write(w http.ResponseWriter) {
 	WriteJSON(w, e.Status, map[string]any{"error": map[string]any{
 		"message": e.Message,

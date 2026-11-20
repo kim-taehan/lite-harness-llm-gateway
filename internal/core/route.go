@@ -18,21 +18,27 @@ const (
 	RoleTeam               Role = "team"
 )
 
-// Access 는 라우트를 부를 수 있는 사람이다. 공개이거나 허용 역할 목록이다
+// Access 는 라우트를 부를 수 있는 사람이다. 공개, 인증만 되면 누구나(핸들러가 판정), 허용 역할 목록 중 하나다
 type Access struct {
-	public bool
-	roles  []Role
+	public        bool
+	authenticated bool
+	roles         []Role
 }
 
 // Public 은 인증 없이 여는 라우트다(헬스 프로브처럼 litellm 도 여는 것만)
 func Public() Access { return Access{public: true} }
+
+// Authenticated 는 인증만 되면 라우트 단계는 통과하고 권한은 핸들러가 판정하는 라우트다
+// (litellm 의 info_routes·self_managed_routes. 예: /key/info 는 소유자·팀원이면 본다)
+func Authenticated() Access { return Access{authenticated: true} }
 
 // Roles 는 나열한 역할만 부를 수 있는 라우트다
 func Roles(roles ...Role) Access { return Access{roles: roles} }
 
 func (a Access) IsPublic() bool { return a.public }
 
-func (a Access) Allows(role Role) bool { return slices.Contains(a.roles, role) }
+// Allows 는 라우트 단계에서 이 역할을 들여보내는지다. 역할을 모르는 키(사용자 행 없음)는 빈 문자열이다
+func (a Access) Allows(role Role) bool { return a.authenticated || slices.Contains(a.roles, role) }
 
 // Route 는 경로·핸들러·권한을 한 곳에 묶는다. 둘을 따로 선언하면 어긋나기 때문이다.
 // 모듈은 라우트를 이 모양으로만 내놓고, 앱이 auth 의 권한 검사로 감싸 등록한다.

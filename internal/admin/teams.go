@@ -164,9 +164,10 @@ func (h *Handlers) deleteTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := unique(req.TeamIDs)
-	// 팀과 그 팀의 한도를 함께 지운다
+	principal, _ := auth.PrincipalFrom(r.Context())
+	// 팀과 그 팀의 한도를 함께 지운다(팀 키는 auth 가 사본으로 옮긴다)
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
-		if err := h.teams.Delete(ctx, ids); err != nil {
+		if err := h.teams.Delete(ctx, ids, principal.UserID); err != nil {
 			return err
 		}
 		return h.limits.Delete(ctx, limits.ScopeTeam, ids)
@@ -316,7 +317,8 @@ func (h *Handlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 		errs.write(w)
 		return
 	}
-	team, err := h.teams.RemoveMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail)
+	principal, _ := auth.PrincipalFrom(r.Context())
+	team, err := h.teams.RemoveMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, principal.UserID)
 	switch {
 	case err == nil:
 		h.writeTeam(w, r, team)

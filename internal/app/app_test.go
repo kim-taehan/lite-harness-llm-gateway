@@ -91,7 +91,8 @@ func TestStartupRefusedWithoutMasterKeyOrDatabase(t *testing.T) {
 
 func TestEveryRouteDeclaresAccess(t *testing.T) {
 	db, _ := dbtest.Open(t)
-	for _, r := range routes(&core.Lifecycle{}, db, slog.New(slog.NewTextHandler(io.Discard, nil))) {
+	cfg, _ := LoadConfig(testEnv)
+	for _, r := range assemble(cfg, &core.Lifecycle{}, db, slog.New(slog.NewTextHandler(io.Discard, nil))).routes {
 		if r.Handler == nil || r.Method == "" || r.Path == "" {
 			t.Errorf("빈 라우트: %+v", r)
 		}

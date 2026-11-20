@@ -114,6 +114,23 @@ func (p *Policies) Apply(ctx context.Context, scope Scope, id string, patch Patc
 	return next, nil
 }
 
+// SetSpend 는 사용액을 value 로 맞추고 바뀌기 전 값을 돌려준다(/key/{key}/reset_spend)
+func (p *Policies) SetSpend(ctx context.Context, scope Scope, id string, value float64) (float64, error) {
+	var previous float64
+	err := p.db.InTx(ctx, func(ctx context.Context) error {
+		found, err := p.Find(ctx, scope, []string{id})
+		if err != nil {
+			return err
+		}
+		previous = found[id].Spend
+		_, err = p.db.Q(ctx).Exec(ctx, `
+			INSERT INTO limit_policy (scope, target_id, spend) VALUES ($1, $2, $3)
+			ON CONFLICT (scope, target_id) DO UPDATE SET spend = EXCLUDED.spend, updated_at = now()`, scope, id, value)
+		return err
+	})
+	return previous, err
+}
+
 func (p *Policies) Delete(ctx context.Context, scope Scope, ids []string) error {
 	if len(ids) == 0 {
 		return nil

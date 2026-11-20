@@ -15,9 +15,12 @@ import (
 type Teams struct {
 	db    *core.DB
 	users *Users
+	cache *KeyCache
 }
 
-func NewTeams(db *core.DB, users *Users) *Teams { return &Teams{db: db, users: users} }
+func NewTeams(db *core.DB, users *Users, cache *KeyCache) *Teams {
+	return &Teams{db: db, users: users, cache: cache}
+}
 
 const teamColumns = "team_id, team_alias, models, metadata, blocked, created_at, updated_at"
 
@@ -141,12 +144,17 @@ func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Tea
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrTeamNotFound
 	}
+	if err == nil && patch.Blocked.Set {
+		// 막힌 팀의 키는 바로 401 이어야 한다(litellm 도 차단 직후 캐시를 지운다)
+		t.cache.forgetTeam(teamID)
+	}
 	return team, err
 }
 
-// Delete 는 팀을 지운다(팀원 행은 외래 키로 함께). 하나라도 없으면 아무것도 지우지 않고 *NotFoundError 다
-func (t *Teams) Delete(ctx context.Context, teamIDs []string) error {
-	return t.db.InTx(ctx, func(ctx context.Context) error {
+// Delete 는 팀을 지운다. litellm 처럼 팀 키는 사본(deleted_api_key)으로 옮긴 뒤 지우고, 팀원 행은 외래 키로 함께 지워진다.
+// 하나라도 없으면 아무것도 지우지 않고 *NotFoundError 다
+func (t *Teams) Delete(ctx context.Context, teamIDs []string, deletedBy string) error {
+	err := t.db.InTx(ctx, func(ctx context.Context) error {
 		found, err := t.FindAll(ctx, teamIDs)
 		if err != nil {
 			return err
@@ -154,9 +162,16 @@ func (t *Teams) Delete(ctx context.Context, teamIDs []string) error {
 		if missing := firstMissing(teamIDs, found, func(team Team) string { return team.TeamID }); missing != "" {
 			return &NotFoundError{ID: missing}
 		}
+		if _, err := archiveAndDelete(ctx, t.db.Q(ctx), "team_id = ANY($1)", deletedBy, teamIDs); err != nil {
+			return err
+		}
 		_, err = t.db.Q(ctx).Exec(ctx, "DELETE FROM team WHERE team_id = ANY($1)", teamIDs)
 		return err
 	})
+	if err == nil {
+		t.cache.forgetTeam(teamIDs...)
+	}
+	return err
 }
 
 // AddMembers 는 litellm member_add 다. 없는 사용자는 만든다. 멤버 하나를 넣는데 이미 있으면 오류,
@@ -199,9 +214,11 @@ func (t *Teams) AddMembers(ctx context.Context, teamID string, refs []MemberRef,
 	return team, added, err
 }
 
-// RemoveMember 는 팀원을 뺀다. 실패: ErrTeamNotFound, ErrNotMember
-func (t *Teams) RemoveMember(ctx context.Context, teamID string, userID, userEmail *string) (Team, error) {
+// RemoveMember 는 팀원을 뺀다. litellm 처럼 그 사용자가 이 팀에 가진 키도 사본으로 옮긴 뒤 지운다.
+// 실패: ErrTeamNotFound, ErrNotMember
+func (t *Teams) RemoveMember(ctx context.Context, teamID string, userID, userEmail *string, deletedBy string) (Team, error) {
 	var team Team
+	var removedKeys []string
 	err := t.db.InTx(ctx, func(ctx context.Context) error {
 		var err error
 		if team, err = t.Find(ctx, teamID); err != nil {
@@ -211,9 +228,15 @@ func (t *Teams) RemoveMember(ctx context.Context, teamID string, userID, userEma
 		if err != nil {
 			return err
 		}
-		_, err = t.db.Q(ctx).Exec(ctx, "DELETE FROM team_member WHERE team_id = $1 AND user_id = $2", teamID, member.UserID)
+		if _, err := t.db.Q(ctx).Exec(ctx, "DELETE FROM team_member WHERE team_id = $1 AND user_id = $2", teamID, member.UserID); err != nil {
+			return err
+		}
+		removedKeys, err = archiveAndDelete(ctx, t.db.Q(ctx), "team_id = $1 AND user_id = $2", deletedBy, teamID, member.UserID)
 		return err
 	})
+	if err == nil {
+		t.cache.forget(removedKeys...)
+	}
 	return team, err
 }
 

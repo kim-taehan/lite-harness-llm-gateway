@@ -13,10 +13,11 @@ import (
 
 // Users 는 사용자 관리다. admin 모듈의 관리 API 가 부른다
 type Users struct {
-	db *core.DB
+	db    *core.DB
+	cache *KeyCache
 }
 
-func NewUsers(db *core.DB) *Users { return &Users{db: db} }
+func NewUsers(db *core.DB, cache *KeyCache) *Users { return &Users{db: db, cache: cache} }
 
 const userColumns = "user_id, user_email, user_alias, user_role, models, metadata, sso_user_id, created_at, updated_at"
 
@@ -141,10 +142,14 @@ func (u *Users) Update(ctx context.Context, userID string, patch UserPatch) (Use
 		updated, err = u.one(ctx, "UPDATE app_user SET "+strings.Join(sets, ", ")+" WHERE user_id = $1 RETURNING "+userColumns, args...)
 		return err
 	})
+	if err == nil && patch.UserRole.Set {
+		// 키의 역할은 소유자 사용자 행에서 온다. 역할이 바뀌면 그 사용자 키 캐시를 지운다
+		u.cache.forgetUser(userID)
+	}
 	return updated, err
 }
 
-// Delete 는 사용자를 지우고(팀원 행은 외래 키로 함께) 지운 수를 돌려준다. 하나라도 없으면 아무것도 지우지 않고 *NotFoundError 다
+// Delete 는 사용자와 그 키를 지우고(팀원 행은 외래 키로 함께) 지운 수를 돌려준다. 하나라도 없으면 아무것도 지우지 않고 *NotFoundError 다
 func (u *Users) Delete(ctx context.Context, userIDs []string) (int64, error) {
 	var deleted int64
 	err := u.db.InTx(ctx, func(ctx context.Context) error {
@@ -155,10 +160,17 @@ func (u *Users) Delete(ctx context.Context, userIDs []string) (int64, error) {
 		if missing := firstMissing(userIDs, found, func(user User) string { return user.UserID }); missing != "" {
 			return &NotFoundError{ID: missing}
 		}
+		// litellm 은 사용자의 키를 사본 없이 지운다(H 4.3)
+		if _, err := u.db.Q(ctx).Exec(ctx, "DELETE FROM api_key WHERE user_id = ANY($1)", userIDs); err != nil {
+			return err
+		}
 		tag, err := u.db.Q(ctx).Exec(ctx, "DELETE FROM app_user WHERE user_id = ANY($1)", userIDs)
 		deleted = tag.RowsAffected()
 		return err
 	})
+	if err == nil {
+		u.cache.forgetUser(userIDs...)
+	}
 	return deleted, err
 }
 

@@ -16,6 +16,10 @@ func TestMain(m *testing.M) { os.Exit(dbtest.Main(m)) }
 func TestMigrate_CreatesSchemaAndIsIdempotent(t *testing.T) {
 	_, pool := dbtest.Open(t) // Open 이 한 번 적용했다
 	ctx := t.Context()
+	var before int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migration").Scan(&before); err != nil || before == 0 {
+		t.Fatalf("첫 적용 기록 = %d (%v)", before, err)
+	}
 
 	if err := core.Migrate(ctx, pool, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatalf("두 번째 적용이 실패했다: %v", err)
@@ -27,8 +31,8 @@ func TestMigrate_CreatesSchemaAndIsIdempotent(t *testing.T) {
 		}
 	}
 	var applied int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migration").Scan(&applied); err != nil || applied != 1 {
-		t.Errorf("적용 기록 = %d (%v), 1 이어야 한다", applied, err)
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migration").Scan(&applied); err != nil || applied != before {
+		t.Errorf("두 번째 적용 뒤 기록 = %d (%v), 그대로 %d 여야 한다", applied, err, before)
 	}
 }
 

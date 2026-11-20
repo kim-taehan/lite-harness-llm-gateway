@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/core/dbtest"
 )
 
 const testMasterKey = "sk-test-master"
@@ -17,11 +19,14 @@ func guarded(t *testing.T, access core.Access) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db, _ := dbtest.Open(t)
+	cache := NewKeyCache(time.Minute, time.Now)
+	users := NewUsers(db, cache)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		p, _ := PrincipalFrom(r.Context())
 		core.WriteJSON(w, http.StatusOK, p.UserID)
 	}
-	return NewAuthenticator(key).Guard(core.Route{Method: http.MethodGet, Path: "/x", Access: access, Handler: handler})
+	return NewAuthenticator(key, NewKeys(db, cache), users, NewTeams(db, users, cache), cache, time.Now).Guard(core.Route{Method: http.MethodGet, Path: "/x", Access: access, Handler: handler})
 }
 
 func call(h http.Handler, header map[string]string) *httptest.ResponseRecorder {
@@ -65,13 +70,21 @@ func TestKeyMissing_ReturnsLitellmAuthError(t *testing.T) {
 	}
 }
 
-func TestWrongKey_Is401(t *testing.T) {
+func TestUnknownVirtualKey_Is401TokenNotFound(t *testing.T) {
 	rec := call(guarded(t, core.Roles(core.RoleProxyAdmin)), map[string]string{"Authorization": "Bearer sk-wrong"})
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("상태 = %d", rec.Code)
 	}
-	if got := errorBody(t, rec)["message"]; got != "Authentication Error, Invalid proxy server token passed." {
+	body := errorBody(t, rec)
+	if body["message"] != "Authentication Error, Invalid API key provided." || body["type"] != "token_not_found_in_db" {
+		t.Errorf("error = %v", body)
+	}
+}
+
+func TestNonSkKey_IsRejectedBeforeLookup(t *testing.T) {
+	rec := call(guarded(t, core.Roles(core.RoleProxyAdmin)), map[string]string{"Authorization": "Bearer abcdefghijkl"})
+	if got := errorBody(t, rec)["message"]; got != "LiteLLM Virtual Key expected. Received=abcd****ijkl, expected to start with 'sk-'." {
 		t.Errorf("message = %v", got)
 	}
 }
@@ -100,14 +113,10 @@ func TestMasterKey_AcceptedByBearerAndXApiKey_AsProxyAdmin(t *testing.T) {
 	}
 }
 
-func TestRoleNotAllowed_RejectedWith401LikeLitellm(t *testing.T) {
+func TestMasterKey_PassesEveryRoleListLikeLitellm(t *testing.T) {
 	rec := call(guarded(t, core.Roles(core.RoleInternalUser)), map[string]string{"Authorization": "Bearer " + testMasterKey})
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("상태 = %d", rec.Code)
-	}
-	if got := errorBody(t, rec)["type"]; got != "auth_error" {
-		t.Errorf("type = %v", got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy_admin 은 모든 라우트를 통과해야 한다: %d", rec.Code)
 	}
 }
 
