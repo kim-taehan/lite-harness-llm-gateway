@@ -168,3 +168,21 @@ func TestCLILogin_SSORoutesAbsentInPasswordOnlyBuild(t *testing.T) {
 		t.Errorf("비밀번호만 넣은 빌드에 SSO 콜백이 있다: %d", rec.Code)
 	}
 }
+
+func TestCLILogin_TooManyWrongPasswordsAreBlocked(t *testing.T) {
+	api := newAPI(t)
+	b := browser{t: t, h: api.h}
+	api.ok("POST", "/user/new", map[string]any{"user_id": "park"})
+	api.ok("POST", "/user/update", map[string]any{"user_id": "park", "password": "right-pass"})
+	start := jsonOf(t, b.do("POST", "/sso/cli/start", nil, nil))
+	action := "/sso/cli/password/" + start["login_id"].(string)
+	for i := 0; i < 10; i++ {
+		if rec := b.do("POST", action, url.Values{"username": {"park"}, "password": {"wrong"}}, nil); rec.Code != 401 {
+			t.Fatalf("%d 번째 실패: %d", i+1, rec.Code)
+		}
+	}
+	// 맞는 비밀번호도 창이 지날 때까지 막힌다
+	if rec := b.do("POST", action, url.Values{"username": {"park"}, "password": {"right-pass"}}, nil); rec.Code != 429 {
+		t.Errorf("막히지 않았다: %d", rec.Code)
+	}
+}
