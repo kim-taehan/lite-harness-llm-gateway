@@ -97,42 +97,36 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		UserID    *string                     `json:"user_id"`
-		UserEmail core.Change[string]         `json:"user_email"`
-		UserAlias core.Change[string]         `json:"user_alias"`
-		UserRole  core.Change[core.Role]      `json:"user_role"`
-		Models    core.Change[[]string]       `json:"models"`
-		Metadata  core.Change[map[string]any] `json:"metadata"`
-		Password  *string                     `json:"password"`
-		limitFields
-	}
-	raw, ok := requestBody(w, r, &req)
-	if !ok {
-		return
-	}
+// userUpdate 는 /user/update 본문이다. /user/bulk_update 의 사용자 한 명도 같은 모양이다(I 3.4)
+type userUpdate struct {
+	UserID    *string                     `json:"user_id"`
+	UserEmail core.Change[string]         `json:"user_email"`
+	UserAlias core.Change[string]         `json:"user_alias"`
+	UserRole  core.Change[core.Role]      `json:"user_role"`
+	Models    core.Change[[]string]       `json:"models"`
+	Metadata  core.Change[map[string]any] `json:"metadata"`
+	Password  *string                     `json:"password"`
+	limitFields
+}
+
+func (u userUpdate) validate(raw any) validationError {
 	var errs validationError
-	if req.UserID == nil && req.UserEmail.Value == nil {
+	if u.UserID == nil && u.UserEmail.Value == nil {
 		errs = append(errs, FieldError{Type: "value_error", Loc: []any{"body"}, Msg: "Value error, Either user_id or user_email must be provided", Input: raw})
 	}
-	if req.UserRole.Value != nil {
-		if e := roleError("user_role", *req.UserRole.Value); e != nil {
+	if u.UserRole.Value != nil {
+		if e := roleError("user_role", *u.UserRole.Value); e != nil {
 			errs = append(errs, *e)
 		}
 	}
-	if len(errs) > 0 {
-		errs.write(w)
-		return
-	}
-	// /user/update 는 litellm 에서 auth_error·"None" 으로 감싼다(IU:1729-1746)
-	authStyle := func(status int, message string) core.ProxyError {
-		return core.ProxyError{Status: status, Message: pyDict("error", message), Type: "auth_error", Param: "None"}
-	}
+	return errs
+}
 
+// applyUserUpdate 는 사용자 한 명을 고친다(신원·비밀번호·한도를 한 트랜잭션으로)
+func (h *Handlers) applyUserUpdate(ctx context.Context, req userUpdate) (auth.User, limits.Policy, error) {
 	var user auth.User
 	var policy limits.Policy
-	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
+	err := h.db.InTx(ctx, func(ctx context.Context) error {
 		userID, err := h.updateTarget(ctx, req.UserID, req.UserEmail.Value)
 		if err != nil {
 			return err
@@ -153,6 +147,24 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 		policy, err = h.limits.Apply(ctx, limits.ScopeUser, userID, req.patch())
 		return err
 	})
+	return user, policy, err
+}
+
+func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
+	var req userUpdate
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if errs := req.validate(raw); len(errs) > 0 {
+		errs.write(w)
+		return
+	}
+	// /user/update 는 litellm 에서 auth_error·"None" 으로 감싼다(IU:1729-1746)
+	authStyle := func(status int, message string) core.ProxyError {
+		return core.ProxyError{Status: status, Message: pyDict("error", message), Type: "auth_error", Param: "None"}
+	}
+	user, policy, err := h.applyUserUpdate(r.Context(), req)
 	var invalid *limits.InvalidError
 	var taken *auth.EmailTakenError
 	switch {
