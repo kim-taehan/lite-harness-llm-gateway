@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,13 +19,32 @@ import (
 
 // 추론 경로(설계 4장)를 가짜 업스트림으로 확인한다: 중계, 모델 이름 되돌리기, usage 청크 걸러 내기, 사용량 기록
 
+// upstreamLog 는 가짜 업스트림이 받은 요청 본문이다. 서버 goroutine 이 쓰고 시험이 읽으므로 잠금으로 지킨다
+type upstreamLog struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+}
+
+func (l *upstreamLog) add(body map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.bodies = append(l.bodies, body)
+}
+
+// all 은 지금까지 받은 본문의 사본이다
+func (l *upstreamLog) all() []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]map[string]any(nil), l.bodies...)
+}
+
 // fakeOllama 는 OpenAI 호환 /v1/chat/completions 를 흉내 낸다. 받은 요청 본문을 남긴다
-func fakeOllama(t *testing.T) (*httptest.Server, *[]map[string]any) {
-	var received []map[string]any
+func fakeOllama(t *testing.T) (*httptest.Server, *upstreamLog) {
+	received := &upstreamLog{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		received = append(received, body)
+		received.add(body)
 		if r.Header.Get("Authorization") != "" {
 			t.Errorf("클라이언트 Authorization 이 업스트림으로 갔다")
 		}
@@ -53,7 +73,7 @@ func fakeOllama(t *testing.T) (*httptest.Server, *[]map[string]any) {
 		fmt.Fprintf(w, `{"id":"c2","model":"%s","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}`, body["model"])
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &received
+	return srv, received
 }
 
 func TestChat_RelaysStreamRecordsUsageAndHidesUnrequestedUsageChunk(t *testing.T) {
@@ -88,7 +108,7 @@ func TestChat_RelaysStreamRecordsUsageAndHidesUnrequestedUsageChunk(t *testing.T
 	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
 		t.Errorf("[DONE] 이 없다:\n%s", body)
 	}
-	sent := (*received)[0]
+	sent := received.all()[0]
 	if sent["model"] != "tiny:1b" || sent["stream_options"].(map[string]any)["include_usage"] != true {
 		t.Errorf("업스트림 요청 = %v (모델 태그, include_usage 주입)", sent)
 	}
@@ -183,8 +203,8 @@ func TestResponsesAndEmbeddings_RelayAndRecordUsage(t *testing.T) {
 	if rec.Code != 200 || strings.Contains(body, "tiny:1b") || !strings.Contains(body, "event: response.completed") || !strings.Contains(body, `"model":"m"`) {
 		t.Fatalf("responses 스트림: %d\n%s", rec.Code, body)
 	}
-	if _, injected := (*received)[0]["stream_options"]; injected {
-		t.Errorf("Responses 에는 stream_options 를 넣지 않는다: %v", (*received)[0])
+	if _, injected := received.all()[0]["stream_options"]; injected {
+		t.Errorf("Responses 에는 stream_options 를 넣지 않는다: %v", received.all()[0])
 	}
 
 	status, emb := api.do("POST", "/v1/embeddings", map[string]any{"model": "m", "input": "hello"})
