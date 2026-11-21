@@ -373,7 +373,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 본인이 비밀번호를 바꾸면 그 사용자의 대시보드 세션이 지금 세션까지 모두 끊긴다(litellm 은 지금 세션은 남긴다). 세션을 DB 에 두지 않아 하나만 남길 수 없다
 - 관리자가 정한 비밀번호의 "다음 로그인 때 변경" 강제는 대시보드 세션에만 건다. 데스크탑 로그인은 막지 않는다
 - 초대 온보딩으로 연 세션은 비밀번호 로그인 세션으로 본다(바로 비밀번호를 바꿀 수 있다). litellm 은 이 세션에서 변경이 403 이다
-- 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 대시보드는 자기 출처로 API 를 부른다(nginx 가 대시보드와 API 를 같은 출처로 낸다)
+- 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 그러면 대시보드는 `LITELLM_BACKEND_URL`(호스트 분리) 또는 자기 출처(한 호스트)로 API 를 부른다(11장 운영 구성)
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
 - `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)
@@ -416,7 +416,9 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | 작은 사이트 | 게이트웨이 1대 + PostgreSQL (+ Ollama, Keycloak) | 기본. `counter-store=memory` |
 | 확장 | 게이트웨이 N대(로드밸런서 뒤) + PostgreSQL + Redis (+ Ollama, Keycloak) | `counter-store=redis` |
 
-- 대시보드는 지금 nginx 컨테이너를 그대로 쓰고, nginx 가 API 경로를 게이트웨이(또는 로드밸런서)로 넘긴다
+- 대시보드는 지금 nginx 컨테이너(`ui/Dockerfile`)를 그대로 쓴다. 이 nginx 는 정적 파일만 내고 API 를 넘기지 않는다. 배치는 litellm helm 과 같은 두 가지다
+  - **한 호스트**: 앞단(ingress·nginx)이 `/ui`·`/_next`·`/litellm-asset-prefix` 는 대시보드로, 나머지는 게이트웨이로 넘긴다. 같은 출처라 CORS 가 필요 없고 웹 SSO 도 된다(권장)
+  - **호스트 분리**: 대시보드 컨테이너에 `LITELLM_BACKEND_URL=<게이트웨이 주소>` 를 주면 브라우저가 게이트웨이를 직접 부른다. 게이트웨이는 litellm 과 같은 CORS 기본값(모든 출처)으로 받는다(`GATEWAY_CORS_ORIGINS` 로 좁힌다). 이 배치에서 웹 SSO 는 토큰 쿠키가 게이트웨이 호스트에 생겨 대시보드가 읽지 못하므로 되지 않는다(아이디·비밀번호 로그인은 된다)
 - 컨테이너 이미지는 폐쇄망 반입용으로 만든다. 런타임에 아무것도 내려받지 않는다
 - 헬스: liveness·readiness 는 litellm 과 같이 인증 없이 연다. readiness 는 DB 연결(Redis 를 켰으면 Redis 도)을 본다
 
