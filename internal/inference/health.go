@@ -1,7 +1,6 @@
 package inference
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,12 +31,7 @@ func (h *Handlers) probe(ctx context.Context, d Deployment, mode string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.endpoint(path), bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.upstream.Do(req)
+	resp, err := h.send(ctx, d, path, payload)
 	if err != nil {
 		return fmt.Errorf("%s 에 닿지 않는다: %w", d.BaseURL, err)
 	}

@@ -30,7 +30,7 @@ Python litellm 프록시를 내리고, 폐쇄망용 LLM 게이트웨이를 Go �
 | Redis | 옵션. 공유 상태(예산·RPM·TPM·동시성 카운터, 키 차단 전파)는 `CounterStore` 포트 뒤에 둔다. Redis 가 없으면 메모리 구현으로 인스턴스 1개, 있으면 여러 대. 진실 원천은 PostgreSQL |
 | 큐 초과 | 버퍼가 있는 채널. 가득 차면(`select` + `default`) 경고 로그와 지표를 남기고 버린다 |
 | 데이터 | 독립 스키마. 기동 시 마이그레이션(litellm 의 Prisma migrate 와 같은 역할). 라이브러리 없이 직접 만든다: `embed` 로 넣은 SQL 파일을 번호 순으로, PostgreSQL advisory lock 을 잡고 적용하고 적용 기록 테이블을 남긴다. 여러 대가 동시에 기동해도 한 대만 적용한다. litellm 테이블과 무관. 이전 없음 |
-| 프로바이더 | 1차 Ollama 한 종류. `LlmProvider` 로 추상화 |
+| 프로바이더 | 1차 Ollama 한 종류(OpenAI 호환 패스스루, 교체 지점은 `send` 하나. 3.1 참고) |
 | 모듈 경로 | `llm-gateway` (진입점 `cmd/llm-gateway`, 코드는 모두 `internal/`) |
 | 폐쇄망 | 런타임 외부 호출 0. 호출 대상은 Ollama 와 Keycloak, PostgreSQL, (켰다면) Redis 뿐 |
 
@@ -93,15 +93,13 @@ func (r *UsageRecorder) Record(u UsageEvent)    // 채널에 넣고 바로 돌�
 // 기간·키·팀·사용자별 집계, limit_policy 설정·spend 리셋. admin 이 부른다
 
 // inference
-type LlmProvider interface {                    // 1차 구현은 Ollama
-    Chat(ctx context.Context, req ChatRequest, target Deployment) (<-chan ProviderEvent, error)
-    Embed(ctx context.Context, req EmbeddingRequest, target Deployment) (EmbeddingResult, error)
-}
-type ProviderEvent struct {                     // 청크 · 사용량 · 실패 중 하나
-    Chunk *SseFrame
-    Usage *Usage
-    Err   error
-}
+// 업스트림은 OpenAI 호환 패스스루다(chat·responses·embeddings 가 같은 중계 경로). 업스트림을 부르는 지점은
+// (h *Handlers) send(ctx, deployment, path, payload) 하나이고, 추론 중계와 헬스 체크가 같이 쓴다.
+// 주소 조립·헤더·(뒤에 붙일) 업스트림 인증·재시도는 이 함수만 고친다.
+// LlmProvider 인터페이스는 만들지 않는다. 패스스루 구조에서 SSE 를 이벤트 채널로 다시 직렬화하게 되어 과하다.
+// wire 형식이 다른 두 번째 프로바이더(OpenAI 호환이 아닌 것)가 생길 때 send 앞에 그 변환을 두는 인터페이스를 만든다
+//
+// 그리고 첫 청크 전 업스트림 실패 시 다른 배포로 1회 재시도하려면 relay 를 "send → 응답 쓰기" 두 단계로 나눠야 한다(뒤 단계)
 // 모델 그룹·배포 조회. admin 과 /v1/models 가 쓴다
 
 // core

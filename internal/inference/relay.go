@@ -3,6 +3,7 @@ package inference
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -70,33 +71,14 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI
 	w.Header().Set("x-litellm-call-id", x.requestID)
 	defer func() { h.record(r, x) }()
 
-	// 스트림이면 업스트림이 마지막에 usage 청크를 주도록 켠다. 클라이언트가 켜지 않았으면 그 청크는 걸러 낸다(설계 4.4)
-	clientWantsUsage := true
-	if stream && api.injectUsage {
-		clientWantsUsage = false
-		options, _ := body["stream_options"].(map[string]any)
-		if options == nil {
-			options = map[string]any{}
-		}
-		clientWantsUsage, _ = options["include_usage"].(bool)
-		options["include_usage"] = true
-		body["stream_options"] = options
-	}
+	clientWantsUsage := requestUsageChunk(body, api, stream)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		x.fail(500, "internal_error")
 		h.internalError(w, r, err)
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, d.endpoint(api.path), bytes.NewReader(payload))
-	if err != nil {
-		x.fail(500, "internal_error")
-		h.internalError(w, r, err)
-		return
-	}
-	// 클라이언트의 Authorization 은 업스트림에 넘기지 않는다(설계 5장 4번)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.upstream.Do(req)
+	resp, err := h.send(r.Context(), d, api.path, payload)
 	if err != nil {
 		if r.Context().Err() != nil {
 			x.cancel()
@@ -115,6 +97,33 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI
 		return
 	}
 	h.relayStream(w, r, resp, x, clientWantsUsage)
+}
+
+// requestUsageChunk 는 스트림이면 업스트림이 마지막에 usage 청크를 주도록 켠다(body 를 고친다).
+// 클라이언트가 켜지 않았으면 그 청크는 걸러 내야 하므로 클라이언트가 원했는지를 돌려준다(설계 4.4)
+func requestUsageChunk(body map[string]any, api upstreamAPI, stream bool) (clientWantsUsage bool) {
+	if !stream || !api.injectUsage {
+		return true
+	}
+	options, _ := body["stream_options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
+	}
+	clientWantsUsage, _ = options["include_usage"].(bool)
+	options["include_usage"] = true
+	body["stream_options"] = options
+	return clientWantsUsage
+}
+
+// send 는 업스트림을 부르는 단 하나의 지점이다(추론 중계와 헬스 체크가 같이 쓴다). 주소 조립·헤더·(뒤에 붙일) 업스트림 인증이
+// 여기에만 있다. 클라이언트의 Authorization 은 업스트림에 넘기지 않는다(설계 5장 4번)
+func (h *Handlers) send(ctx context.Context, d Deployment, path string, payload []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.endpoint(path), bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return h.upstream.Do(req)
 }
 
 func (x *exchange) fail(status int, code string) {
