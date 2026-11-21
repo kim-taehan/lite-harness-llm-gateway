@@ -2,6 +2,9 @@ package core
 
 import (
 	"encoding/json"
+	"reflect"
+	"strconv"
+	"strings"
 )
 
 // Change 는 수정 요청의 필드 하나다. litellm 은 보낸 필드만 바꾼다(exclude_unset).
@@ -21,11 +24,35 @@ func (c *Change[T]) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := json.Unmarshal(numericFromString(data, reflect.TypeOf(v)), &v); err != nil {
 		return err
 	}
 	c.Value = &v
 	return nil
+}
+
+// numericFromString 은 숫자 필드에 온 숫자 문자열("4.25")을 숫자로 바꾼다. litellm(pydantic)은 그렇게 받고,
+// 대시보드의 숫자 입력은 문자열로 보낸다. 숫자로 읽을 수 없는 문자열("many")은 그대로 두어 형식 오류로 남긴다
+func numericFromString(data []byte, target reflect.Type) []byte {
+	if target == nil || len(data) < 2 || data[0] != '"' {
+		return data
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return data
+	}
+	text = strings.TrimSpace(text)
+	switch target.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return []byte(text)
+		}
+	case reflect.Float32, reflect.Float64:
+		if _, err := strconv.ParseFloat(text, 64); err == nil && json.Valid([]byte(text)) {
+			return []byte(text)
+		}
+	}
+	return data
 }
 
 // To 는 값으로 바꾸는 Change 다

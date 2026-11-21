@@ -120,4 +120,22 @@ func TestTeamMemberLimits_BulkAddAppliesBudgetAndInvalidValuesAreRejected(t *tes
 	if status, body := api.do("POST", "/team/member_update", map[string]any{"team_id": "t1", "user_id": "lee", "budget_duration": "soon"}); status != 400 {
 		t.Errorf("틀린 budget_duration: %d %v", status, body)
 	}
+
+	// 대시보드의 숫자 입력은 문자열로 보낸다. litellm(pydantic)처럼 숫자로 읽는다
+	api.ok("POST", "/team/member_update", map[string]any{"team_id": "t1", "user_id": "lee", "max_budget_in_team": "4.25", "rpm_limit": "20"})
+	var budget map[string]any
+	for _, m := range api.ok("GET", "/team/info?team_id=t1", nil)["team_memberships"].([]any) {
+		if m.(map[string]any)["user_id"] == "lee" {
+			budget, _ = m.(map[string]any)["litellm_budget_table"].(map[string]any)
+		}
+	}
+	if budget["max_budget"] != 4.25 || budget["rpm_limit"] != 20.0 {
+		t.Errorf("문자열 숫자로 정한 팀원 한도 = %v", budget)
+	}
+	// 숫자로 읽을 수 없는 문자열은 형식 오류다. 오류 위치에 임베디드 구조체 이름이 끼지 않고 input 은 보낸 값이다
+	status, body := api.do("POST", "/team/member_update", map[string]any{"team_id": "t1", "user_id": "lee", "rpm_limit": "many"})
+	detail := body.(map[string]any)["detail"].([]any)[0].(map[string]any)
+	if status != 422 || detail["type"] != "int_type" || detail["input"] != "many" || len(detail["loc"].([]any)) != 2 || detail["loc"].([]any)[1] != "rpm_limit" {
+		t.Errorf("틀린 숫자: %d %v", status, body)
+	}
 }

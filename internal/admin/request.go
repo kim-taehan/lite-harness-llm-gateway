@@ -44,23 +44,31 @@ func requestBody(w http.ResponseWriter, r *http.Request, dst any) (raw map[strin
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(dst); err != nil {
-		validationError{typeError(err)}.write(w)
+		validationError{typeError(err, dst, raw)}.write(w)
 		return nil, false
 	}
 	return raw, true
 }
 
-// typeError 는 encoding/json 의 형식 오류를 pydantic 오류 하나로 바꾼다
-func typeError(err error) FieldError {
+// typeError 는 encoding/json 의 형식 오류를 pydantic 오류 하나로 바꾼다. dst 는 읽던 구조체, raw 는 본문 객체다.
+// 오류 위치에서는 임베디드 구조체 이름을 빼고, input 에는 json 이 말하는 타입 이름 대신 실제로 보낸 값을 싣는다
+func typeError(err error, dst any, raw map[string]any) FieldError {
 	var typeErr *json.UnmarshalTypeError
 	if !errors.As(err, &typeErr) {
 		return FieldError{Type: "json_invalid", Loc: []any{"body"}, Msg: "JSON decode error"}
 	}
+	embedded := embeddedFieldNames(reflect.TypeOf(dst))
 	loc := []any{"body"}
+	var path []string
 	for _, part := range strings.Split(typeErr.Field, ".") {
-		if part != "" {
+		if part != "" && !embedded[part] {
 			loc = append(loc, part)
+			path = append(path, part)
 		}
+	}
+	var input any = typeErr.Value
+	if value, found := valueAt(raw, path); found {
+		input = value
 	}
 	kind, msg := "string_type", "Input should be a valid string"
 	switch typeErr.Type.Kind() {
@@ -75,7 +83,42 @@ func typeError(err error) FieldError {
 	case reflect.Int, reflect.Int64, reflect.Int32:
 		kind, msg = "int_type", "Input should be a valid integer"
 	}
-	return FieldError{Type: kind, Loc: loc, Msg: msg, Input: typeErr.Value}
+	return FieldError{Type: kind, Loc: loc, Msg: msg, Input: input}
+}
+
+// embeddedFieldNames 는 구조체가 품은(임베디드) 구조체의 이름들이다. encoding/json 은 오류 경로에 그 이름을 넣지만 JSON 키는 아니다
+func embeddedFieldNames(t reflect.Type) map[string]bool {
+	names := map[string]bool{}
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return names
+	}
+	for i := 0; i < t.NumField(); i++ {
+		if field := t.Field(i); field.Anonymous {
+			names[field.Name] = true
+			for name := range embeddedFieldNames(field.Type) {
+				names[name] = true
+			}
+		}
+	}
+	return names
+}
+
+// valueAt 은 본문 객체에서 JSON 키 경로의 값이다
+func valueAt(raw map[string]any, path []string) (any, bool) {
+	var current any = raw
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if current, ok = object[key]; !ok {
+			return nil, false
+		}
+	}
+	return current, len(path) > 0
 }
 
 func missing(raw map[string]any, field string) FieldError {
