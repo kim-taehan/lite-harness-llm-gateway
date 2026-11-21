@@ -193,6 +193,12 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 		return r, nil
 	}
 	key, err := a.keys.Find(ctx, token)
+	cacheable := true
+	if errors.Is(err, ErrKeyNotFound) {
+		// 재발급 전 해시가 유예 기간 안이면 새 키로 인증한다. 유예가 끝나는 때 바로 막히도록 캐시하지 않는다
+		key, err = a.keys.FindDuringGrace(ctx, token, a.now().UTC())
+		cacheable = false
+	}
 	if err != nil {
 		return resolvedKey{}, err
 	}
@@ -215,7 +221,9 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 		r.teamBlocked = err == nil && team.Blocked
 		r.teamModels = team.Models
 	}
-	a.cache.entries.put(token, r)
+	if cacheable {
+		a.cache.entries.put(token, r)
+	}
 	return r, nil
 }
 

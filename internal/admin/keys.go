@@ -437,13 +437,14 @@ func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Ke
 }
 
 // regenerateKey 는 POST /key/{key}/regenerate 다(J 3.9). 본문의 key 가 경로보다 우선한다.
-// 바꾸는 값(alias·기간·한도)은 새 키에 함께 적용한다. grace_period(옛 키를 잠시 더 받기)는 아직 없다(설계 9장)
+// 바꾸는 값(alias·기간·한도)은 새 키에 함께 적용한다. grace_period 가 있으면 옛 키도 그 기간 동안 새 키로 인증된다
 func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Key      *string             `json:"key"`
-		NewKey   *string             `json:"new_key"`
-		KeyAlias core.Change[string] `json:"key_alias"`
-		Duration *string             `json:"duration"`
+		Key         *string             `json:"key"`
+		NewKey      *string             `json:"new_key"`
+		KeyAlias    core.Change[string] `json:"key_alias"`
+		Duration    *string             `json:"duration"`
+		GracePeriod *string             `json:"grace_period"`
 		limitFields
 	}
 	if _, ok := requestBody(w, r, &req); !ok {
@@ -483,7 +484,7 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.Expires = core.To(expires)
 	}
-	plain, regenerated, err := h.rotateKey(ctx, key.Token, req.NewKey, p.UserID, patch, req.patch())
+	plain, regenerated, err := h.rotateKey(ctx, key.Token, req.NewKey, p.UserID, h.graceDeadline(req.GracePeriod), patch, req.patch())
 	var invalid *limits.InvalidError
 	var badKey *auth.InvalidCustomKeyError
 	switch {
@@ -507,13 +508,26 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rotateKey 는 새 해시로 키를 바꾸고, 그 키의 한도를 새 해시로 옮기고, 바꾸는 값을 적용한다. 한 트랜잭션이다
-func (h *Handlers) rotateKey(ctx context.Context, oldToken string, newKey *string, by string, patch auth.KeyPatch, limitPatch limits.Patch) (string, auth.Key, error) {
+// graceDeadline 은 grace_period("24h", "2d" 등)가 끝나는 때다. litellm 처럼 비었거나 형식이 틀리거나 0 이하면 유예 없이 바로 폐기한다
+func (h *Handlers) graceDeadline(period *string) *time.Time {
+	if period == nil || *period == "" {
+		return nil
+	}
+	now := h.now().UTC()
+	deadline, err := expiresAfter(*period, now)
+	if err != nil || !deadline.After(now) {
+		return nil
+	}
+	return &deadline
+}
+
+// rotateKey 는 새 해시로 키를 바꾸고(옛 해시는 graceUntil 까지 남긴다), 그 키의 한도를 새 해시로 옮기고, 바꾸는 값을 적용한다. 한 트랜잭션이다
+func (h *Handlers) rotateKey(ctx context.Context, oldToken string, newKey *string, by string, graceUntil *time.Time, patch auth.KeyPatch, limitPatch limits.Patch) (string, auth.Key, error) {
 	var plain string
 	var rotated auth.Key
 	err := h.db.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		if plain, rotated, err = h.keys.Regenerate(ctx, oldToken, newKey, by); err != nil {
+		if plain, rotated, err = h.keys.Regenerate(ctx, oldToken, newKey, by, graceUntil); err != nil {
 			return err
 		}
 		if err := h.limits.Retarget(ctx, limits.ScopeKey, oldToken, rotated.Token); err != nil {

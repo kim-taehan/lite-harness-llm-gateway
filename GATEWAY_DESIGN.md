@@ -306,7 +306,7 @@ type CounterStore interface {
 - `api_key`·`team`(`auth` 소유): `blocked`
 - `model_deployment`: `input_cost_per_token`, `output_cost_per_token`(없으면 비용 0)
 - `audit_log`: 관리 변경 기록(litellm 은 유료라 쓰지 않았지만 운영자에게 필요하다). 9장에 기록 범위
-- 키 재생성은 `key_hash` 교체 + 옛 해시 유예 기간(`previous_key_hash`, `previous_expires_at`)
+- 키 재생성은 `api_key.token` 교체 + 옛 해시 유예 기간(`deprecated_api_key`: `token`, `active_token`, `revoke_at`, auth 소유)
 
 **넣지 않을 것**: 조직·프로젝트·고객, MCP·에이전트·벡터·프롬프트·워크플로 같은 부가 기능 테이블 약 50개, 삭제 사본 테이블(soft delete 로 대체), 일별 롤업(처음에는 `request_log` GROUP BY. 느려지면 추가), 요청·응답 본문 컬럼(litellm 도 기본 꺼짐. 폐쇄망 감사에 본문이 필요하다고 정해지면 추가).
 ### 8.1 테이블 (초안)
@@ -361,7 +361,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 대시보드 세션도 7일간 유효하다(litellm `LITELLM_UI_SESSION_DURATION` 기본 24시간)
 - 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 SSO 만 넣은 빌드에서도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 비밀번호를 넣은 빌드에서만 된다
 - 감사 로그(`/audit`, `/audit/{id}`)는 litellm 에서 유료 기능이라 비어 있지만 우리는 무료로 기록한다. 키·팀·사용자의 생성·수정·삭제·차단·해제·재발급(팀원 변경은 팀 수정)을 응답이 성공일 때만 남긴다. `updated_values` 는 요청 본문(키 원문·비밀번호 제외)이고 `before_value` 는 아직 비어 있다(litellm 은 바뀌기 전 행을 싣는다). 대상은 키 해시·팀 id·사용자 id 다. 모델·설정 변경과 일괄 수정(`/user/bulk_update`)은 아직 기록하지 않는다. 조회는 `proxy_admin`·`proxy_admin_viewer` 만 된다
-- 키 재발급(`/key/{key}/regenerate`)의 `grace_period`(옛 키를 정한 시간 동안 더 받기)는 아직 받지 않는다. 재발급하면 옛 키는 바로 401 이다(뒤 단계)
+- 키 재발급(`/key/{key}/regenerate`)의 `grace_period`(`24h`·`2d` 등)를 받는다. 그 기간 동안 옛 키도 새 키로 인증된다(`deprecated_api_key` 표, 유예 중 키는 캐시하지 않아 끝나는 때 바로 막힌다). 비었거나 형식이 틀리거나 0 이하면 litellm 처럼 무시하고 바로 폐기한다. 환경 변수 기본값(`LITELLM_KEY_ROTATION_GRACE_PERIOD`)은 받지 않는다. 유예 중 다시 재발급하면 옛 해시는 가장 새 키를 가리키게 옮겨 가 약속한 기간을 지킨다(litellm 은 이때 끊긴다)
 - 팀원별 예산(`max_budget_in_team`, 팀원 예산 일괄 수정)은 아직 없다. 팀원 사용액은 늘 0 이고, 값을 정하려는 요청은 결과 행에 실패로 남긴다(뒤 단계)
 - 모델 추가 폼의 제공자는 우리가 중계하는 Ollama·Ollama Chat·Hosted vLLM 만 보인다. 업스트림 API 키(`api_key` 등)는 저장하지 않는다
 - 사용량·로그 화면(`N_usage_logs_contract.md`)은 litellm 의 일별 집계 표 대신 `request_log` 를 그때그때 묶어 만든다. 그래서 다음이 다르다:

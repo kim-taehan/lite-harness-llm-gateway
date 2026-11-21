@@ -289,7 +289,7 @@ func archiveAndDelete(ctx context.Context, q core.Querier, where string, deleted
 
 // Regenerate 는 키의 원문을 새로 만든다(J 3.9). 같은 행의 token 을 새 해시로 바꾸므로 사용자·팀·설정은 이어진다.
 // litellm 처럼 옛 행은 deleted_api_key 에 사본으로 남긴다. 옛 원문은 바로 쓸 수 없게 된다. 실패: ErrKeyNotFound, *InvalidCustomKeyError
-func (k *Keys) Regenerate(ctx context.Context, token string, newKey *string, by string) (string, Key, error) {
+func (k *Keys) Regenerate(ctx context.Context, token string, newKey *string, by string, graceUntil *time.Time) (string, Key, error) {
 	plain := generateKey()
 	if newKey != nil {
 		if err := validateCustomKey(*newKey); err != nil {
@@ -313,12 +313,44 @@ func (k *Keys) Regenerate(ctx context.Context, token string, newKey *string, by 
 		regenerated, err = scanKey(k.db.Q(ctx).QueryRow(ctx, `
 			UPDATE api_key SET token = $2, key_name = $3, updated_by = $4, updated_at = now() WHERE token = $1 RETURNING `+keyColumns,
 			token, hashKey(plain), keyName(plain), by))
-		return err
+		if err != nil {
+			return err
+		}
+		return k.keepOldHash(ctx, token, regenerated.Token, graceUntil)
 	})
 	if err == nil {
 		k.cache.forget(token)
 	}
 	return plain, regenerated, err
+}
+
+// keepOldHash 는 재발급 전 해시를 graceUntil 까지 새 키로 인증되게 남긴다(nil 이면 바로 폐기).
+// 이미 유예 중이던 옛 해시들은 새 해시를 가리키게 옮기고, 끝난 유예 행은 치운다
+func (k *Keys) keepOldHash(ctx context.Context, oldToken, newToken string, graceUntil *time.Time) error {
+	q := k.db.Q(ctx)
+	if _, err := q.Exec(ctx, "DELETE FROM deprecated_api_key WHERE revoke_at <= now()"); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, "UPDATE deprecated_api_key SET active_token = $2 WHERE active_token = $1", oldToken, newToken); err != nil {
+		return err
+	}
+	if graceUntil == nil {
+		return nil
+	}
+	_, err := q.Exec(ctx, `
+		INSERT INTO deprecated_api_key (token, active_token, revoke_at) VALUES ($1, $2, $3)
+		ON CONFLICT (token) DO UPDATE SET active_token = excluded.active_token, revoke_at = excluded.revoke_at`, oldToken, newToken, *graceUntil)
+	return err
+}
+
+// FindDuringGrace 는 재발급 전 해시가 유예 기간 안이면 지금 키다. 아니면 ErrKeyNotFound
+func (k *Keys) FindDuringGrace(ctx context.Context, oldToken string, now time.Time) (Key, error) {
+	key, err := scanKey(k.db.Q(ctx).QueryRow(ctx, `
+		SELECT `+keyColumns+` FROM api_key WHERE token = (SELECT active_token FROM deprecated_api_key WHERE token = $1 AND revoke_at > $2)`, oldToken, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Key{}, ErrKeyNotFound
+	}
+	return key, err
 }
 
 // SetBlocked 는 차단을 바꾸고 캐시에서 지운다
