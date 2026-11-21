@@ -18,9 +18,9 @@ func metricsRow(m limits.Metrics) row {
 		"prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens,
 		"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "compression_saved_tokens": 0,
 		"compression_savings_spend": 0.0, "prompt_caching_savings_spend": 0.0, "gateway_injected_caching_savings_spend": 0.0,
-		"autorouter_savings_spend": 0.0, "total_tokens": m.PromptTokens + m.CompletionTokens,
+		"autorouter_savings_spend": 0.0, "total_tokens": m.Tokens(),
 		"successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests,
-		"api_requests":           m.SuccessfulRequests + m.FailedRequests,
+		"api_requests":           m.Requests(),
 		"total_response_time_ms": m.TotalResponseTimeMS, "timed_requests": m.TimedRequests,
 	}
 }
@@ -60,11 +60,12 @@ func (h *Handlers) dailyActivity(w http.ResponseWriter, r *http.Request) {
 		self := p.UserID
 		userID = &self
 	}
-	days, err := h.usage.Daily(r.Context(), userID, start, end)
+	activity, err := h.usage.Activity(r.Context(), limits.ActivityFilter{Start: start, End: end, UserID: userID})
 	if err != nil {
 		h.internalError(w, r, err)
 		return
 	}
+	days := limits.FoldDays(activity)
 	// litellm 은 원시 행(날짜×키×모델) 단위로 쪽을 나눈다. 우리는 날짜 단위로 나눈다(데스크탑은 page_size=1000 으로 한 쪽만 읽는다)
 	total := len(days)
 	results := []row{}
@@ -88,8 +89,8 @@ func (h *Handlers) dailyActivity(w http.ResponseWriter, r *http.Request) {
 // spendLogs 는 litellm /spend/logs 다. internal_user 계열은 자기 것으로 고정한다. summarize=true(날짜별 요약)는 아직 없다
 func (h *Handlers) spendLogs(w http.ResponseWriter, r *http.Request) {
 	p := principal(r.Context())
-	f := limits.LogFilter{UserID: queryString(r, "user_id"), RequestID: queryString(r, "request_id")}
-	if p.Role == core.RoleInternalUser || p.Role == core.RoleInternalUserViewer || p.Role == "" {
+	f := limits.LogQuery{UserID: queryString(r, "user_id"), RequestID: queryString(r, "request_id"), Desc: true, Limit: limits.LogLimit}
+	if !p.CanViewAll() {
 		self := p.UserID
 		f.UserID = &self
 	}
@@ -106,7 +107,7 @@ func (h *Handlers) spendLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		f.Start, f.End = &start, &end
 	}
-	logs, err := h.usage.Logs(r.Context(), f)
+	logs, err := h.usage.LogRows(r.Context(), f)
 	if err != nil {
 		h.internalError(w, r, err)
 		return

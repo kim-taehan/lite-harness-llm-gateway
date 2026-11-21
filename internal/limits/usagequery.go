@@ -1,15 +1,14 @@
 package limits
 
 import (
-	"context"
+	"slices"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"llm-gateway/internal/core"
 )
 
-// UsageQuery 는 request_log 집계다. 사용량 테이블은 limits 가 가지므로 집계도 여기서만 한다(설계 3장)
+// UsageQuery 는 request_log 집계·조회다. 사용량 테이블은 limits 가 가지므로 집계도 여기서만 한다(설계 3장).
+// 조회는 activity.go 의 Activity(묶음 합계)와 LogRows·LogCount·LogPage(요청 행) 두 갈래뿐이다
 type UsageQuery struct {
 	db *core.DB
 }
@@ -38,6 +37,20 @@ func (m *Metrics) Add(o Metrics) {
 	m.TimedRequests += o.TimedRequests
 }
 
+// Accumulate 는 key 의 합계에 v 를 더한다. 없으면 만든다. 묶음 합계를 맵에 쌓는 곳이 여럿이라 한 곳에 둔다
+func Accumulate[K comparable](sums map[K]*Metrics, key K, v Metrics) {
+	if sums[key] == nil {
+		sums[key] = &Metrics{}
+	}
+	sums[key].Add(v)
+}
+
+// Tokens 는 프롬프트와 완성 토큰의 합이다
+func (m Metrics) Tokens() int64 { return m.PromptTokens + m.CompletionTokens }
+
+// Requests 는 성공과 실패를 합친 요청 수다(litellm api_requests)
+func (m Metrics) Requests() int64 { return m.SuccessfulRequests + m.FailedRequests }
+
 // DayUsage 는 하루(UTC 날짜)의 합계와 모델별 합계다
 type DayUsage struct {
 	Date    string // YYYY-MM-DD
@@ -45,36 +58,28 @@ type DayUsage struct {
 	ByModel map[string]Metrics
 }
 
-// Daily 는 start..end(양 끝 포함, UTC 날짜) 의 날짜별 사용량이다. userID 가 nil 이면 전체다
-func (q *UsageQuery) Daily(ctx context.Context, userID *string, start, end time.Time) ([]DayUsage, error) {
-	rows, err := q.db.Q(ctx).Query(ctx, `
-		SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, model,
-		       coalesce(sum(cost), 0)::float8, sum(prompt_tokens), sum(completion_tokens),
-		       count(*) FILTER (WHERE status = 'success'), count(*) FILTER (WHERE status <> 'success'),
-		       coalesce(sum(latency_ms) FILTER (WHERE status = 'success'), 0), count(*) FILTER (WHERE status = 'success')
-		FROM request_log
-		WHERE created_at >= $1 AND created_at < $2 AND ($3::text IS NULL OR user_id = $3)
-		GROUP BY day, model ORDER BY day, model`, start, end.AddDate(0, 0, 1), userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var days []DayUsage
-	for rows.Next() {
-		var day, model string
-		var m Metrics
-		if err := rows.Scan(&day, &model, &m.Spend, &m.PromptTokens, &m.CompletionTokens, &m.SuccessfulRequests, &m.FailedRequests,
-			&m.TotalResponseTimeMS, &m.TimedRequests); err != nil {
-			return nil, err
+// FoldDays 는 묶음 합계를 날짜 오름차순의 하루 단위로 접는다
+func FoldDays(rows []ActivityRow) []DayUsage {
+	byDate := map[string]*DayUsage{}
+	var dates []string
+	for _, a := range rows {
+		day := byDate[a.Date]
+		if day == nil {
+			day = &DayUsage{Date: a.Date, ByModel: map[string]Metrics{}}
+			byDate[a.Date] = day
+			dates = append(dates, a.Date)
 		}
-		if len(days) == 0 || days[len(days)-1].Date != day {
-			days = append(days, DayUsage{Date: day, ByModel: map[string]Metrics{}})
-		}
-		d := &days[len(days)-1]
-		d.Total.Add(m)
-		d.ByModel[model] = m
+		day.Total.Add(a.Metrics)
+		m := day.ByModel[a.Model]
+		m.Add(a.Metrics)
+		day.ByModel[a.Model] = m
 	}
-	return days, rows.Err()
+	slices.Sort(dates)
+	days := make([]DayUsage, 0, len(dates))
+	for _, date := range dates {
+		days = append(days, *byDate[date])
+	}
+	return days
 }
 
 // LogRow 는 요청 하나의 기록이다
@@ -95,27 +100,5 @@ type LogRow struct {
 	HTTPStatus       int
 }
 
-// LogFilter 는 /spend/logs 의 조건이다. 날짜는 litellm 처럼 start 자정 ≤ 시각 ≤ end 자정이다(end 날짜 자체는 사실상 빠진다, K 9.3)
-type LogFilter struct {
-	UserID    *string
-	KeyToken  *string
-	RequestID *string
-	Start     *time.Time
-	End       *time.Time
-}
-
-// LogLimit 은 litellm 과 같은 상한이다. 이만큼이면 잘렸다고 알린다
+// LogLimit 은 litellm /spend/logs 와 같은 상한이다. 이만큼이면 잘렸다고 알린다
 const LogLimit = 10_000
-
-func (q *UsageQuery) Logs(ctx context.Context, f LogFilter) ([]LogRow, error) {
-	rows, err := q.db.Q(ctx).Query(ctx, `
-		SELECT `+logColumns+`
-		FROM request_log
-		WHERE ($1::text IS NULL OR user_id = $1) AND ($2::text IS NULL OR key_token = $2) AND ($3::text IS NULL OR request_id = $3)
-		  AND ($4::timestamptz IS NULL OR created_at >= $4) AND ($5::timestamptz IS NULL OR created_at <= $5)
-		ORDER BY created_at DESC LIMIT $6`, f.UserID, f.KeyToken, f.RequestID, f.Start, f.End, LogLimit)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, scanLog)
-}

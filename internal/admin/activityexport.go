@@ -107,7 +107,7 @@ func exportRecords(rows []limits.ActivityRow, c activityContext, entity, exportT
 		m := g.metrics
 		rec := map[string]any{"date": g.key[0], "entity_id": g.key[1], "entity_alias": nil, "api_key": nil, "key_alias": nil,
 			"user_id": nil, "user_email": nil, "model": nil, "spend": m.Spend, "flat_cost": 0.0, "prompt_tokens": m.PromptTokens,
-			"completion_tokens": m.CompletionTokens, "api_requests": m.SuccessfulRequests + m.FailedRequests,
+			"completion_tokens": m.CompletionTokens, "api_requests": m.Requests(),
 			"successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests,
 			"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
 		if entity == entityTeam {

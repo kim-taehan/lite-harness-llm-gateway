@@ -48,18 +48,12 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 	byDate := map[string]*limits.Metrics{}
 	for _, a := range rows {
 		k := insightKey{a.Model, c.upstreamModel(a), c.provider(a)}
-		if totals[k] == nil {
-			totals[k], daily[k] = &limits.Metrics{}, map[string]*limits.Metrics{}
+		if daily[k] == nil {
+			daily[k] = map[string]*limits.Metrics{}
 		}
-		totals[k].Add(a.Metrics)
-		if daily[k][a.Date] == nil {
-			daily[k][a.Date] = &limits.Metrics{}
-		}
-		daily[k][a.Date].Add(a.Metrics)
-		if byDate[a.Date] == nil {
-			byDate[a.Date] = &limits.Metrics{}
-		}
-		byDate[a.Date].Add(a.Metrics)
+		limits.Accumulate(totals, k, a.Metrics)
+		limits.Accumulate(daily[k], a.Date, a.Metrics)
+		limits.Accumulate(byDate, a.Date, a.Metrics)
 	}
 	keys := make([]insightKey, 0, len(totals))
 	for k := range totals {
@@ -70,9 +64,9 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 		case "spend":
 			return m.Spend
 		case "requests":
-			return float64(m.SuccessfulRequests + m.FailedRequests)
+			return float64(m.Requests())
 		}
-		return float64(m.PromptTokens + m.CompletionTokens)
+		return float64(m.Tokens())
 	}
 	slices.SortStableFunc(keys, func(a, b insightKey) int { return cmp.Compare(rank(totals[b]), rank(totals[a])) })
 	keys = keys[:min(insightsTopModels, len(keys))]
@@ -97,7 +91,7 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 	for _, d := range dates {
 		m := byDate[d]
 		totalsByDate = append(totalsByDate, row{"date": d, "spend": m.Spend, "prompt_tokens": m.PromptTokens,
-			"completion_tokens": m.CompletionTokens, "requests": m.SuccessfulRequests + m.FailedRequests})
+			"completion_tokens": m.CompletionTokens, "requests": m.Requests()})
 	}
 	writeJSON(w, row{"start_date": start.Format(time.DateOnly), "end_date": end.Format(time.DateOnly), "top_models": top,
 		"daily": nonNilRows(days), "daily_totals": totalsByDate})
@@ -105,7 +99,7 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 
 func insightRow(k insightKey, m limits.Metrics) row {
 	return row{"model_group": k.group, "model": k.model, "provider": k.provider, "spend": m.Spend, "prompt_tokens": m.PromptTokens,
-		"completion_tokens": m.CompletionTokens, "requests": m.SuccessfulRequests + m.FailedRequests,
+		"completion_tokens": m.CompletionTokens, "requests": m.Requests(),
 		"successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests}
 }
 

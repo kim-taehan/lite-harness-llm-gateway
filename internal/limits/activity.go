@@ -101,14 +101,9 @@ func scanLog(row pgx.CollectableRow) (LogRow, error) {
 	return r, err
 }
 
-// LogPage 는 한 쪽의 행과 전체 개수(MaxLogTotal 에서 자름), 다음 쪽이 있는지다
-func (q *UsageQuery) LogPage(ctx context.Context, lq LogQuery) ([]LogRow, int, bool, error) {
+// LogRows 는 조건에 맞는 요청 행을 정렬해 Offset 부터 Limit 개 읽는다
+func (q *UsageQuery) LogRows(ctx context.Context, lq LogQuery) ([]LogRow, error) {
 	where, args := logWhere(lq)
-	var total int
-	if err := q.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM request_log "+where+" LIMIT "+strconv.Itoa(MaxLogTotal)+") t", args...).
-		Scan(&total); err != nil {
-		return nil, 0, false, err
-	}
 	order, ok := logSortColumns[lq.SortBy]
 	if !ok {
 		order = "created_at"
@@ -117,14 +112,33 @@ func (q *UsageQuery) LogPage(ctx context.Context, lq LogQuery) ([]LogRow, int, b
 	if lq.Desc {
 		dir = "DESC"
 	}
-	args = append(args, lq.Limit+1, lq.Offset)
+	args = append(args, lq.Limit, lq.Offset)
 	rows, err := q.db.Q(ctx).Query(ctx, "SELECT "+logColumns+" FROM request_log "+where+
 		" ORDER BY "+order+" "+dir+" NULLS LAST, request_id "+dir+
 		" LIMIT $"+strconv.Itoa(len(args)-1)+" OFFSET $"+strconv.Itoa(len(args)), args...)
 	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scanLog)
+}
+
+// LogCount 는 조건에 맞는 행 수다. litellm 처럼 MaxLogTotal 에서 자른다
+func (q *UsageQuery) LogCount(ctx context.Context, lq LogQuery) (int, error) {
+	where, args := logWhere(lq)
+	var total int
+	err := q.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM request_log "+where+" LIMIT "+strconv.Itoa(MaxLogTotal)+") t", args...).Scan(&total)
+	return total, err
+}
+
+// LogPage 는 한 쪽의 행과 전체 개수(MaxLogTotal 에서 자름), 다음 쪽이 있는지다
+func (q *UsageQuery) LogPage(ctx context.Context, lq LogQuery) ([]LogRow, int, bool, error) {
+	total, err := q.LogCount(ctx, lq)
+	if err != nil {
 		return nil, 0, false, err
 	}
-	logs, err := pgx.CollectRows(rows, scanLog)
+	probe := lq
+	probe.Limit = lq.Limit + 1 // 하나 더 읽어 다음 쪽이 있는지 안다
+	logs, err := q.LogRows(ctx, probe)
 	if err != nil {
 		return nil, 0, false, err
 	}

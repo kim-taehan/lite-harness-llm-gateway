@@ -271,10 +271,7 @@ func (e *metricEntry) add(a limits.ActivityRow) {
 	if e.keys == nil {
 		e.keys = map[string]*limits.Metrics{}
 	}
-	if e.keys[*a.KeyToken] == nil {
-		e.keys[*a.KeyToken] = &limits.Metrics{}
-	}
-	e.keys[*a.KeyToken].Add(a.Metrics)
+	limits.Accumulate(e.keys, *a.KeyToken, a.Metrics)
 }
 
 func (e *metricEntry) render(c activityContext, topKeys map[string]bool, metadata row) row {
@@ -418,7 +415,7 @@ func totalsRow(m limits.Metrics) row {
 func keySpendRow(token string, m limits.Metrics, c activityContext) row {
 	return row{"api_key": token, "metadata": c.keys[token], "metrics": row{
 		"spend": m.Spend, "prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens,
-		"total_tokens": m.PromptTokens + m.CompletionTokens, "api_requests": m.SuccessfulRequests + m.FailedRequests,
+		"total_tokens": m.Tokens(), "api_requests": m.Requests(),
 		"successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests,
 		"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
 	}}
@@ -431,10 +428,7 @@ func byKey(rows []limits.ActivityRow, keep func(limits.ActivityRow) bool) ([]str
 		if a.KeyToken == nil || !keep(a) {
 			continue
 		}
-		if sums[*a.KeyToken] == nil {
-			sums[*a.KeyToken] = &limits.Metrics{}
-		}
-		sums[*a.KeyToken].Add(a.Metrics)
+		limits.Accumulate(sums, *a.KeyToken, a.Metrics)
 	}
 	keys := make([]string, 0, len(sums))
 	for k := range sums {
@@ -554,10 +548,7 @@ func (h *Handlers) writeUserActivity(w http.ResponseWriter, r *http.Request, row
 		if a.UserID != nil {
 			id = *a.UserID
 		}
-		if sums[id] == nil {
-			sums[id] = &limits.Metrics{}
-		}
-		sums[id].Add(a.Metrics)
+		limits.Accumulate(sums, id, a.Metrics)
 	}
 	ids := make([]string, 0, len(sums))
 	for id := range sums {
@@ -587,8 +578,8 @@ func (h *Handlers) writeUserActivity(w http.ResponseWriter, r *http.Request, row
 			userID = id
 		}
 		out = append(out, row{"user_id": userID, "user_email": u.UserEmail, "user_alias": u.UserAlias, "spend": m.Spend,
-			"prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens, "total_tokens": m.PromptTokens + m.CompletionTokens,
-			"api_requests": m.SuccessfulRequests + m.FailedRequests, "successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests})
+			"prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens, "total_tokens": m.Tokens(),
+			"api_requests": m.Requests(), "successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests})
 	}
 	writeJSON(w, row{"users": out, "total_users": len(ids), "offset": offset, "limit": limit})
 }
@@ -616,11 +607,7 @@ func (h *Handlers) teamSpendByUser(w http.ResponseWriter, r *http.Request) {
 	type pair struct{ team, user string }
 	sums := map[pair]*limits.Metrics{}
 	for _, a := range rows {
-		p := pair{deref(a.TeamID), deref(a.UserID)}
-		if sums[p] == nil {
-			sums[p] = &limits.Metrics{}
-		}
-		sums[p].Add(a.Metrics)
+		limits.Accumulate(sums, pair{deref(a.TeamID), deref(a.UserID)}, a.Metrics)
 	}
 	pairs := make([]pair, 0, len(sums))
 	var userIDs []string
@@ -645,7 +632,7 @@ func (h *Handlers) teamSpendByUser(w http.ResponseWriter, r *http.Request) {
 		m, u := sums[p], byID[p.user]
 		results = append(results, row{"team_id": p.team, "team_alias": aliases[p.team], "user_id": p.user, "user_email": u.UserEmail,
 			"user_alias": u.UserAlias, "spend": m.Spend, "prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens,
-			"total_tokens": m.PromptTokens + m.CompletionTokens, "api_requests": m.SuccessfulRequests + m.FailedRequests,
+			"total_tokens": m.Tokens(), "api_requests": m.Requests(),
 			"successful_requests": m.SuccessfulRequests, "failed_requests": m.FailedRequests})
 	}
 	writeJSON(w, row{"start_date": start.Format(time.DateOnly), "end_date": end.Format(time.DateOnly), "results": results})
