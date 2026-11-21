@@ -21,14 +21,15 @@ type Handlers struct {
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
 	usage       *limits.UsageQuery
+	settings    *core.Settings
 	rows        rows
 	now         func() time.Time
 	logger      *slog.Logger
 }
 
 func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies,
-	deployments *inference.Deployments, usage *limits.UsageQuery, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments, usage: usage,
+	deployments *inference.Deployments, usage *limits.UsageQuery, settings *core.Settings, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments, usage: usage, settings: settings,
 		rows: rows{teams: teams, users: users, limits: policies}, now: now, logger: logger}
 }
 
@@ -84,6 +85,17 @@ func (h *Handlers) Routes() []core.Route {
 		// 아직 없는 기능은 빈 목록. litellm 처럼 /guardrails/list 는 internal_user_viewer 에게 401 이다(K 9.1)
 		route(http.MethodGet, "/guardrails/list", core.Roles(core.RoleInternalUser), h.emptyGuardrails),
 		route(http.MethodGet, "/v1/mcp/server", handlerDecide, h.emptyMCPServers),
+		// 대시보드 설정. 화면 설정·테마·로고는 로그인 전에도 부른다(litellm 도 공개). 나머지는 litellm 처럼 관리자만(viewer 는 GET 만)
+		route(http.MethodGet, "/get/ui_settings", core.Public(), h.getSettings(uiSettingsForm)),
+		route(http.MethodPatch, "/update/ui_settings", adminOnly, h.updateSettings(uiSettingsForm)),
+		route(http.MethodGet, "/get/ui_theme_settings", core.Public(), h.getSettings(uiThemeForm)),
+		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
+		route(http.MethodGet, "/get/default_team_settings", adminOnly, h.getSettings(defaultTeamForm)),
+		route(http.MethodPatch, "/update/default_team_settings", adminOnly, h.updateSettings(defaultTeamForm)),
+		route(http.MethodGet, "/get/internal_user_settings", adminOnly, h.getSettings(internalUserForm)),
+		route(http.MethodPatch, "/update/internal_user_settings", adminOnly, h.updateSettings(internalUserForm)),
+		route(http.MethodGet, "/get_image", core.Public(), serveLogo),
+		route(http.MethodGet, "/get_favicon", core.Public(), serveLogo),
 	}
 }
 

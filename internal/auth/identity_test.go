@@ -238,3 +238,26 @@ func TestUserPage_UserIDsMatchLikeLitellm(t *testing.T) {
 		t.Errorf("하나면 부분 일치 %d(기대 2), 여럿이면 정확히 %d(기대 2)", one.Total, many.Total)
 	}
 }
+
+func TestSSOUser_NewUserGetsDefaultUserSettings(t *testing.T) {
+	db, _ := dbtest.Open(t)
+	users := NewUsers(db, NewKeyCache(time.Minute, time.Now))
+	ctx := t.Context()
+
+	first, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "s1", Email: "Kim@corp.local", Name: "김"})
+	if err != nil || first.UserID != "kim@corp.local" || *first.UserRole != core.RoleInternalUserViewer || len(first.Models) != 0 {
+		t.Fatalf("기본값(litellm) = %+v %v", first, err)
+	}
+	if _, err := core.NewSettings(db).Merge(ctx, "default_internal_user_params", map[string]any{"user_role": "internal_user", "models": []string{"m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := users.upsertSSOUser(ctx, oidcClaims{Subject: "s2", Email: "lee@corp.local"})
+	if *second.UserRole != core.RoleInternalUser || len(second.Models) != 1 || second.Models[0] != "m1" {
+		t.Errorf("대시보드 기본 사용자 설정 = %+v", second)
+	}
+	// 이미 있는 사용자의 역할은 바꾸지 않는다
+	again, _ := users.upsertSSOUser(ctx, oidcClaims{Subject: "s1", Email: "kim@corp.local"})
+	if *again.UserRole != core.RoleInternalUserViewer {
+		t.Errorf("기존 사용자 역할이 바뀌었다: %+v", again)
+	}
+}

@@ -130,6 +130,42 @@ func TestDashboard_UserPasswordLoginAndLogout(t *testing.T) {
 	}
 }
 
+func TestDashboard_SettingsKeepLitellmDefaultsAndStoreChanges(t *testing.T) {
+	api := newAPI(t)
+	b := browser{t: t, h: api.h}
+	// 로그인 전에 부르는 것: 화면 설정(사이드바), 테마, 로고
+	ui := jsonOf(t, b.do("GET", "/get/ui_settings", nil, nil))
+	values := ui["values"].(map[string]any)
+	if values["enabled_ui_pages_internal_users"] != nil || values["disable_model_add_for_internal_users"] != false ||
+		ui["field_schema"].(map[string]any)["properties"].(map[string]any)["enabled_ui_pages_internal_users"] == nil {
+		t.Errorf("ui_settings = %v", ui)
+	}
+	if theme := jsonOf(t, b.do("GET", "/get/ui_theme_settings", nil, nil)); theme["values"].(map[string]any)["logo_url"] != nil {
+		t.Errorf("theme = %v", theme)
+	}
+	if rec := b.do("GET", "/get_image", nil, nil); rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
+		t.Errorf("로고: %d %s", rec.Code, rec.Header().Get("Content-Type"))
+	}
+
+	// 관리자가 바꾼 값만 저장되고 기본값과 합쳐 나온다
+	updated := api.ok("PATCH", "/update/internal_user_settings", map[string]any{"user_role": "internal_user", "models": []string{"m1"}})
+	if updated["status"] != "success" || updated["settings"].(map[string]any)["user_role"] != "internal_user" {
+		t.Errorf("update = %v", updated)
+	}
+	got := api.ok("GET", "/get/internal_user_settings", nil)["values"].(map[string]any)
+	if got["user_role"] != "internal_user" || got["max_budget"] != nil || len(got["models"].([]any)) != 1 {
+		t.Errorf("internal_user_settings = %v", got)
+	}
+	if status, _ := api.do("PATCH", "/update/default_team_settings", map[string]any{"nope": 1}); status != 400 {
+		t.Errorf("모르는 설정: %d", status)
+	}
+	api.ok("PATCH", "/update/ui_settings", map[string]any{"enabled_ui_pages_internal_users": []string{"api-keys", "usage"}})
+	ui = jsonOf(t, b.do("GET", "/get/ui_settings", nil, nil))
+	if pages := ui["values"].(map[string]any)["enabled_ui_pages_internal_users"].([]any); len(pages) != 2 || ui["source"].(map[string]any)["enabled_ui_pages_internal_users"] != "db" {
+		t.Errorf("ui_settings 저장 = %v", ui)
+	}
+}
+
 func TestDashboard_FormLoginRedirects(t *testing.T) {
 	b := browser{t: t, h: newAPI(t).h}
 	// SSO 가 없는 빌드의 SSO 버튼은 /login 으로 보내는 폼이다

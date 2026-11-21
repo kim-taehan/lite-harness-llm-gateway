@@ -350,15 +350,18 @@ func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
 	if alias == "" {
 		alias = c.PreferredUsername
 	}
-	viewer := core.RoleInternalUserViewer
 	var result User
 	err := u.db.InTx(ctx, func(ctx context.Context) error {
 		existing, err := u.Find(ctx, userID)
 		if errors.Is(err, ErrUserNotFound) {
+			role, models, err := u.newUserDefaults(ctx)
+			if err != nil {
+				return err
+			}
 			result, err = u.one(ctx, `
-				INSERT INTO app_user (user_id, user_email, user_alias, user_role, sso_user_id, metadata)
-				VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+userColumns,
-				userID, nullIfEmpty(email), nullIfEmpty(alias), viewer, c.Subject, map[string]any{"auth_provider": "generic"})
+				INSERT INTO app_user (user_id, user_email, user_alias, user_role, models, sso_user_id, metadata)
+				VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+userColumns,
+				userID, nullIfEmpty(email), nullIfEmpty(alias), role, models, c.Subject, map[string]any{"auth_provider": "generic"})
 			return err
 		}
 		if err != nil {
@@ -371,6 +374,28 @@ func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
 		return err
 	})
 	return result, err
+}
+
+// newUserDefaults 는 SSO 로 처음 들어온 사용자의 역할·모델이다. 대시보드 "Default User Settings"
+// (litellm default_internal_user_params)에 값이 있으면 그것을, 없으면 litellm 기본(internal_user_viewer, 모델 없음)을 쓴다
+func (u *Users) newUserDefaults(ctx context.Context) (core.Role, []string, error) {
+	stored, err := core.NewSettings(u.db).Get(ctx, "default_internal_user_params")
+	if err != nil {
+		return "", nil, err
+	}
+	role := core.RoleInternalUserViewer
+	if r, ok := stored["user_role"].(string); ok && r != "" {
+		role = core.Role(r)
+	}
+	models := []string{}
+	if list, ok := stored["models"].([]any); ok {
+		for _, m := range list {
+			if s, ok := m.(string); ok {
+				models = append(models, s)
+			}
+		}
+	}
+	return role, models, nil
 }
 
 func nullIfEmpty(s string) *string {
