@@ -492,7 +492,7 @@ func (h *Handlers) activity(entity, view string) http.HandlerFunc {
 		case "keys":
 			keys, sums := byKey(rows, keepAll)
 			page := make([]row, 0, limit)
-			for _, k := range keys[min(offset, len(keys)):min(offset+limit, len(keys))] {
+			for _, k := range pageOf(keys, offset, limit) {
 				page = append(page, keySpendRow(k, *sums[k], c))
 			}
 			writeJSON(w, row{"api_keys": page, "total_api_keys": len(keys), "offset": offset, "limit": limit})
@@ -569,7 +569,7 @@ func (h *Handlers) writeUserActivity(w http.ResponseWriter, r *http.Request, row
 		}
 		return cmp.Or(cmp.Compare(sums[b].Spend, sums[a].Spend), cmp.Compare(a, b))
 	})
-	pageIDs := ids[min(offset, len(ids)):min(offset+limit, len(ids))]
+	pageIDs := pageOf(ids, offset, limit)
 	users, err := h.users.FindAll(r.Context(), pageIDs)
 	if err != nil {
 		h.internalError(w, r, err)

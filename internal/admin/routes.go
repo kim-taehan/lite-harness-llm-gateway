@@ -101,6 +101,9 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/model_group/make_public", adminOnly, h.makeModelGroupsPublic),
 		route(http.MethodPost, "/model_hub/update_useful_links", adminOnly, h.updateUsefulLinks),
 		route(http.MethodGet, "/public/model_hub/info", core.Public(), h.modelHubInfo),
+		// 공개 모델 허브 목록은 litellm 처럼 로그인 없이 본다
+		route(http.MethodGet, "/public/v1/model_hub", core.Public(), h.publicModelHub),
+		route(http.MethodGet, "/public/v1/model_hub/{facet}", core.Public(), h.publicModelHubFacet),
 		// 사용량(K 9장). /spend/logs 는 litellm spend_tracking_routes(internal_user·viewer), 일별 사용량은 self_managed
 		route(http.MethodGet, "/user/daily/activity", handlerDecide, h.dailyActivity),
 		route(http.MethodGet, "/spend/logs", spendTracking, h.spendLogs),

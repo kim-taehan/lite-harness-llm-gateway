@@ -260,9 +260,8 @@ func (h *Handlers) modelInfoV2(w http.ResponseWriter, r *http.Request) {
 	deployments = slices.DeleteFunc(deployments, func(d inference.Deployment) bool { return !matchesModelFilters(d, q) })
 	sortDeployments(deployments, q.Get("sortBy"), q.Get("sortOrder"))
 	total := len(deployments)
-	start := min((page-1)*size, total)
 	data := make([]row, 0, size)
-	for _, d := range deployments[start:min(start+size, total)] {
+	for _, d := range pageOf(deployments, (page-1)*size, size) {
 		data = append(data, deploymentRow(d))
 	}
 	core.WriteJSON(w, http.StatusOK, row{"data": data, "total_count": total, "current_page": page,

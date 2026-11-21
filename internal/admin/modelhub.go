@@ -5,10 +5,12 @@ import (
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
-	"llm-gateway/internal/inference"
 )
 
-// 모델 허브 관리(M 5장). 공개할 모델 그룹과 허브 위 링크를 core.Settings 에 둔다. 공개 목록 자체는 inference 가 낸다
+// 모델 허브 관리(M 5장). 공개할 모델 그룹과 허브 위 링크를 core.Settings 에 둔다. 공개 목록은 publichub.go 다
+
+// modelHubSetting 은 공개 그룹(public_model_groups)과 링크(useful_links)를 담는 core.Settings 이름이다
+const modelHubSetting = "model_hub"
 
 func (h *Handlers) makeModelGroupsPublic(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -22,7 +24,7 @@ func (h *Handlers) makeModelGroupsPublic(w http.ResponseWriter, r *http.Request)
 		validationError{missing(raw, "model_groups")}.write(w)
 		return
 	}
-	if _, err := h.settings.Merge(r.Context(), inference.ModelHubSetting, map[string]any{"public_model_groups": req.ModelGroups}); err != nil {
+	if _, err := h.settings.Merge(r.Context(), modelHubSetting, map[string]any{"public_model_groups": req.ModelGroups}); err != nil {
 		h.internalError(w, r, err)
 		return
 	}
@@ -42,7 +44,7 @@ func (h *Handlers) updateUsefulLinks(w http.ResponseWriter, r *http.Request) {
 		validationError{missing(raw, "useful_links")}.write(w)
 		return
 	}
-	if _, err := h.settings.Merge(r.Context(), inference.ModelHubSetting, map[string]any{"useful_links": req.UsefulLinks}); err != nil {
+	if _, err := h.settings.Merge(r.Context(), modelHubSetting, map[string]any{"useful_links": req.UsefulLinks}); err != nil {
 		h.internalError(w, r, err)
 		return
 	}
@@ -52,7 +54,7 @@ func (h *Handlers) updateUsefulLinks(w http.ResponseWriter, r *http.Request) {
 
 // modelHubInfo 는 공개 허브 머리말이다(로그인 없이 본다). docs_title 은 litellm 기본값이다
 func (h *Handlers) modelHubInfo(w http.ResponseWriter, r *http.Request) {
-	stored, err := h.settings.Get(r.Context(), inference.ModelHubSetting)
+	stored, err := h.settings.Get(r.Context(), modelHubSetting)
 	if err != nil {
 		h.internalError(w, r, err)
 		return

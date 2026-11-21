@@ -112,7 +112,7 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, l
 		routes: slices.Concat(
 			core.HealthRoutes(lifecycle, db),
 			login.Routes(),
-			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), settings, time.Now, logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(db, teams, users, keys, policies, deployments, limits.NewUsageQuery(db), settings, time.Now, logger).Routes(),
 		),
 	}

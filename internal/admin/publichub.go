@@ -1,26 +1,24 @@
-package inference
+package admin
 
 import (
 	"cmp"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/inference"
 )
 
 // 공개 모델 허브(M 5장, litellm public_v1/model_hub.py). 관리자가 "Make Public" 으로 고른 모델 그룹만 보인다.
-// 쿼리는 litellm 목록 규칙 그대로다: page, page_size, sort(쉼표, - 는 내림차순), q(검색), filter[mode|providers|features][in]
-
-// ModelHubSetting 은 공개 그룹과 링크를 담는 core.Settings 이름이다(admin 이 쓴다)
-const ModelHubSetting = "model_hub"
+// 쿼리는 litellm 목록 규칙 그대로다: page, page_size, sort(쉼표, - 는 내림차순), q(검색), filter[mode|providers|features][in].
+// 공개할 그룹과 링크는 core.Settings 에 두므로(admin/modelhub.go) 목록도 같은 곳에서 읽는다. 모델 그룹 행 자체는 inference 가 만든다
 
 const maxHubPageSize = 100 // litellm 목록 경로의 한 쪽 상한
 
-// publicRows 는 공개 그룹 가운데 쓸 수 있는 배포가 있는 것을 거른 행이다
-func (h *Handlers) publicRows(r *http.Request) ([]map[string]any, error) {
-	stored, err := h.settings.Get(r.Context(), ModelHubSetting)
+// publicHubRows 는 공개 그룹 가운데 쓸 수 있는 배포가 있는 것을 거른 행이다
+func (h *Handlers) publicHubRows(r *http.Request) ([]row, error) {
+	stored, err := h.settings.Get(r.Context(), modelHubSetting)
 	if err != nil {
 		return nil, err
 	}
@@ -28,43 +26,42 @@ func (h *Handlers) publicRows(r *http.Request) ([]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	byName := map[string][]Deployment{}
+	byName := map[string][]inference.Deployment{}
 	for _, d := range all {
 		byName[d.ModelName] = append(byName[d.ModelName], d)
 	}
 	q := r.URL.Query()
 	search := strings.ToLower(q.Get("q"))
-	rows := []map[string]any{}
-	for _, name := range stringList(stored["public_model_groups"]) {
+	rows := []row{}
+	for _, name := range stringsOf(stored["public_model_groups"]) {
 		group, ok := byName[name]
 		if !ok || (search != "" && !strings.Contains(strings.ToLower(name), search)) {
 			continue
 		}
-		row := groupRow(name, group)
-		if matchesIn(q.Get("filter[mode][in]"), []string{row["mode"].(string)}) &&
-			matchesIn(q.Get("filter[providers][in]"), row["providers"].([]string)) &&
-			matchesIn(q.Get("filter[features][in]"), features(row)) {
-			rows = append(rows, row)
+		hubRow := inference.ModelGroupRow(name, group)
+		if matchesIn(q.Get("filter[mode][in]"), []string{hubRow["mode"].(string)}) &&
+			matchesIn(q.Get("filter[providers][in]"), hubRow["providers"].([]string)) &&
+			matchesIn(q.Get("filter[features][in]"), hubFeatures(hubRow)) {
+			rows = append(rows, hubRow)
 		}
 	}
 	return rows, nil
 }
 
 func (h *Handlers) publicModelHub(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.publicRows(r)
+	rows, err := h.publicHubRows(r)
 	if err != nil {
 		h.internalError(w, r, err)
 		return
 	}
 	q := r.URL.Query()
-	sortRows(rows, cmp.Or(q.Get("sort"), "model_group"))
-	page, size := pageParam(q.Get("page"), 1), min(pageParam(q.Get("page_size"), 50), maxHubPageSize)
+	sortHubRows(rows, cmp.Or(q.Get("sort"), "model_group"))
+	page, size := positiveInt(q.Get("page"), 1), min(positiveInt(q.Get("page_size"), 50), maxHubPageSize)
 	total := len(rows)
-	start := min((page-1)*size, total)
-	core.WriteJSON(w, http.StatusOK, map[string]any{
-		"data":  rows[start:min(start+size, total)],
-		"links": map[string]any{"self": r.URL.RequestURI(), "first": r.URL.RequestURI(), "last": r.URL.RequestURI(), "next": nil, "prev": nil},
-		"meta":  map[string]any{"page": page, "page_size": size, "total_count": total, "total_pages": (total + size - 1) / size},
+	core.WriteJSON(w, http.StatusOK, row{
+		"data":  pageOf(rows, (page-1)*size, size),
+		"links": row{"self": r.URL.RequestURI(), "first": r.URL.RequestURI(), "last": r.URL.RequestURI(), "next": nil, "prev": nil},
+		"meta":  row{"page": page, "page_size": size, "total_count": total, "total_pages": (total + size - 1) / size},
 	})
 }
 
@@ -75,21 +72,21 @@ func (h *Handlers) publicModelHubFacet(w http.ResponseWriter, r *http.Request) {
 		core.WriteRouteNotFound(w)
 		return
 	}
-	rows, err := h.publicRows(r)
+	rows, err := h.publicHubRows(r)
 	if err != nil {
 		h.internalError(w, r, err)
 		return
 	}
 	values := []string{}
-	for _, row := range rows {
+	for _, hubRow := range rows {
 		var vs []string
 		switch facet {
 		case "providers":
-			vs = row["providers"].([]string)
+			vs = hubRow["providers"].([]string)
 		case "modes":
-			vs = []string{row["mode"].(string)}
+			vs = []string{hubRow["mode"].(string)}
 		case "features":
-			vs = features(row)
+			vs = hubFeatures(hubRow)
 		}
 		for _, v := range vs {
 			if !slices.Contains(values, v) {
@@ -98,18 +95,18 @@ func (h *Handlers) publicModelHubFacet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	slices.Sort(values)
-	size := min(pageParam(r.URL.Query().Get("page_size"), 50), maxHubPageSize)
-	core.WriteJSON(w, http.StatusOK, map[string]any{
+	size := min(positiveInt(r.URL.Query().Get("page_size"), 50), maxHubPageSize)
+	core.WriteJSON(w, http.StatusOK, row{
 		"data":  values[:min(size, len(values))],
-		"links": map[string]any{"self": r.URL.RequestURI(), "next": nil, "prev": nil},
-		"meta":  map[string]any{"has_more": len(values) > size, "page": 1, "page_size": size},
+		"links": row{"self": r.URL.RequestURI(), "next": nil, "prev": nil},
+		"meta":  row{"has_more": len(values) > size, "page": 1, "page_size": size},
 	})
 }
 
-// features 는 참인 supports_* 플래그 이름(접두어 뗀 것)이다. litellm 은 이것 하나로 기능 필터를 건다
-func features(row map[string]any) []string {
+// hubFeatures 는 참인 supports_* 플래그 이름(접두어 뗀 것)이다. litellm 은 이것 하나로 기능 필터를 건다
+func hubFeatures(hubRow row) []string {
 	var names []string
-	for k, v := range row {
+	for k, v := range hubRow {
 		if name, ok := strings.CutPrefix(k, "supports_"); ok && v == true {
 			names = append(names, name)
 		}
@@ -130,13 +127,13 @@ func matchesIn(filter string, values []string) bool {
 	return false
 }
 
-// sortRows 는 sort 의 첫 필드로 정렬한다(화면은 한 열씩만 정렬한다). 값이 없는 행은 앞에 둔다
-func sortRows(rows []map[string]any, sort string) {
+// sortHubRows 는 sort 의 첫 필드로 정렬한다(화면은 한 열씩만 정렬한다). 값이 없는 행은 앞에 둔다
+func sortHubRows(rows []row, sort string) {
 	field, _, _ := strings.Cut(sort, ",")
 	desc := strings.HasPrefix(field, "-")
 	field = strings.TrimPrefix(field, "-")
-	slices.SortStableFunc(rows, func(a, b map[string]any) int {
-		c := compareCell(a[field], b[field])
+	slices.SortStableFunc(rows, func(a, b row) int {
+		c := compareHubCell(a[field], b[field])
 		if desc {
 			return -c
 		}
@@ -144,7 +141,7 @@ func sortRows(rows []map[string]any, sort string) {
 	})
 }
 
-func compareCell(a, b any) int {
+func compareHubCell(a, b any) int {
 	key := func(v any) (float64, string, bool) {
 		switch x := v.(type) {
 		case string:
@@ -173,7 +170,8 @@ func compareCell(a, b any) int {
 	return cmp.Or(cmp.Compare(an, bn), cmp.Compare(as, bs))
 }
 
-func stringList(v any) []string {
+// stringsOf 는 JSON 으로 저장한 문자열 배열을 읽는다
+func stringsOf(v any) []string {
 	items, _ := v.([]any)
 	var out []string
 	for _, item := range items {
@@ -182,12 +180,4 @@ func stringList(v any) []string {
 		}
 	}
 	return out
-}
-
-func pageParam(s string, fallback int) int {
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 {
-		return fallback
-	}
-	return n
 }

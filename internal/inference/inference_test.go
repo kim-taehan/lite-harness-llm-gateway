@@ -82,19 +82,15 @@ func TestModelDenied_KeyThenTeamWithWildcards(t *testing.T) {
 	}
 }
 
-func TestMatchesIn_AndSortRows(t *testing.T) {
-	if !matchesIn("", []string{"a"}) || !matchesIn("a,b", []string{"b"}) || matchesIn("a,b", []string{"c"}) || matchesIn("a", nil) {
-		t.Error("matchesIn 은 비면 통과, 하나라도 겹치면 통과")
+func TestModelGroupRow_ListsProvidersOnceAndDefaultsToChatMode(t *testing.T) {
+	group := []Deployment{{Provider: "ollama"}, {Provider: "ollama"}, {Provider: "hosted_vllm", SupportsReasoning: true}}
+	row := ModelGroupRow("g", group)
+	providers, _ := row["providers"].([]string)
+	if len(providers) != 2 || row["mode"] != "chat" || row["model_group"] != "g" {
+		t.Errorf("행 = %v", row)
 	}
-	rows := []map[string]any{{"model_group": "b"}, {"model_group": "a"}, {"model_group": "c"}}
-	sortRows(rows, "-model_group")
-	if rows[0]["model_group"] != "c" || rows[2]["model_group"] != "a" {
-		t.Errorf("내림차순 = %v", rows)
-	}
-	tokens, other := int64(5), int64(9)
-	numbers := []map[string]any{{"max_input_tokens": &other}, {"max_input_tokens": (*int64)(nil)}, {"max_input_tokens": &tokens}}
-	sortRows(numbers, "max_input_tokens")
-	if numbers[0]["max_input_tokens"] != (*int64)(nil) || numbers[1]["max_input_tokens"] != &tokens {
-		t.Errorf("값 없는 행이 앞, 숫자는 오름차순이어야 한다: %v", numbers)
+	group[0].ExtraInfo = map[string]any{"mode": "embedding"}
+	if ModelGroupRow("g", group)["mode"] != "embedding" {
+		t.Error("model_info.mode 가 있으면 그 값이다")
 	}
 }

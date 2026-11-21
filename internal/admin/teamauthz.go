@@ -143,14 +143,7 @@ func (h *Handlers) teamAdminEditableFields(ctx context.Context) ([]string, error
 	if err != nil {
 		return nil, err
 	}
-	items, _ := stored["team_admin_editable_team_fields"].([]any)
-	fields := make([]string, 0, len(items))
-	for _, item := range items {
-		if s, ok := item.(string); ok {
-			fields = append(fields, s)
-		}
-	}
-	return fields, nil
+	return stringsOf(stored["team_admin_editable_team_fields"]), nil
 }
 
 // teamAdminEditDenial 은 litellm team_admin_edit_verdict 의 거부 사유다. 허용이면 빈 문자열이다.

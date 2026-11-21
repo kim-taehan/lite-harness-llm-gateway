@@ -67,11 +67,9 @@ func (h *Handlers) dailyActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	// litellm 은 원시 행(날짜×키×모델) 단위로 쪽을 나눈다. 우리는 날짜 단위로 나눈다(데스크탑은 page_size=1000 으로 한 쪽만 읽는다)
 	total := len(days)
-	from := min((page-1)*pageSize, total)
-	to := min(from+pageSize, total)
 	results := []row{}
 	var sum limits.Metrics
-	for _, d := range days[from:to] {
+	for _, d := range pageOf(days, (page-1)*pageSize, pageSize) {
 		groups := row{}
 		for model, m := range d.ByModel {
 			groups[model] = row{"metrics": metricsRow(m), "metadata": row{}, "api_key_breakdown": row{}}

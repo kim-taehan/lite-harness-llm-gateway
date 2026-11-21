@@ -169,6 +169,12 @@ func utc(t *time.Time) *time.Time {
 	return &u
 }
 
+// pageOf 는 목록의 한 쪽(offset 부터 limit 개)이다. 범위를 넘으면 빈 목록이다
+func pageOf[T any](items []T, offset, limit int) []T {
+	start := min(max(offset, 0), len(items))
+	return items[start:min(start+limit, len(items))]
+}
+
 func totalPages(total int64, size int) int64 {
 	if total == 0 {
 		return 0
