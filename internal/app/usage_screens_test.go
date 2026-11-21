@@ -66,6 +66,20 @@ func TestUsageScreens_AggregatedKeysUsersExportAndLogs(t *testing.T) {
 		t.Fatalf("aggregated = %v", agg)
 	}
 
+	// 응답 시간 합계는 화면이 필수로 읽고, 이름이 겹친 키(total_total_tokens)는 없어야 한다
+	if meta["total_response_time_ms"] == nil || meta["total_timed_requests"] != 3.0 || meta["total_tokens"] == nil || meta["total_total_tokens"] != nil {
+		t.Errorf("metadata 합계 키 = %v", meta)
+	}
+	// 예산을 다 쓴 키의 거절 문구는 키 별명을 보인다
+	budgetKey := api.ok("POST", "/key/generate", map[string]any{"user_id": "lee", "key_alias": "tight-budget", "max_budget": 0})
+	over := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`))
+	over.Header.Set("Authorization", "Bearer "+budgetKey["key"].(string))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, over)
+	if rec.Code != 422 || !strings.Contains(rec.Body.String(), "Key=tight-budget") {
+		t.Errorf("예산 초과 문구: %d %s", rec.Code, rec.Body.String())
+	}
+
 	// 비관리자는 자기 것만, 남의 것은 403
 	if mine := jsonOf(t, b.do("GET", "/user/daily/activity/aggregated?"+dates+"&user_id=kim", nil, kim)); mine["metadata"].(map[string]any)["total_api_requests"] != 2.0 {
 		t.Errorf("내 사용량 = %v", mine["metadata"])

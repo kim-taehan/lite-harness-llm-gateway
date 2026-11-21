@@ -191,11 +191,25 @@ func (l *Login) ssoUser(w http.ResponseWriter, r *http.Request, verifier string)
 	claims, err := l.oidc.exchange(r.Context(), code, verifier)
 	if err != nil {
 		l.logger.Warn("SSO 코드 교환 실패", "err", err)
-		core.ProxyError{Status: 401, Type: "auth_error", Param: "None", Message: err.Error()}.Write(w)
+		message := "SSO sign-in failed"
+		var rejected *tokenExchangeError
+		if errors.As(err, &rejected) {
+			message = rejected.message // IdP 가 거절한 이유만 보여 준다. 연결 오류는 내부 주소가 섞여 있어 감춘다
+		}
+		core.ProxyError{Status: 401, Type: "auth_error", Param: "None", Message: message}.Write(w)
 		return User{}, false
 	}
 	user, err := l.users.upsertSSOUser(r.Context(), claims)
-	if err != nil {
+	switch {
+	case errors.Is(err, errSSOSubjectMismatch):
+		core.ProxyError{Status: 403, Type: "auth_error", Param: "None",
+			Message: "This email already belongs to a different SSO identity. Ask an admin to resolve the conflict."}.Write(w)
+		return User{}, false
+	case errors.Is(err, errSSOEmailUnverified):
+		core.ProxyError{Status: 403, Type: "auth_error", Param: "None",
+			Message: "This account already exists. Verify your email at the identity provider before signing in with SSO."}.Write(w)
+		return User{}, false
+	case err != nil:
 		l.logger.Error("SSO 사용자 저장 실패", "err", err)
 		detail(w, http.StatusInternalServerError, "Failed to retrieve user information from SSO")
 		return User{}, false

@@ -81,18 +81,10 @@ func (h *Handlers) dailyActivity(w http.ResponseWriter, r *http.Request) {
 		}})
 		sum.Add(d.Total)
 	}
-	core.WriteJSON(w, http.StatusOK, row{"results": results, "metadata": row{
-		"total_spend": sum.Spend, "total_flat_cost": 0.0, "total_ptu_hours": 0.0,
-		"total_prompt_tokens": sum.PromptTokens, "total_completion_tokens": sum.CompletionTokens,
-		"total_tokens": sum.PromptTokens + sum.CompletionTokens, "total_api_requests": sum.SuccessfulRequests + sum.FailedRequests,
-		"total_successful_requests": sum.SuccessfulRequests, "total_failed_requests": sum.FailedRequests,
-		"total_cache_read_input_tokens": 0, "total_cache_creation_input_tokens": 0, "total_compression_saved_tokens": 0,
-		"total_compression_savings_spend": 0.0, "total_prompt_caching_savings_spend": 0.0,
-		"total_gateway_injected_caching_savings_spend": 0.0, "total_autorouter_savings_spend": 0.0,
-		"total_response_time_ms": sum.TotalResponseTimeMS, "total_timed_requests": sum.TimedRequests,
-		"page": page, "total_pages": totalPages(int64(total), pageSize), "has_more": page*pageSize < total,
-		"api_key_limit": nil, "total_api_keys": nil, "entity_total_api_keys": nil,
-	}})
+	metadata := totalsRow(sum)
+	metadata["page"], metadata["total_pages"], metadata["has_more"] = page, totalPages(int64(total), pageSize), page*pageSize < total
+	metadata["api_key_limit"], metadata["total_api_keys"], metadata["entity_total_api_keys"] = nil, nil, nil
+	core.WriteJSON(w, http.StatusOK, row{"results": results, "metadata": metadata})
 }
 
 // spendLogs 는 litellm /spend/logs 다. internal_user 계열은 자기 것으로 고정한다. summarize=true(날짜별 요약)는 아직 없다

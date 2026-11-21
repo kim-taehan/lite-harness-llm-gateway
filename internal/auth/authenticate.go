@@ -18,6 +18,7 @@ type Principal struct {
 	Role   core.Role // 사용자 행이 없는 키는 빈 문자열(litellm 의 role=None)
 	// 가상 키로 들어왔을 때만 있다
 	KeyToken string
+	KeyAlias string // 예산 초과 문구에 쓴다
 	TeamID   string
 	Master   bool
 	// 허용 모델. 비어 있으면 모두 허용(litellm 과 같다). 마스터 키는 둘 다 비어 있다
@@ -118,7 +119,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 	if resolved.teamBlocked {
 		return Principal{}, core.AuthError("Team=" + deref(k.TeamID) + " is blocked. Update via `/team/unblock` if you're an admin.")
 	}
-	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, TeamID: deref(k.TeamID),
+	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, KeyAlias: deref(k.KeyAlias), TeamID: deref(k.TeamID),
 		KeyModels: k.Models, TeamModels: resolved.teamModels}, nil
 }
 

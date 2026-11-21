@@ -405,9 +405,8 @@ func aggregatedResponse(rows []limits.ActivityRow, c activityContext, entity str
 func totalsRow(m limits.Metrics) row {
 	out := row{}
 	for k, v := range metricsRow(m) {
-		out["total_"+k] = v
+		out["total_"+strings.TrimPrefix(k, "total_")] = v // total_tokens·total_response_time_ms 는 이미 total_ 로 시작한다
 	}
-	out["total_tokens"] = m.PromptTokens + m.CompletionTokens
 	return out
 }
 

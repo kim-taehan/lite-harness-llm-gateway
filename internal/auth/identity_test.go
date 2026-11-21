@@ -261,3 +261,32 @@ func TestSSOUser_NewUserGetsDefaultUserSettings(t *testing.T) {
 		t.Errorf("기존 사용자 역할이 바뀌었다: %+v", again)
 	}
 }
+
+func TestSSOUser_DoesNotTakeOverAnotherIdentity(t *testing.T) {
+	db, _ := dbtest.Open(t)
+	users := NewUsers(db, NewKeyCache(time.Minute, time.Now))
+	ctx := t.Context()
+	no, yes := false, true
+
+	if _, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "owner", Email: "kim@corp.local"}); err != nil {
+		t.Fatal(err)
+	}
+	// 같은 이메일이어도 다른 SSO 주체는 그 계정에 들어올 수 없다
+	if _, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "intruder", Email: "kim@corp.local", EmailVerified: &yes}); !errors.Is(err, errSSOSubjectMismatch) {
+		t.Errorf("다른 주체: %v", err)
+	}
+	// 관리자가 미리 만든 계정(SSO 에 안 묶임)은 IdP 가 이메일을 확인했을 때만 묶인다
+	if _, _, err := users.Create(ctx, NewUser{UserID: ptr("lee@corp.local"), UserEmail: ptr("lee@corp.local")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "someone", Email: "lee@corp.local", EmailVerified: &no}); !errors.Is(err, errSSOEmailUnverified) {
+		t.Errorf("확인 안 된 이메일: %v", err)
+	}
+	if linked, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "lee-sub", Email: "lee@corp.local", EmailVerified: &yes}); err != nil || linked.SSOUserID == nil || *linked.SSOUserID != "lee-sub" {
+		t.Errorf("확인된 이메일로 묶기: %+v %v", linked, err)
+	}
+	// 새 사용자는 이메일 확인 여부와 상관없이 만들어진다(관리자가 만든 Keycloak 계정은 확인 표시가 없는 경우가 많다)
+	if _, err := users.upsertSSOUser(ctx, oidcClaims{Subject: "new", Email: "new@corp.local", EmailVerified: &no}); err != nil {
+		t.Errorf("새 사용자: %v", err)
+	}
+}

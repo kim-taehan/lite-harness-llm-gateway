@@ -51,7 +51,7 @@ func (q *UsageQuery) Daily(ctx context.Context, userID *string, start, end time.
 		SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, model,
 		       coalesce(sum(cost), 0)::float8, sum(prompt_tokens), sum(completion_tokens),
 		       count(*) FILTER (WHERE status = 'success'), count(*) FILTER (WHERE status <> 'success'),
-		       coalesce(sum(latency_ms), 0), count(*)
+		       coalesce(sum(latency_ms) FILTER (WHERE status = 'success'), 0), count(*) FILTER (WHERE status = 'success')
 		FROM request_log
 		WHERE created_at >= $1 AND created_at < $2 AND ($3::text IS NULL OR user_id = $3)
 		GROUP BY day, model ORDER BY day, model`, start, end.AddDate(0, 0, 1), userID)

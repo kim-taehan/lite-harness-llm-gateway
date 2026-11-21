@@ -78,9 +78,16 @@ func (o *oidcClient) authorizeURL(state string) (string, string) {
 type oidcClaims struct {
 	Subject           string `json:"sub"`
 	Email             string `json:"email"`
+	EmailVerified     *bool  `json:"email_verified"` // IdP 가 안 주면 nil
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
 }
+
+// tokenExchangeError 는 IdP 가 코드 교환을 거절한 것이다. 문구는 litellm 그대로 클라이언트에 보여 준다.
+// 연결 실패 같은 그 밖의 오류는 내부 주소가 들어 있을 수 있어 이 타입이 아니고, 로그에만 남긴다
+type tokenExchangeError struct{ message string }
+
+func (e *tokenExchangeError) Error() string { return e.message }
 
 // exchange 는 코드를 토큰으로 바꾸고 userinfo 를 읽는다
 func (o *oidcClient) exchange(ctx context.Context, code, verifier string) (oidcClaims, error) {
@@ -105,13 +112,13 @@ func (o *oidcClient) exchange(ctx context.Context, code, verifier string) (oidcC
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
 		// litellm: "Token exchange failed: <status> - <본문 500자>"
-		return oidcClaims{}, fmt.Errorf("Token exchange failed: %d - %s", resp.StatusCode, truncate(string(body), 500))
+		return oidcClaims{}, &tokenExchangeError{fmt.Sprintf("Token exchange failed: %d - %s", resp.StatusCode, truncate(string(body), 500))}
 	}
 	var token struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &token); err != nil || token.AccessToken == "" {
-		return oidcClaims{}, fmt.Errorf("Token exchange failed: no access_token")
+		return oidcClaims{}, &tokenExchangeError{"Token exchange failed: no access_token"}
 	}
 	return o.readUserinfo(ctx, token.AccessToken)
 }

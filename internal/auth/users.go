@@ -381,6 +381,14 @@ func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
 		if err != nil {
 			return err
 		}
+		// 이메일만 같다고 남의 계정에 들어오면 안 된다. 이미 다른 SSO 주체에 묶인 계정은 거부하고,
+		// 아직 SSO 에 묶이지 않은 계정(관리자가 만든 계정)은 IdP 가 이메일을 확인하지 않았으면 묶지 않는다(litellm 은 둘 다 안 본다, 설계 9장)
+		switch {
+		case existing.SSOUserID != nil && *existing.SSOUserID != c.Subject:
+			return errSSOSubjectMismatch
+		case existing.SSOUserID == nil && c.EmailVerified != nil && !*c.EmailVerified:
+			return errSSOEmailUnverified
+		}
 		result, err = u.one(ctx, `
 			UPDATE app_user SET user_email = coalesce($2, user_email), user_alias = coalesce(user_alias, $3),
 			       sso_user_id = coalesce(sso_user_id, $4), updated_at = now()
@@ -389,6 +397,11 @@ func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
 	})
 	return result, err
 }
+
+var (
+	errSSOSubjectMismatch = errors.New("이 이메일은 다른 SSO 주체에 묶여 있다")
+	errSSOEmailUnverified = errors.New("IdP 가 확인하지 않은 이메일로 기존 계정에 들어올 수 없다")
+)
 
 // newUserDefaults 는 SSO 로 처음 들어온 사용자의 역할·모델이다. 대시보드 "Default User Settings"
 // (litellm default_internal_user_params)에 값이 있으면 그것을, 없으면 litellm 기본(internal_user_viewer, 모델 없음)을 쓴다
