@@ -160,8 +160,14 @@ func (h *Handlers) myTeamMembership(w http.ResponseWriter, r *http.Request) {
 	if user, err := h.users.Find(ctx, p.UserID); err == nil {
 		email = user.UserEmail
 	}
-	core.WriteJSON(w, http.StatusOK, row{"user_id": p.UserID, "team_id": teamID, "team_alias": team.TeamAlias, "role": role,
-		"user_email": email, "budget_id": nil, "spend": 0.0, "total_spend": 0.0, "litellm_budget_table": nil})
+	policy, err := h.memberPolicy(ctx, limits.MemberTarget(teamID, p.UserID))
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	response := membershipRow(auth.TeamMember{TeamID: teamID, UserID: p.UserID}, policy)
+	response["team_alias"], response["role"], response["user_email"] = team.TeamAlias, role, email
+	core.WriteJSON(w, http.StatusOK, response)
 }
 
 // memberOfTeamForAdmin 은 reset_spend·reset_budget 공통 검사다(I 2.7·2.8). 권한 없음의 detail 은 litellm 처럼 문자열이다
@@ -253,7 +259,7 @@ func (h *Handlers) resetTeamMemberBudget(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var previous any
-	if policy.MaxBudget != nil || policy.TPMLimit != nil || policy.RPMLimit != nil || policy.BudgetDuration != nil {
+	if policy.HasLimits() {
 		previous = target // 우리는 예산 행 id 대신 팀원 한도 자체가 대상 id 로 저장된다
 	}
 	core.WriteJSON(w, http.StatusOK, row{"team_id": teamID, "user_id": userID, "budget_id": nil, "previous_budget_id": previous, "budget_source": "none"})

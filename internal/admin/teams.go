@@ -312,11 +312,16 @@ func (h *Handlers) writeAddedMembers(w http.ResponseWriter, r *http.Request, tea
 	for _, u := range added {
 		addedIDs[u.UserID] = true
 	}
-	memberships := []row{}
+	var addedMembers []auth.TeamMember
 	for _, m := range members[team.TeamID] {
 		if addedIDs[m.UserID] {
-			memberships = append(memberships, membershipRow(m))
+			addedMembers = append(addedMembers, m)
 		}
+	}
+	memberships, err := h.rows.membershipRows(ctx, addedMembers)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
 	}
 	response := teamRows[0]
 	response["updated_users"] = userRows
@@ -514,14 +519,15 @@ func (h *Handlers) teamInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	info := teamRows[0]
 	withAlias := []row{}
-	memberships := []row{}
 	for _, m := range members[teamID] {
 		mr := memberRow(m)
 		mr["user_alias"] = m.UserAlias
 		withAlias = append(withAlias, mr)
-		ms := membershipRow(m)
-		ms["budget_source"] = "none"
-		memberships = append(memberships, ms)
+	}
+	memberships, err := h.rows.membershipRows(r.Context(), members[teamID])
+	if err != nil {
+		h.internalError(w, r, err)
+		return
 	}
 	info["members_with_roles"] = withAlias
 	for k, v := range teamInfoExtras() {
@@ -562,11 +568,16 @@ func (h *Handlers) listTeamsV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, t := range teams {
-		memberships := []row{}
+		var shown []auth.TeamMember
 		for _, m := range members[t.TeamID] {
 			if userID == nil || m.UserID == *userID {
-				memberships = append(memberships, membershipRow(m))
+				shown = append(shown, m)
 			}
+		}
+		memberships, err := h.rows.membershipRows(r.Context(), shown)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
 		}
 		teamRows[i]["team_memberships"] = memberships
 		teamRows[i]["keys"] = []any{}

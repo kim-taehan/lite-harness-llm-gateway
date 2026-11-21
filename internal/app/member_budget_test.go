@@ -50,6 +50,20 @@ func TestTeamMemberLimits_EnforcedPerMemberAndClearedWithMembership(t *testing.T
 	if spend := memberSpend(); spend < 0.006 {
 		t.Fatalf("팀원 사용액이 쌓이지 않았다: %v", spend)
 	}
+	// 팀 상세 화면의 팀원 표가 읽는 값: 예산 표와 사용액
+	var leeShip map[string]any
+	for _, m := range api.ok("GET", "/team/info?team_id=t1", nil)["team_memberships"].([]any) {
+		if m.(map[string]any)["user_id"] == "lee" {
+			leeShip = m.(map[string]any)
+		}
+	}
+	table, _ := leeShip["litellm_budget_table"].(map[string]any)
+	if table["max_budget"] != 0.005 || table["rpm_limit"] != 5.0 || leeShip["budget_source"] != "member" || leeShip["spend"].(float64) < 0.006 {
+		t.Errorf("team/info 의 팀원 예산 = %v", leeShip)
+	}
+	if other := api.ok("GET", "/team/info?team_id=t1", nil)["team_memberships"].([]any); len(other) < 2 {
+		t.Errorf("팀원 행 = %v", other)
+	}
 	over := chat(leeKey)
 	if over.Code != 422 || !strings.Contains(over.Body.String(), "Budget has been exceeded! User=lee in Team=t1 Current cost:") {
 		t.Errorf("예산 초과: %d %s", over.Code, over.Body)

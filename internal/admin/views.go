@@ -60,9 +60,36 @@ func memberRow(m auth.TeamMember) row {
 	return row{"user_id": m.UserID, "user_email": m.UserEmail, "role": m.Role}
 }
 
-// membershipRow 는 LiteLLM_TeamMembership 이다. 팀원별 예산은 아직 없다
-func membershipRow(m auth.TeamMember) row {
-	return row{"user_id": m.UserID, "team_id": m.TeamID, "spend": 0.0, "budget_id": nil, "litellm_budget_table": nil}
+// membershipRow 는 LiteLLM_TeamMembership 이다. 팀원 한도가 있으면 예산 표(litellm_budget_table)로 싣는다.
+// 예산 행 id 는 따로 없어 팀원 한도의 대상 id 를 쓴다
+func membershipRow(m auth.TeamMember, p limits.Policy) row {
+	target := limits.MemberTarget(m.TeamID, m.UserID)
+	result := row{"user_id": m.UserID, "team_id": m.TeamID, "spend": p.Spend, "total_spend": p.Spend, "budget_id": nil, "budget_source": "none",
+		"litellm_budget_table": nil}
+	if p.HasLimits() {
+		result["budget_id"], result["budget_source"] = target, "member"
+		result["litellm_budget_table"] = row{"budget_id": target, "soft_budget": p.SoftBudget, "max_budget": p.MaxBudget,
+			"max_parallel_requests": p.MaxParallelRequests, "tpm_limit": p.TPMLimit, "rpm_limit": p.RPMLimit, "model_max_budget": nil,
+			"budget_duration": p.BudgetDuration, "budget_reset_at": p.BudgetResetAt, "allowed_models": nil}
+	}
+	return result
+}
+
+// membershipRows 는 팀원들의 한도를 쿼리 한 번으로 읽어 만든 team_memberships 행들이다
+func (b rows) membershipRows(ctx context.Context, members []auth.TeamMember) ([]row, error) {
+	targets := make([]string, len(members))
+	for i, m := range members {
+		targets[i] = limits.MemberTarget(m.TeamID, m.UserID)
+	}
+	policies, err := b.limits.Find(ctx, limits.ScopeTeamMember, targets)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]row, len(members))
+	for i, m := range members {
+		result[i] = membershipRow(m, policies[targets[i]])
+	}
+	return result, nil
 }
 
 // userRow 는 LiteLLM_UserTable(litellm/models/user.py) 과 같은 필드다. password 는 내보내지 않는다

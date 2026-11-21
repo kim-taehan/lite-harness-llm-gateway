@@ -43,6 +43,11 @@ type Policy struct {
 	BudgetResetAt       *time.Time
 }
 
+// HasLimits 는 정해 둔 한도(예산·TPM·RPM·병렬·기간)가 하나라도 있는지다. 사용액만 있으면 아니다
+func (p Policy) HasLimits() bool {
+	return p.MaxBudget != nil || p.SoftBudget != nil || p.TPMLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil || p.BudgetDuration != nil
+}
+
 // Patch 는 바꿀 한도 필드다. 보내지 않은 필드는 그대로 둔다
 type Patch struct {
 	MaxBudget           core.Change[float64]
