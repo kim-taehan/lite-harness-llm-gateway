@@ -92,6 +92,7 @@ type LogRow struct {
 	Status           string
 	LatencyMS        int64
 	TTFTMS           *int64
+	HTTPStatus       int
 }
 
 // LogFilter 는 /spend/logs 의 조건이다. 날짜는 litellm 처럼 start 자정 ≤ 시각 ≤ end 자정이다(end 날짜 자체는 사실상 빠진다, K 9.3)
@@ -108,8 +109,7 @@ const LogLimit = 10_000
 
 func (q *UsageQuery) Logs(ctx context.Context, f LogFilter) ([]LogRow, error) {
 	rows, err := q.db.Q(ctx).Query(ctx, `
-		SELECT request_id, created_at, key_token, user_id, team_id, model, deployment_id, prompt_tokens, completion_tokens,
-		       cost::float8, status, latency_ms, ttft_ms
+		SELECT `+logColumns+`
 		FROM request_log
 		WHERE ($1::text IS NULL OR user_id = $1) AND ($2::text IS NULL OR key_token = $2) AND ($3::text IS NULL OR request_id = $3)
 		  AND ($4::timestamptz IS NULL OR created_at >= $4) AND ($5::timestamptz IS NULL OR created_at <= $5)
@@ -117,10 +117,5 @@ func (q *UsageQuery) Logs(ctx context.Context, f LogFilter) ([]LogRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (LogRow, error) {
-		var r LogRow
-		err := row.Scan(&r.RequestID, &r.CreatedAt, &r.KeyToken, &r.UserID, &r.TeamID, &r.Model, &r.DeploymentID, &r.PromptTokens,
-			&r.CompletionTokens, &r.Cost, &r.Status, &r.LatencyMS, &r.TTFTMS)
-		return r, err
-	})
+	return pgx.CollectRows(rows, scanLog)
 }
