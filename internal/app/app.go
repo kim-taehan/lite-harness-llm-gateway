@@ -38,6 +38,7 @@ type Config struct {
 	DrainTimeout time.Duration  // 정상 종료 때 진행 중인 요청을 기다리는 시간
 	Login        auth.LoginMethods
 	SSO          auth.OIDCConfig // SSO 가 들어간 빌드에서만 쓴다
+	CORS         CORSConfig      // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
 }
 
 // ErrNoDatabaseURL 은 DB 주소가 없을 때다. 신원·한도의 진실 원천이 PostgreSQL 이라 없이는 기동하지 않는다
@@ -68,7 +69,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			sso.PublicURL = "http://localhost:" + listen[strings.LastIndex(listen, ":")+1:]
 		}
 	}
-	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso}, nil
+	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
+		CORS: loadCORS(getenv)}, nil
 }
 
 // keyCacheTTL 은 litellm 기본(60초)과 같다. 다른 인스턴스에서 바꾼 키는 이 시간 안에 반영된다(설계 3.2)
@@ -144,7 +146,7 @@ func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, lo
 	}
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { core.WriteRouteNotFound(w) })
-	return mux
+	return withCORS(cfg.CORS, mux)
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다
