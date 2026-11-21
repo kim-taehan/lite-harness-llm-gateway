@@ -214,34 +214,30 @@ func (k *Keys) Update(ctx context.Context, token string, patch KeyPatch) (Key, e
 				return err
 			}
 		}
-		sets := []string{"updated_at = now()", "updated_by = $2"}
-		args := []any{token, patch.UpdatedBy}
-		set := func(column string, value any) {
-			args = append(args, value)
-			sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
-		}
+		set := core.NewUpdateSet(token)
+		set.Set("updated_by", patch.UpdatedBy)
 		if patch.KeyAlias.Set {
-			set("key_alias", patch.KeyAlias.Value)
+			set.Set("key_alias", patch.KeyAlias.Value)
 		}
 		if patch.UserID.Set {
-			set("user_id", patch.UserID.Value)
+			set.Set("user_id", patch.UserID.Value)
 		}
 		if patch.TeamID.Set {
-			set("team_id", patch.TeamID.Value)
+			set.Set("team_id", patch.TeamID.Value)
 		}
 		if patch.Models.Set {
-			set("models", patch.Models.Or([]string{}))
+			set.Set("models", patch.Models.Or([]string{}))
 		}
 		if patch.Metadata.Set {
-			set("metadata", orEmptyMap(patch.Metadata.Or(nil)))
+			set.Set("metadata", orEmptyMap(patch.Metadata.Or(nil)))
 		}
 		if patch.Blocked.Set {
-			set("blocked", patch.Blocked.Value)
+			set.Set("blocked", patch.Blocked.Value)
 		}
 		if patch.Expires.Set {
-			set("expires", patch.Expires.Value)
+			set.Set("expires", patch.Expires.Value)
 		}
-		key, err := scanKey(k.db.Q(ctx).QueryRow(ctx, "UPDATE api_key SET "+strings.Join(sets, ", ")+" WHERE token = $1 RETURNING "+keyColumns, args...))
+		key, err := scanKey(k.db.Q(ctx).QueryRow(ctx, "UPDATE api_key SET "+set.Assignments()+" WHERE token = $1 RETURNING "+keyColumns, set.Args...))
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return ErrKeyNotFound

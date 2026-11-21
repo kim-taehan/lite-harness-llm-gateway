@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -156,29 +155,24 @@ func (t *Teams) MembershipsOf(ctx context.Context, userID string) ([]Membership,
 
 // Update 는 보낸 필드만 바꾼다. 없으면 ErrTeamNotFound
 func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Team, error) {
-	sets := []string{"updated_at = now()"}
-	args := []any{teamID}
-	set := func(column string, value any) {
-		args = append(args, value)
-		sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
-	}
+	set := core.NewUpdateSet(teamID)
 	if patch.TeamAlias.Set {
-		set("team_alias", patch.TeamAlias.Value)
+		set.Set("team_alias", patch.TeamAlias.Value)
 	}
 	if patch.Models.Set {
-		set("models", patch.Models.Or([]string{}))
+		set.Set("models", patch.Models.Or([]string{}))
 	}
 	if patch.Metadata.Set {
-		set("metadata", patch.Metadata.Value)
+		set.Set("metadata", patch.Metadata.Value)
 	}
 	if patch.Blocked.Set {
-		set("blocked", patch.Blocked.Or(false))
+		set.Set("blocked", patch.Blocked.Or(false))
 	}
 	if patch.MemberPermissions.Set {
-		set("member_permissions", patch.MemberPermissions.Value)
+		set.Set("member_permissions", patch.MemberPermissions.Value)
 	}
-	sql := "UPDATE team SET " + strings.Join(sets, ", ") + " WHERE team_id = $1 RETURNING " + teamColumns
-	team, err := scanTeam(t.db.Q(ctx).QueryRow(ctx, sql, args...))
+	sql := "UPDATE team SET " + set.Assignments() + " WHERE team_id = $1 RETURNING " + teamColumns
+	team, err := scanTeam(t.db.Q(ctx).QueryRow(ctx, sql, set.Args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrTeamNotFound
 	}

@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -120,29 +119,24 @@ func (u *Users) Update(ctx context.Context, userID string, patch UserPatch) (Use
 				return err
 			}
 		}
-		sets := []string{"updated_at = now()"}
-		args := []any{userID}
-		set := func(column string, value any) {
-			args = append(args, value)
-			sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
-		}
+		set := core.NewUpdateSet(userID)
 		if patch.UserEmail.Set {
-			set("user_email", patch.UserEmail.Value)
+			set.Set("user_email", patch.UserEmail.Value)
 		}
 		if patch.UserAlias.Set {
-			set("user_alias", patch.UserAlias.Value)
+			set.Set("user_alias", patch.UserAlias.Value)
 		}
 		if patch.UserRole.Set {
-			set("user_role", patch.UserRole.Value)
+			set.Set("user_role", patch.UserRole.Value)
 		}
 		if patch.Models.Set {
-			set("models", patch.Models.Or([]string{}))
+			set.Set("models", patch.Models.Or([]string{}))
 		}
 		if patch.Metadata.Set {
-			set("metadata", patch.Metadata.Value)
+			set.Set("metadata", patch.Metadata.Value)
 		}
 		var err error
-		updated, err = u.one(ctx, "UPDATE app_user SET "+strings.Join(sets, ", ")+" WHERE user_id = $1 RETURNING "+userColumns, args...)
+		updated, err = u.one(ctx, "UPDATE app_user SET "+set.Assignments()+" WHERE user_id = $1 RETURNING "+userColumns, set.Args...)
 		return err
 	})
 	if err == nil && patch.UserRole.Set {

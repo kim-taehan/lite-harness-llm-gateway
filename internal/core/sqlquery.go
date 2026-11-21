@@ -42,6 +42,25 @@ func (q *ListQuery) LimitOffset(limit, offset int) string {
 	return " LIMIT " + q.Arg(limit) + " OFFSET " + q.Arg(offset)
 }
 
+// UpdateSet 은 "보낸 필드만 바꾸는" UPDATE 의 SET 절과 인자를 모은다. $1 은 대상 id 이고 updated_at 은 늘 바뀐다
+type UpdateSet struct {
+	sets []string
+	Args []any
+}
+
+func NewUpdateSet(id any) *UpdateSet {
+	return &UpdateSet{sets: []string{"updated_at = now()"}, Args: []any{id}}
+}
+
+// Set 은 열 하나의 새 값을 더한다. 열 이름은 상수만 넣는다
+func (u *UpdateSet) Set(column string, value any) {
+	u.Args = append(u.Args, value)
+	u.sets = append(u.sets, column+" = $"+strconv.Itoa(len(u.Args)))
+}
+
+// Assignments 는 SET 뒤에 오는 대입 목록이다
+func (u *UpdateSet) Assignments() string { return strings.Join(u.sets, ", ") }
+
 // LikeContains 는 사용자 입력의 와일드카드를 글자 그대로로 바꾼 부분 일치 패턴이다
 func LikeContains(v string) string { return "%" + escapeLike(v) + "%" }
 
