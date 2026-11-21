@@ -11,11 +11,11 @@ import (
 )
 
 // 대시보드 설정 화면(L 2.4·2.5, I 4.1·4.2). 기본값과 field_schema 는 litellm 이 빈 설정에서 내는 응답을 그대로 뽑아 둔 것이다
-// (settingsdata/*.json, litellm _get_settings_with_schema). 관리자가 바꾼 값만 core.Settings 에 저장한다.
+// (dashboarddata/*_settings.json, litellm _get_settings_with_schema). 관리자가 바꾼 값만 core.Settings 에 저장한다.
 // 대시보드는 field_schema 의 설명으로 관리자 패널 입력란을 그리므로 스키마를 비우지 않는다
 
-//go:embed settingsdata
-var settingsData embed.FS
+//go:embed dashboarddata
+var dashboardData embed.FS
 
 // settingsForm 은 설정 묶음 하나다
 type settingsForm struct {
@@ -26,7 +26,7 @@ type settingsForm struct {
 }
 
 func loadSettingsForm(name, file, updateMessage string) settingsForm {
-	data, err := settingsData.ReadFile("settingsdata/" + file)
+	data, err := dashboardData.ReadFile("dashboarddata/" + file)
 	if err != nil {
 		panic(err) // 내장 파일이라 일어나지 않는다
 	}
@@ -123,13 +123,19 @@ func (h *Handlers) updateSettings(form settingsForm) http.HandlerFunc {
 	}
 }
 
-// serveLogo 는 테마에 로고·파비콘을 정하지 않았을 때의 기본 그림이다(litellm 로고를 쓰지 않는다)
-func serveLogo(w http.ResponseWriter, _ *http.Request) {
-	data, err := settingsData.ReadFile("settingsdata/logo.png")
+// serveEmbedded 는 내장 파일 하나를 그대로 준다.
+//   - logo.png: 테마에 로고·파비콘을 정하지 않았을 때의 기본 그림(litellm 로고를 쓰지 않는다)
+//   - provider_fields.json: 모델 추가 폼의 제공자 목록. litellm provider_create_fields.json 에서 우리가 중계하는
+//     제공자(Ollama, Ollama Chat, Hosted vLLM)만 뽑았다
+//   - model_cost_map.json: litellm 동봉 가격표에서 같은 제공자 항목만 뽑았다(폐쇄망이라 원격 가격표를 읽지 않는다)
+func serveEmbedded(file, contentType string) http.HandlerFunc {
+	data, err := dashboardData.ReadFile("dashboarddata/" + file)
 	if err != nil {
 		panic(err) // 내장 파일이라 일어나지 않는다
 	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	_, _ = w.Write(data) // 쓰기 실패는 클라이언트가 끊은 것이다
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(data) // 쓰기 실패는 클라이언트가 끊은 것이다
+	}
 }

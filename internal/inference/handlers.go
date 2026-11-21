@@ -40,6 +40,9 @@ func (h *Handlers) Routes() []core.Route {
 		{Method: http.MethodGet, Path: "/v1/models", Access: any, Handler: h.models},
 		{Method: http.MethodGet, Path: "/models", Access: any, Handler: h.models},
 		{Method: http.MethodGet, Path: "/model_group/info", Access: any, Handler: h.modelGroupInfo},
+		// 헬스 체크는 업스트림을 실제로 부르므로 관리자만(litellm 도 관리 라우트다)
+		{Method: http.MethodGet, Path: "/health", Access: core.Roles(core.RoleProxyAdmin), Handler: h.health},
+		{Method: http.MethodPost, Path: "/health/test_connection", Access: core.Roles(core.RoleProxyAdmin), Handler: h.testConnection},
 	}
 }
 

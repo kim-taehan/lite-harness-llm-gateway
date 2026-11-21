@@ -97,8 +97,11 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/default_team_settings", adminOnly, h.updateSettings(defaultTeamForm)),
 		route(http.MethodGet, "/get/internal_user_settings", adminOnly, h.getSettings(internalUserForm)),
 		route(http.MethodPatch, "/update/internal_user_settings", adminOnly, h.updateSettings(internalUserForm)),
-		route(http.MethodGet, "/get_image", core.Public(), serveLogo),
-		route(http.MethodGet, "/get_favicon", core.Public(), serveLogo),
+		route(http.MethodGet, "/get_image", core.Public(), serveEmbedded("logo.png", "image/png")),
+		route(http.MethodGet, "/get_favicon", core.Public(), serveEmbedded("logo.png", "image/png")),
+		// 모델 추가 폼(litellm 도 인증 없이 연다)
+		route(http.MethodGet, "/public/providers/fields", core.Public(), serveEmbedded("provider_fields.json", "application/json")),
+		route(http.MethodGet, "/public/litellm_model_cost_map", core.Public(), serveEmbedded("model_cost_map.json", "application/json")),
 	}
 }
 

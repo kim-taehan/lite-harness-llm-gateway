@@ -146,6 +146,15 @@ func TestDashboard_SettingsKeepLitellmDefaultsAndStoreChanges(t *testing.T) {
 	if rec := b.do("GET", "/get_image", nil, nil); rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" {
 		t.Errorf("로고: %d %s", rec.Code, rec.Header().Get("Content-Type"))
 	}
+	// 모델 추가 폼: 우리가 중계하는 제공자만, 항목마다 credential_fields 가 있어야 화면이 깨지지 않는다
+	var providers []map[string]any
+	_ = json.Unmarshal(b.do("GET", "/public/providers/fields", nil, nil).Body.Bytes(), &providers)
+	if len(providers) != 3 || providers[0]["litellm_provider"] != "ollama" || providers[0]["credential_fields"] == nil {
+		t.Errorf("제공자 = %v", providers)
+	}
+	if cost := jsonOf(t, b.do("GET", "/public/litellm_model_cost_map?catalog_only=true", nil, nil)); cost["ollama/llama3"] == nil {
+		t.Errorf("가격표에 ollama 모델이 없다")
+	}
 
 	// 관리자가 바꾼 값만 저장되고 기본값과 합쳐 나온다
 	updated := api.ok("PATCH", "/update/internal_user_settings", map[string]any{"user_role": "internal_user", "models": []string{"m1"}})

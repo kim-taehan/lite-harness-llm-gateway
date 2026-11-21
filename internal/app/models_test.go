@@ -61,3 +61,31 @@ func TestModels_DashboardTableEditAndPause(t *testing.T) {
 		t.Errorf("없는 모델: %d", status)
 	}
 }
+
+func TestModels_HealthChecksCallUpstream(t *testing.T) {
+	upstream, _ := fakeOllama(t)
+	api := newAPI(t)
+	id := api.ok("POST", "/model/new", map[string]any{"model_name": "m1", "litellm_params": map[string]any{"model": "ollama/x", "api_base": upstream.URL}})["model_info"].(map[string]any)["id"].(string)
+	down := api.ok("POST", "/model/new", map[string]any{"model_name": "m2", "litellm_params": map[string]any{"model": "ollama/y", "api_base": "http://127.0.0.1:1"}})["model_info"].(map[string]any)["id"].(string)
+
+	if ok := api.ok("GET", "/health?model_id="+id, nil); ok["healthy_count"] != 1.0 || ok["unhealthy_count"] != 0.0 {
+		t.Errorf("정상 배포 = %v", ok)
+	}
+	bad := api.ok("GET", "/health?model_id="+down, nil)
+	if bad["unhealthy_count"] != 1.0 || bad["unhealthy_endpoints"].([]any)[0].(map[string]any)["error"] == "" {
+		t.Errorf("닿지 않는 배포 = %v", bad)
+	}
+	if all := api.ok("GET", "/health", nil); all["healthy_count"] != 1.0 || all["unhealthy_count"] != 1.0 {
+		t.Errorf("전체 = %v", all)
+	}
+
+	conn := func(base string) map[string]any {
+		return api.ok("POST", "/health/test_connection", map[string]any{"litellm_params": map[string]any{"model": "ollama/x", "api_base": base}, "mode": "chat"})
+	}
+	if got := conn(upstream.URL); got["status"] != "success" {
+		t.Errorf("연결 시험 성공 = %v", got)
+	}
+	if got := conn("http://127.0.0.1:1"); got["status"] != "error" || got["result"].(map[string]any)["error"] == "" {
+		t.Errorf("연결 시험 실패 = %v", got)
+	}
+}
