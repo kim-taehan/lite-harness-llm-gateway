@@ -96,6 +96,7 @@ func (l *Login) Routes() []core.Route {
 	}
 	if l.methods.Password {
 		routes = append(routes, core.Route{Method: http.MethodPost, Path: "/sso/cli/password/{login_id}", Access: public, Handler: l.passwordSignIn})
+		routes = append(routes, l.onboardingRoutes()...)
 	}
 	return routes
 }

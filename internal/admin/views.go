@@ -74,7 +74,7 @@ func userRow(u auth.User, teamIDs []string, p limits.Policy) row {
 		"sso_user_id":              u.SSOUserID,
 		"organization_id":          nil,
 		"object_permission_id":     nil,
-		"password_reset_required":  nil,
+		"password_reset_required":  u.PasswordResetRequired,
 		"last_breach_check_at":     nil,
 		"teams":                    nonNil(teamIDs),
 		"user_role":                u.UserRole,

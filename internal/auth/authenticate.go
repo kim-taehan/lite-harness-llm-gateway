@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,7 +25,16 @@ type Principal struct {
 	TeamModels []string
 	// 대시보드 세션 키로 들어왔을 때만 있다(litellm login_method). 로그아웃은 이것이 있어야 한다
 	UIMethod string
+	// 관리자가 정한 비밀번호로 대시보드에 들어온 세션이다. 비밀번호를 바꿀 때까지 resetAllowedRoutes 만 부른다
+	PasswordResetRequired bool
 }
+
+// resetAllowedRoutes 는 비밀번호를 바꿔야 하는 세션이 부를 수 있는 경로다(litellm login_utils.py:60)
+var resetAllowedRoutes = []string{"/user/password/change", "/session/logout", "/management/v1/users/me"}
+
+const passwordResetMessage = "This account's password must be changed before the session can be used: " +
+	"it was either found in a known data breach or set by an admin. " +
+	"Change it via POST /user/password/change (UI: /ui/change-password), then log in again."
 
 // IsAdmin 은 모든 관리 자원을 보는 역할이다(쓰기는 proxy_admin 만)
 func (p Principal) IsAdmin() bool { return p.Role == core.RoleProxyAdmin }
@@ -141,7 +151,8 @@ func (a *Authenticator) authenticateLogin(ctx context.Context, key string) (Prin
 	if user.UserRole != nil {
 		role = *user.UserRole
 	}
-	p := Principal{UserID: user.UserID, Role: role, KeyToken: hashKey(key), UIMethod: claims.UIMethod}
+	p := Principal{UserID: user.UserID, Role: role, KeyToken: hashKey(key), UIMethod: claims.UIMethod,
+		PasswordResetRequired: claims.UIMethod == uiMethodPassword && user.PasswordResetRequired}
 	if claims.TeamID == "" {
 		p.KeyModels = user.Models // 팀이 없으면 사용자 허용 모델(litellm 과 같다)
 		return p, nil, true
@@ -225,6 +236,10 @@ func (a *Authenticator) Guard(route core.Route) http.Handler {
 			return
 		case err != nil:
 			core.ProxyError{Status: 500, Message: "Internal Server Error", Type: "internal_server_error"}.Write(w)
+			return
+		}
+		if principal.PasswordResetRequired && !slices.Contains(resetAllowedRoutes, route.Path) {
+			core.ProxyError{Status: 403, Type: "auth_error", Param: "None", Message: passwordResetMessage}.Write(w)
 			return
 		}
 		if denial, denied := routeDenied(r, route.Access, principal); denied {

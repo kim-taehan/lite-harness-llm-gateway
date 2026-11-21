@@ -75,7 +75,7 @@ func TestCLILogin_PasswordFlowIssuesWorkingLoginKey(t *testing.T) {
 	api.ok("POST", "/team/new", map[string]any{"team_id": "t1", "models": []string{"m1"}})
 	api.ok("POST", "/user/new", map[string]any{"user_id": "kim", "user_email": "kim@corp.local", "user_role": "internal_user"})
 	api.ok("POST", "/team/member_add", map[string]any{"team_id": "t1", "member": map[string]any{"user_id": "kim", "role": "user"}})
-	api.ok("POST", "/user/update", map[string]any{"user_id": "kim", "password": "s3cret-pass"})
+	api.ok("POST", "/user/update", map[string]any{"user_id": "kim", "password": "S3cret-pass-2026"})
 
 	start := jsonOf(t, b.do("POST", "/sso/cli/start", nil, nil))
 	loginID, secret, code := start["login_id"].(string), start["poll_secret"].(string), start["user_code"].(string)
@@ -101,7 +101,7 @@ func TestCLILogin_PasswordFlowIssuesWorkingLoginKey(t *testing.T) {
 	if rec := b.do("POST", action, url.Values{"username": {"kim@corp.local"}, "password": {"wrong"}}, nil); rec.Code != 401 {
 		t.Errorf("틀린 비밀번호: %d", rec.Code)
 	}
-	confirm := b.do("POST", action, url.Values{"username": {"KIM@corp.local"}, "password": {"s3cret-pass"}}, nil)
+	confirm := b.do("POST", action, url.Values{"username": {"KIM@corp.local"}, "password": {"S3cret-pass-2026"}}, nil)
 	if confirm.Code != 200 || !strings.Contains(confirm.Body.String(), "Complete CLI Login") {
 		t.Fatalf("확인 화면: %d %s", confirm.Code, confirm.Body.String())
 	}
@@ -152,12 +152,12 @@ func TestCLILogin_TeamSelectionWhenTwoTeams(t *testing.T) {
 		api.ok("POST", "/team/new", map[string]any{"team_id": team, "team_alias": "팀 " + team})
 		api.ok("POST", "/team/member_add", map[string]any{"team_id": team, "member": map[string]any{"user_id": "lee", "role": "user"}})
 	}
-	api.ok("POST", "/user/update", map[string]any{"user_id": "lee", "password": "pw-lee-123"})
+	api.ok("POST", "/user/update", map[string]any{"user_id": "lee", "password": "Pw-lee-123456"})
 
 	start := jsonOf(t, b.do("POST", "/sso/cli/start", nil, nil))
 	loginID, secret, code := start["login_id"].(string), start["poll_secret"].(string), start["user_code"].(string)
 	page := b.do("GET", "/sso/key/generate?source=litellm-cli&key="+loginID, nil, nil)
-	confirm := b.do("POST", path(t, formAction.FindStringSubmatch(page.Body.String())[1]), url.Values{"username": {"lee"}, "password": {"pw-lee-123"}}, nil)
+	confirm := b.do("POST", path(t, formAction.FindStringSubmatch(page.Body.String())[1]), url.Values{"username": {"lee"}, "password": {"Pw-lee-123456"}}, nil)
 	b.do("POST", path(t, formAction.FindStringSubmatch(confirm.Body.String())[1]),
 		url.Values{"user_code": {code}, "browser_complete_token": {hiddenTok.FindStringSubmatch(confirm.Body.String())[1]}}, nil)
 
@@ -185,7 +185,7 @@ func TestCLILogin_TooManyWrongPasswordsAreBlocked(t *testing.T) {
 	api := newAPI(t)
 	b := browser{t: t, h: api.h}
 	api.ok("POST", "/user/new", map[string]any{"user_id": "park"})
-	api.ok("POST", "/user/update", map[string]any{"user_id": "park", "password": "right-pass"})
+	api.ok("POST", "/user/update", map[string]any{"user_id": "park", "password": "Right-pass-123"})
 	start := jsonOf(t, b.do("POST", "/sso/cli/start", nil, nil))
 	action := "/sso/cli/password/" + start["login_id"].(string)
 	for i := 0; i < 10; i++ {
@@ -194,7 +194,7 @@ func TestCLILogin_TooManyWrongPasswordsAreBlocked(t *testing.T) {
 		}
 	}
 	// 맞는 비밀번호도 창이 지날 때까지 막힌다
-	if rec := b.do("POST", action, url.Values{"username": {"park"}, "password": {"right-pass"}}, nil); rec.Code != 429 {
+	if rec := b.do("POST", action, url.Values{"username": {"park"}, "password": {"Right-pass-123"}}, nil); rec.Code != 429 {
 		t.Errorf("막히지 않았다: %d", rec.Code)
 	}
 }

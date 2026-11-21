@@ -42,8 +42,10 @@ type User struct {
 	SSOUserID *string
 	// 이 시각보다 먼저 발급된 대시보드 세션 키는 거부한다(로그아웃)
 	UISessionsRevokedAt *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// 관리자가 비밀번호를 정했으면 참이다. 대시보드 비밀번호 세션은 비밀번호를 바꿀 때까지 세 경로만 부른다
+	PasswordResetRequired bool
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type TeamMember struct {

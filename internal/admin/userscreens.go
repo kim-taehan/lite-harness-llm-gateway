@@ -132,6 +132,10 @@ func bulkErrorText(err error) string {
 	if errors.As(err, &already) {
 		return alreadyMessage(already)
 	}
+	var weak *auth.PasswordPolicyError
+	if errors.As(err, &weak) {
+		return weak.Message
+	}
 	return "Internal Server Error"
 }
 

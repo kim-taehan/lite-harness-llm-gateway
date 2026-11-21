@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -88,19 +89,42 @@ func TestDashboard_UserPasswordLoginAndLogout(t *testing.T) {
 	api := newAPI(t)
 	b := browser{t: t, h: api.h}
 	api.ok("POST", "/user/new", map[string]any{"user_id": "kim", "user_email": "kim@corp.local", "user_role": "internal_user"})
-	api.ok("POST", "/user/update", map[string]any{"user_id": "kim", "password": "s3cret-pass"})
+	if status, body := api.do("POST", "/user/update", map[string]any{"user_id": "kim", "password": "short"}); status != 400 ||
+		!strings.Contains(body.(map[string]any)["error"].(map[string]any)["message"].(string), "Password does not meet the required policy") {
+		t.Errorf("정책에 안 맞는 비밀번호: %d %v", status, body)
+	}
+	api.ok("POST", "/user/update", map[string]any{"user_id": "kim", "password": "Admin-set-2026"})
 
 	code, body, _ := dashboardLogin(t, b, "kim@corp.local", "wrong")
 	if code != 401 || body["error"].(map[string]any)["param"] != "invalid_credentials" {
 		t.Errorf("틀린 비밀번호 = %d %v", code, body)
 	}
-	code, _, cookie := dashboardLogin(t, b, "KIM@corp.local", "s3cret-pass")
+	// 관리자가 정한 비밀번호로 들어오면 비밀번호를 바꿀 때까지 세 경로만 된다
+	code, _, cookie := dashboardLogin(t, b, "KIM@corp.local", "Admin-set-2026")
+	if code != 200 || uiClaims(t, cookie)["password_reset_required"] != true {
+		t.Fatalf("첫 로그인 = %d %v", code, uiClaims(t, cookie))
+	}
+	first := map[string]string{"Authorization": "Bearer " + uiClaims(t, cookie)["key"].(string)}
+	if rec := b.do("GET", "/sso/get/ui_settings", nil, first); rec.Code != 403 || !strings.Contains(rec.Body.String(), "/ui/change-password") {
+		t.Errorf("재설정 전 다른 경로: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := b.doJSON("POST", "/user/password/change", `{"current_password":"wrong","new_password":"Kim-own-pass-1"}`, first); rec.Code != 400 {
+		t.Errorf("틀린 현재 비밀번호: %d", rec.Code)
+	}
+	if rec := b.doJSON("POST", "/user/password/change", `{"current_password":"Admin-set-2026","new_password":"Kim-own-pass-1"}`, first); rec.Code != 200 {
+		t.Fatalf("비밀번호 변경: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := b.do("GET", "/management/v1/users/me", nil, first); rec.Code != 401 {
+		t.Errorf("바꾼 뒤 옛 세션: %d", rec.Code)
+	}
+
+	code, _, cookie = dashboardLogin(t, b, "KIM@corp.local", "Kim-own-pass-1")
 	if code != 200 {
 		t.Fatalf("로그인 = %d", code)
 	}
 	claims := uiClaims(t, cookie)
 	auth := map[string]string{"Authorization": "Bearer " + claims["key"].(string)}
-	if claims["user_role"] != "internal_user" || claims["user_email"] != "kim@corp.local" {
+	if claims["user_role"] != "internal_user" || claims["user_email"] != "kim@corp.local" || claims["password_reset_required"] != false {
 		t.Errorf("클레임 = %v", claims)
 	}
 	if me := jsonOf(t, b.do("GET", "/management/v1/users/me", nil, auth)); me["user_id"] != "kim" || me["user_email"] != "kim@corp.local" {
@@ -120,13 +144,55 @@ func TestDashboard_UserPasswordLoginAndLogout(t *testing.T) {
 		t.Errorf("로그아웃한 세션 = %d %s", after.Code, after.Body.String())
 	}
 	// 다시 로그인하면 새 세션은 된다
-	_, _, again := dashboardLogin(t, b, "kim", "s3cret-pass")
+	_, _, again := dashboardLogin(t, b, "kim", "Kim-own-pass-1")
 	if rec := b.do("GET", "/management/v1/users/me", nil, map[string]string{"Authorization": "Bearer " + uiClaims(t, again)["key"].(string)}); rec.Code != 200 {
 		t.Errorf("다시 로그인: %d", rec.Code)
 	}
 	// 세션 키가 아니면 로그아웃할 수 없다(litellm 과 같다)
 	if rec := b.do("POST", "/session/logout", nil, map[string]string{"Authorization": "Bearer " + testMasterKey}); rec.Code != 403 {
 		t.Errorf("마스터 키 로그아웃: %d", rec.Code)
+	}
+}
+
+func TestDashboard_InvitationOnboardingSetsPassword(t *testing.T) {
+	api := newAPI(t)
+	b := browser{t: t, h: api.h}
+	api.ok("POST", "/user/new", map[string]any{"user_id": "new1", "user_email": "new1@corp.local", "user_role": "internal_user"})
+	if status, _ := api.do("POST", "/invitation/new", map[string]any{"user_id": "ghost"}); status != 400 {
+		t.Errorf("없는 사용자 초대: %d", status)
+	}
+	inv := api.ok("POST", "/invitation/new", map[string]any{"user_id": "new1"})
+	link := inv["id"].(string)
+
+	got := jsonOf(t, b.do("GET", "/onboarding/get_token?invite_link="+link, nil, nil))
+	outer := uiClaims(t, got["token"].(string))
+	if outer["user_id"] != "new1" || outer["exp"] != nil || got["user_email"] != "new1@corp.local" {
+		t.Fatalf("get_token = %v / %v", got, outer)
+	}
+	onboarding := map[string]string{"Authorization": "Bearer " + outer["key"].(string)}
+	claim := func(password string, header map[string]string) *httptest.ResponseRecorder {
+		return b.doJSON("POST", "/onboarding/claim_token", `{"invitation_link":"`+link+`","user_id":"new1","password":"`+password+`"}`, header)
+	}
+	if rec := claim("Good-pass-12345", nil); rec.Code != 401 || !strings.Contains(rec.Body.String(), "Missing onboarding session") {
+		t.Errorf("온보딩 토큰 없음: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := claim("weak", onboarding); rec.Code != 400 {
+		t.Errorf("약한 비밀번호: %d", rec.Code)
+	}
+	done := claim("Good-pass-12345", onboarding)
+	if done.Code != 200 {
+		t.Fatalf("claim = %d %s", done.Code, done.Body.String())
+	}
+	session := uiClaims(t, jsonOf(t, done)["token"].(string))
+	if rec := b.do("GET", "/management/v1/users/me", nil, map[string]string{"Authorization": "Bearer " + session["key"].(string)}); rec.Code != 200 {
+		t.Errorf("온보딩 세션: %d", rec.Code)
+	}
+	// 링크는 한 번만 쓴다. 정한 비밀번호로 로그인한다(본인이 정했으니 재설정 요구 없음)
+	if rec := claim("Other-pass-12345", onboarding); rec.Code != 401 || !strings.Contains(rec.Body.String(), "already been used") {
+		t.Errorf("다시 쓴 링크: %d %s", rec.Code, rec.Body.String())
+	}
+	if code, _, cookie := dashboardLogin(t, b, "new1@corp.local", "Good-pass-12345"); code != 200 || uiClaims(t, cookie)["password_reset_required"] != false {
+		t.Errorf("정한 비밀번호로 로그인 = %d", code)
 	}
 }
 

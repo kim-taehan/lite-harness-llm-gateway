@@ -79,6 +79,7 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodGet, "/user/filter/ui", handlerDecide, h.filterUsers),
 		route(http.MethodPost, "/user/bulk_update", adminOnly, h.bulkUpdateUsers),
 		route(http.MethodPost, "/team/bulk_member_add", adminOnly, h.bulkAddTeamMembers),
+		route(http.MethodPost, "/invitation/new", handlerDecide, h.createInvitation),
 		route(http.MethodPost, "/key/generate", keyManagement, h.generateKey),
 		route(http.MethodPost, "/key/update", keyManagement, h.updateKey),
 		route(http.MethodPost, "/key/delete", keyManagement, h.deleteKeys),

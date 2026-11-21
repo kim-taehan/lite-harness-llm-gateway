@@ -21,11 +21,12 @@ type Users struct {
 
 func NewUsers(db *core.DB, cache *KeyCache) *Users { return &Users{db: db, cache: cache} }
 
-const userColumns = "user_id, user_email, user_alias, user_role, models, metadata, sso_user_id, ui_sessions_revoked_at, created_at, updated_at"
+const userColumns = "user_id, user_email, user_alias, user_role, models, metadata, sso_user_id, ui_sessions_revoked_at, password_reset_required, created_at, updated_at"
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.UserID, &u.UserEmail, &u.UserAlias, &u.UserRole, &u.Models, &u.Metadata, &u.SSOUserID, &u.UISessionsRevokedAt, &u.CreatedAt, &u.UpdatedAt)
+	err := row.Scan(&u.UserID, &u.UserEmail, &u.UserAlias, &u.UserRole, &u.Models, &u.Metadata, &u.SSOUserID, &u.UISessionsRevokedAt,
+		&u.PasswordResetRequired, &u.CreatedAt, &u.UpdatedAt)
 	return u, err
 }
 
@@ -272,17 +273,24 @@ func deref(s *string) string {
 	return *s
 }
 
-// SetPassword 는 비밀번호를 정한다(관리자 /user/update, 초대 온보딩). 빈 문자열이면 비밀번호 로그인을 막는다
-func (u *Users) SetPassword(ctx context.Context, userID, password string) error {
+// SetPassword 는 비밀번호를 정한다(관리자 /user/update, 초대 온보딩, 본인 변경). 빈 문자열이면 비밀번호 로그인을 막는다.
+// litellm 처럼 정책을 검사하고(*PasswordPolicyError), 그 사용자의 대시보드 세션을 모두 끊는다.
+// byAdmin 이면 다음 로그인 때 본인이 바꾸게 한다(password_reset_required)
+func (u *Users) SetPassword(ctx context.Context, userID, password string, byAdmin bool, at time.Time) error {
 	var stored *string
 	if password != "" {
+		if err := checkPasswordPolicy(password); err != nil {
+			return err
+		}
 		hashed, err := hashPassword(password)
 		if err != nil {
 			return err
 		}
 		stored = &hashed
 	}
-	tag, err := u.db.Q(ctx).Exec(ctx, "UPDATE app_user SET password_hash = $2, updated_at = now() WHERE user_id = $1", userID, stored)
+	tag, err := u.db.Q(ctx).Exec(ctx, `
+		UPDATE app_user SET password_hash = $2, password_reset_required = $3, ui_sessions_revoked_at = $4, updated_at = now()
+		WHERE user_id = $1`, userID, stored, byAdmin && stored != nil, at.UTC().Truncate(time.Microsecond))
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrUserNotFound
 	}

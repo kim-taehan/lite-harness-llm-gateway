@@ -140,7 +140,7 @@ func (h *Handlers) applyUserUpdate(ctx context.Context, req userUpdate) (auth.Us
 		}
 		// litellm: 관리자가 /user/update 로 비밀번호를 정할 수 있다(해시로 저장, 응답에는 싣지 않는다)
 		if req.Password != nil {
-			if err := h.users.SetPassword(ctx, userID, *req.Password); err != nil {
+			if err := h.users.SetPassword(ctx, userID, *req.Password, true, h.now()); err != nil {
 				return err
 			}
 		}
@@ -167,7 +167,10 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 	user, policy, err := h.applyUserUpdate(r.Context(), req)
 	var invalid *limits.InvalidError
 	var taken *auth.EmailTakenError
+	var weak *auth.PasswordPolicyError
 	switch {
+	case errors.As(err, &weak):
+		core.ProxyError{Status: 400, Message: weak.Message, Type: "validation_error", Param: "password"}.Write(w)
 	case err == nil:
 		teamIDs, err := h.users.TeamIDs(r.Context(), []string{user.UserID})
 		if err != nil {

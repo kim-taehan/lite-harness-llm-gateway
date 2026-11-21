@@ -117,15 +117,22 @@ func (l *Login) uiToken(user User, method string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	claims := uiClaims(user, method, key)
+	claims["exp"] = expires.Unix()
+	return signUIToken(l.master, claims)
+}
+
+// uiClaims 는 litellm ReturnedUITokenObject 다(exp 는 부르는 쪽이 정한다)
+func uiClaims(user User, method, key string) map[string]any {
 	role := core.RoleInternalUser
 	if user.UserRole != nil {
 		role = *user.UserRole
 	}
-	return signUIToken(l.master, map[string]any{
+	return map[string]any{
 		"user_id": user.UserID, "key": key, "user_email": user.UserEmail, "user_role": role, "login_method": method,
 		"premium_user": true, "auth_header_name": "Authorization", "disabled_non_admin_personal_key_creation": false,
-		"server_root_path": "", "password_reset_required": false, "exp": expires.Unix(),
-	})
+		"server_root_path": "", "password_reset_required": method == uiMethodPassword && user.PasswordResetRequired,
+	}
 }
 
 // webSignIn 은 대시보드 SSO 버튼이다(L 5.1). return_to 는 litellm 처럼 무시한다(대시보드가 보내는 절대 URL 은 원본도 버린다).
