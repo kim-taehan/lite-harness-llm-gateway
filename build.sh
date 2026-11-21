@@ -21,7 +21,7 @@ build_all() {
     os="${target%/*}"
     arch="${target#*/}"
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false \
-      -ldflags="-s -w -X llm-gateway/internal/app.version=$VERSION -X llm-gateway/internal/app.loginMethods=$LOGIN" -o "$out/llm-gateway-$os-$arch" ./cmd/llm-gateway
+      -ldflags="-s -w -X llm-gateway/internal/core.Version=$VERSION -X llm-gateway/internal/app.loginMethods=$LOGIN" -o "$out/llm-gateway-$os-$arch" ./cmd/llm-gateway
   done
   (cd "$out" && shasum -a 256 llm-gateway-* > SHA256SUMS)
 }

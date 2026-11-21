@@ -7,6 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// Version 은 build.sh 가 -ldflags 로 넣는다. 대시보드가 보는 응답(litellm_version)과 기동 로그에 쓴다
+var Version = "dev"
+
 // Settings 는 대시보드에서 바꾸는 설정 저장소다. 이름마다 바꾼 값만 JSON 객체로 둔다.
 // 여러 모듈이 읽으므로(관리 API 가 쓰고, 로그인이 새 사용자 기본값을 읽는다) core 에 둔다
 type Settings struct {

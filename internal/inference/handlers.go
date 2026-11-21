@@ -19,12 +19,14 @@ type Handlers struct {
 	upstream    *http.Client // 연결·응답 헤더 타임아웃을 정한 클라이언트(설계 4장: connect 5s, read 300s). 스트림 전체 시간은 막지 않는다
 	usage       usageSink
 	gate        *limits.Gate
+	settings    *core.Settings // 공개 모델 허브에 보일 그룹
 	now         func() time.Time
 	logger      *slog.Logger
 }
 
-func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, gate *limits.Gate, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, gate: gate, now: now, logger: logger}
+func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, gate *limits.Gate, settings *core.Settings,
+	now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, gate: gate, settings: settings, now: now, logger: logger}
 }
 
 // Routes 는 추론 라우트다. litellm 은 LLM API 라우트를 역할과 무관하게 연다(키만 맞으면). 모델 권한은 핸들러가 본다
@@ -43,6 +45,9 @@ func (h *Handlers) Routes() []core.Route {
 		// 헬스 체크는 업스트림을 실제로 부르므로 관리자만(litellm 도 관리 라우트다)
 		{Method: http.MethodGet, Path: "/health", Access: core.Roles(core.RoleProxyAdmin), Handler: h.health},
 		{Method: http.MethodPost, Path: "/health/test_connection", Access: core.Roles(core.RoleProxyAdmin), Handler: h.testConnection},
+		// 공개 모델 허브는 litellm 처럼 로그인 없이 본다
+		{Method: http.MethodGet, Path: "/public/v1/model_hub", Access: core.Public(), Handler: h.publicModelHub},
+		{Method: http.MethodGet, Path: "/public/v1/model_hub/{facet}", Access: core.Public(), Handler: h.publicModelHubFacet},
 	}
 }
 
@@ -151,33 +156,41 @@ func (h *Handlers) modelGroupInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	data := make([]map[string]any, 0, len(names))
 	for _, n := range names {
-		group := byName[n]
-		first := group[0]
-		providers := []string{}
-		for _, d := range group {
-			if !slices.Contains(providers, d.Provider) {
-				providers = append(providers, d.Provider)
-			}
-		}
-		data = append(data, map[string]any{
-			"model_group":                         n,
-			"providers":                           providers,
-			"max_input_tokens":                    first.MaxInputTokens,
-			"max_output_tokens":                   first.MaxOutputTokens,
-			"input_cost_per_token":                first.InputCostPerToken,
-			"output_cost_per_token":               first.OutputCostPerToken,
-			"mode":                                "chat",
-			"tpm":                                 nil,
-			"rpm":                                 nil,
-			"supports_parallel_function_calling":  false,
-			"supports_vision":                     false,
-			"supports_function_calling":           false,
-			"supports_reasoning":                  first.SupportsReasoning,
-			"supported_openai_params":             []string{},
-			"configurable_clientside_auth_params": nil,
-		})
+		data = append(data, groupRow(n, byName[n]))
 	}
 	core.WriteJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
+// groupRow 는 litellm ModelGroupInfo 한 행이다. 그룹의 첫 배포 값을 쓴다
+func groupRow(name string, group []Deployment) map[string]any {
+	first := group[0]
+	providers := []string{}
+	for _, d := range group {
+		if !slices.Contains(providers, d.Provider) {
+			providers = append(providers, d.Provider)
+		}
+	}
+	mode, _ := first.ExtraInfo["mode"].(string)
+	if mode == "" {
+		mode = "chat"
+	}
+	return map[string]any{
+		"model_group":                         name,
+		"providers":                           providers,
+		"max_input_tokens":                    first.MaxInputTokens,
+		"max_output_tokens":                   first.MaxOutputTokens,
+		"input_cost_per_token":                first.InputCostPerToken,
+		"output_cost_per_token":               first.OutputCostPerToken,
+		"mode":                                mode,
+		"tpm":                                 nil,
+		"rpm":                                 nil,
+		"supports_parallel_function_calling":  false,
+		"supports_vision":                     false,
+		"supports_function_calling":           false,
+		"supports_reasoning":                  first.SupportsReasoning,
+		"supported_openai_params":             []string{},
+		"configurable_clientside_auth_params": nil,
+	}
 }
 
 // groups 는 이 신원이 쓸 수 있는 모델 이름과 이름별 배포다

@@ -26,11 +26,9 @@ import (
 	"llm-gateway/internal/limits"
 )
 
-// version 과 loginMethods 는 빌드 때 build.sh 가 -ldflags 로 넣는다. 로그인 방식은 빌드 시점에 정하고 실행 중에는 바꿀 수 없다(설계 6장)
-var (
-	version      = "dev"
-	loginMethods = "sso,password"
-)
+// loginMethods 는 빌드 때 build.sh 가 -ldflags 로 넣는다. 로그인 방식은 빌드 시점에 정하고 실행 중에는 바꿀 수 없다(설계 6장).
+// 버전은 여러 모듈의 응답에 들어가므로 core.Version 에 넣는다
+var loginMethods = "sso,password"
 
 // Config 는 환경 변수에서 읽는 설정이다(설계 11.1)
 type Config struct {
@@ -105,14 +103,15 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, l
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
 	deployments := inference.NewDeployments(db)
+	settings := core.NewSettings(db)
 	return modules{
 		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(lifecycle, db),
 			login.Routes(),
-			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
-			admin.NewHandlers(db, teams, users, keys, policies, deployments, limits.NewUsageQuery(db), core.NewSettings(db), time.Now, logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), settings, time.Now, logger).Routes(),
+			admin.NewHandlers(db, teams, users, keys, policies, deployments, limits.NewUsageQuery(db), settings, time.Now, logger).Routes(),
 		),
 	}
 }
@@ -199,7 +198,7 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("기동", "version", version, "listen", listener.Addr().String(), "login", cfg.Login.String())
+	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String())
 
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()

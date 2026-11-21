@@ -62,6 +62,43 @@ func TestModels_DashboardTableEditAndPause(t *testing.T) {
 	}
 }
 
+func TestModels_PublicModelHubShowsOnlyPublishedGroups(t *testing.T) {
+	upstream, _ := fakeOllama(t)
+	api := newAPI(t)
+	b := browser{t: t, h: api.h}
+	for _, m := range []map[string]any{
+		{"model_name": "alpha", "litellm_params": map[string]any{"model": "ollama/a", "api_base": upstream.URL}, "model_info": map[string]any{"supports_reasoning": true}},
+		{"model_name": "beta", "litellm_params": map[string]any{"model": "hosted_vllm/b", "api_base": upstream.URL}},
+		{"model_name": "secret", "litellm_params": map[string]any{"model": "ollama/s", "api_base": upstream.URL}},
+	} {
+		api.ok("POST", "/model/new", m)
+	}
+	if empty := jsonOf(t, b.do("GET", "/public/v1/model_hub", nil, nil)); empty["meta"].(map[string]any)["total_count"] != 0.0 {
+		t.Errorf("공개 전 = %v", empty)
+	}
+	api.ok("POST", "/model_group/make_public", map[string]any{"model_groups": []string{"alpha", "beta"}})
+	api.ok("POST", "/model_hub/update_useful_links", map[string]any{"useful_links": map[string]any{"사내 위키": "http://wiki.corp.local"}})
+
+	hub := jsonOf(t, b.do("GET", "/public/v1/model_hub?page=1&page_size=50&sort=-model_group", nil, nil))
+	rows := hub["data"].([]any)
+	if hub["meta"].(map[string]any)["total_count"] != 2.0 || rows[0].(map[string]any)["model_group"] != "beta" {
+		t.Errorf("허브 = %v", hub)
+	}
+	if got := jsonOf(t, b.do("GET", "/public/v1/model_hub?filter[providers][in]=hosted_vllm", nil, nil)); got["meta"].(map[string]any)["total_count"] != 1.0 {
+		t.Errorf("제공자 거르기 = %v", got)
+	}
+	if got := jsonOf(t, b.do("GET", "/public/v1/model_hub/features", nil, nil)); len(got["data"].([]any)) != 1 || got["data"].([]any)[0] != "reasoning" {
+		t.Errorf("기능 목록 = %v", got)
+	}
+	if got := jsonOf(t, b.do("GET", "/public/v1/model_hub/providers", nil, nil)); len(got["data"].([]any)) != 2 {
+		t.Errorf("제공자 목록 = %v", got)
+	}
+	info := jsonOf(t, b.do("GET", "/public/model_hub/info", nil, nil))
+	if info["useful_links"].(map[string]any)["사내 위키"] != "http://wiki.corp.local" {
+		t.Errorf("허브 정보 = %v", info)
+	}
+}
+
 func TestModels_HealthChecksCallUpstream(t *testing.T) {
 	upstream, _ := fakeOllama(t)
 	api := newAPI(t)
