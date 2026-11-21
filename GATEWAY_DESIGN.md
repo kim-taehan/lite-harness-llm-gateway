@@ -205,7 +205,9 @@ OpenAI 오류 형식을 쓴다(litellm 과 같다). 모듈은 이름 붙은 오�
 | 없는 모델 | 404 | `invalid_request_error` | `model_not_found` |
 | 요청 형식 오류·컨텍스트 초과 | 400 | `invalid_request_error` | `bad_request` / `context_length_exceeded` |
 | 예산 초과 | 429 | `rate_limit_error` | `budget_exceeded` |
-| RPM·TPM·동시성 초과 | 429 | `rate_limit_error` | `rate_limit_exceeded` (+`Retry-After`, `x-ratelimit-*` 헤더) |
+| RPM·TPM·동시성 초과 | 429 | `rate_limit_error` | `rate_limit_exceeded` (+`Retry-After`) |
+
+성공 응답에는 한도가 있는 대상마다 litellm v3 리미터와 같은 `x-ratelimit-{api_key\|team\|user}-{limit\|remaining}-{requests\|tokens\|max_parallel_requests}` 헤더를 싣는다(스트림 포함, 헤더는 본문보다 먼저 나간다). 값은 검사 시점의 스냅샷이고 응답 뒤 토큰 정산은 반영하지 않는다. 한도가 없는 키의 응답에는 싣지 않는다.
 | 업스트림 5xx | 502 | `server_error` | `upstream_error` |
 | 업스트림 연결 실패·쿨다운으로 배포 없음 | 503 | `server_error` | `upstream_unavailable` |
 | 업스트림 타임아웃 | 504 | `server_error` | `upstream_timeout` |

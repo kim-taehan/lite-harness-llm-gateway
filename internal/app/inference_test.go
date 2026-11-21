@@ -71,6 +71,35 @@ func fakeOllama(t *testing.T) (*httptest.Server, *upstreamLog) {
 	return srv, received
 }
 
+func TestChat_ResponseCarriesRatelimitHeadersOnlyWhenKeyIsLimited(t *testing.T) {
+	upstream, _ := fakeOllama(t)
+	h, _, _ := testGateway(t)
+	api := apiClient{t: t, h: h}
+	api.ok("POST", "/model/new", map[string]any{"model_name": "m1", "litellm_params": map[string]any{"model": "ollama/x", "api_base": upstream.URL}})
+	limited := api.ok("POST", "/key/generate", map[string]any{"rpm_limit": 5})["key"].(string)
+	free := api.ok("POST", "/key/generate", map[string]any{})["key"].(string)
+
+	call := func(key string) http.Header {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return rec.Header()
+	}
+	header := call(limited)
+	if header.Get("x-ratelimit-api_key-limit-requests") != "5" || header.Get("x-ratelimit-api_key-remaining-requests") != "4" {
+		t.Errorf("한도 있는 키의 헤더 = %v", header)
+	}
+	for name := range call(free) {
+		if strings.HasPrefix(strings.ToLower(name), "x-ratelimit") {
+			t.Errorf("한도 없는 키 응답에 %s 가 실렸다", name)
+		}
+	}
+}
+
 func TestChat_RelaysStreamRecordsUsageAndHidesUnrequestedUsageChunk(t *testing.T) {
 	upstream, received := fakeOllama(t)
 	h, _, pool := testGateway(t)

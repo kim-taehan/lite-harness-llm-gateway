@@ -50,6 +50,38 @@ func TestGate_RPMIsFixedWindowLikeLitellm(t *testing.T) {
 	}
 }
 
+func TestGate_PermitCarriesRatelimitHeadersLikeLitellm(t *testing.T) {
+	gate, policies, _ := newGate(t)
+	ctx := t.Context()
+	_, _ = policies.Apply(ctx, ScopeKey, "k1", Patch{RPMLimit: core.To(int64(5)), TPMLimit: core.To(int64(1000)), MaxParallelRequests: core.To(int64(3))})
+	_, _ = policies.Apply(ctx, ScopeTeam, "t1", Patch{RPMLimit: core.To(int64(10))})
+
+	permit, err := gate.Admit(ctx, Subject{KeyToken: "k1", TeamID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit.AddTokens(400)
+	second, err := gate.Admit(ctx, Subject{KeyToken: "k1", TeamID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"x-ratelimit-api_key-limit-requests": "5", "x-ratelimit-api_key-remaining-requests": "3",
+		"x-ratelimit-api_key-limit-tokens": "1000", "x-ratelimit-api_key-remaining-tokens": "600",
+		"x-ratelimit-api_key-limit-max_parallel_requests": "3", "x-ratelimit-api_key-remaining-max_parallel_requests": "1",
+		"x-ratelimit-team-limit-requests": "10", "x-ratelimit-team-remaining-requests": "8",
+	}
+	got := second.Headers()
+	if len(got) != len(want) {
+		t.Errorf("헤더 %d 개, want %d: %v", len(got), len(want), got)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("%s = %q, want %q", name, got[name], value)
+		}
+	}
+}
+
 func TestGate_MaxParallelReleasesSlot(t *testing.T) {
 	gate, policies, _ := newGate(t)
 	ctx := t.Context()

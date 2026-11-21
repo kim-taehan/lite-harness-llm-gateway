@@ -35,7 +35,22 @@ type Permit struct {
 	gate    *Gate
 	subject Subject
 	limited map[Scope]bool // TPM 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
+	headers map[string]string
 }
+
+// report 는 litellm v3 리미터처럼 x-ratelimit-{api_key|team|user}-{limit|remaining}-{requests|tokens|max_parallel_requests} 헤더를 모은다.
+// 값은 검사 시점의 스냅샷이다(응답 뒤 토큰 정산은 반영하지 않는다)
+func (p *Permit) report(scope Scope, kind string, limit, used int64) {
+	if p.headers == nil {
+		p.headers = map[string]string{}
+	}
+	prefix := "x-ratelimit-" + descriptorNames[scope]
+	p.headers[prefix+"-limit-"+kind] = strconv.FormatInt(limit, 10)
+	p.headers[prefix+"-remaining-"+kind] = strconv.FormatInt(max(0, limit-used), 10)
+}
+
+// Headers 는 통과한 요청의 응답에 실을 x-ratelimit-* 헤더다. 한도가 없으면 비어 있다
+func (p *Permit) Headers() map[string]string { return p.headers }
 
 func (p *Permit) Release() {
 	for _, r := range p.release {
@@ -86,24 +101,29 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 		id := ids[scope]
 		if p.TPMLimit != nil {
 			permit.limited[scope] = true
-			if used := g.counters.Get(counterKey("tpm", scope, id), time.Minute); used >= *p.TPMLimit {
+			used := g.counters.Get(counterKey("tpm", scope, id), time.Minute)
+			if used >= *p.TPMLimit {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "tokens", *p.TPMLimit)
 			}
+			permit.report(scope, "tokens", *p.TPMLimit, used)
 		}
 		if p.RPMLimit != nil {
-			if _, ok := g.counters.IncrementIfBelow(counterKey("rpm", scope, id), 1, *p.RPMLimit, time.Minute); !ok {
+			used, ok := g.counters.IncrementIfBelow(counterKey("rpm", scope, id), 1, *p.RPMLimit, time.Minute)
+			if !ok {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "requests", *p.RPMLimit)
 			}
+			permit.report(scope, "requests", *p.RPMLimit, used)
 		}
 		if p.MaxParallelRequests != nil {
-			release, ok := g.counters.AcquireSlot(counterKey("conc", scope, id), *p.MaxParallelRequests, slotLease)
+			release, held, ok := g.counters.AcquireSlot(counterKey("conc", scope, id), *p.MaxParallelRequests, slotLease)
 			if !ok {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "max_parallel_requests", *p.MaxParallelRequests)
 			}
 			permit.release = append(permit.release, release)
+			permit.report(scope, "max_parallel_requests", *p.MaxParallelRequests, held)
 		}
 	}
 	return permit, nil

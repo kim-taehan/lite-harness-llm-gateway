@@ -14,8 +14,9 @@ type CounterStore interface {
 	Add(key string, amount int64, window time.Duration)
 	// Get 은 지금 윈도우의 값이다
 	Get(key string, window time.Duration) int64
-	// AcquireSlot 은 동시성 슬롯을 lease 동안 잡는다. 인스턴스가 죽어도 lease 가 지나면 풀린다(설계 7.1)
-	AcquireSlot(key string, limit int64, lease time.Duration) (release func(), ok bool)
+	// AcquireSlot 은 동시성 슬롯을 lease 동안 잡는다. 인스턴스가 죽어도 lease 가 지나면 풀린다(설계 7.1).
+	// held 는 잡은 뒤(실패면 잡혀 있던) 슬롯 수다
+	AcquireSlot(key string, limit int64, lease time.Duration) (release func(), held int64, ok bool)
 }
 
 // MemoryCounters 는 프로세스 안 카운터다
@@ -71,7 +72,7 @@ func (m *MemoryCounters) Get(key string, window time.Duration) int64 {
 	return m.current(key, window).value
 }
 
-func (m *MemoryCounters) AcquireSlot(key string, limit int64, lease time.Duration) (func(), bool) {
+func (m *MemoryCounters) AcquireSlot(key string, limit int64, lease time.Duration) (func(), int64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -86,7 +87,7 @@ func (m *MemoryCounters) AcquireSlot(key string, limit int64, lease time.Duratio
 		}
 	}
 	if int64(len(held)) >= limit {
-		return nil, false
+		return nil, int64(len(held)), false
 	}
 	m.next++
 	id := m.next
@@ -98,5 +99,5 @@ func (m *MemoryCounters) AcquireSlot(key string, limit int64, lease time.Duratio
 			defer m.mu.Unlock()
 			delete(m.slots[key], id)
 		})
-	}, true
+	}, int64(len(held)), true
 }

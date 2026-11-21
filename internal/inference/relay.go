@@ -69,6 +69,9 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI
 	x := &exchange{requestID: core.NewUUID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
 	// litellm 과 같은 이름의 요청 ID 헤더(설계 11.3)
 	w.Header().Set("x-litellm-call-id", x.requestID)
+	for name, value := range permit.Headers() {
+		w.Header().Set(name, value)
+	}
 	defer func() { h.record(r, x) }()
 
 	clientWantsUsage := requestUsageChunk(body, api, stream)
