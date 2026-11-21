@@ -328,10 +328,14 @@ func sortDeployments(ds []inference.Deployment, by, order string) {
 	case "updated_at":
 		compare = func(a, b inference.Deployment) int { return a.UpdatedAt.Compare(b.UpdatedAt) }
 	case "costs":
-		cost := func(d inference.Deployment) float64 { return derefFloat(d.InputCostPerToken) + derefFloat(d.OutputCostPerToken) }
+		cost := func(d inference.Deployment) float64 {
+			return derefFloat(d.InputCostPerToken) + derefFloat(d.OutputCostPerToken)
+		}
 		compare = func(a, b inference.Deployment) int { return cmp.Compare(cost(a), cost(b)) }
 	case "status":
-		compare = func(a, b inference.Deployment) int { return cmp.Compare(strconv.FormatBool(!a.Active), strconv.FormatBool(!b.Active)) }
+		compare = func(a, b inference.Deployment) int {
+			return cmp.Compare(strconv.FormatBool(!a.Active), strconv.FormatBool(!b.Active))
+		}
 	default:
 		return
 	}
