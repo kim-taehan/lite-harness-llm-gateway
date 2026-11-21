@@ -373,6 +373,8 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 본인이 비밀번호를 바꾸면 그 사용자의 대시보드 세션이 지금 세션까지 모두 끊긴다(litellm 은 지금 세션은 남긴다). 세션을 DB 에 두지 않아 하나만 남길 수 없다
 - 관리자가 정한 비밀번호의 "다음 로그인 때 변경" 강제는 대시보드 세션에만 건다. 데스크탑 로그인은 막지 않는다
 - 초대 온보딩으로 연 세션은 비밀번호 로그인 세션으로 본다(바로 비밀번호를 바꿀 수 있다). litellm 은 이 세션에서 변경이 403 이다
+- 팀·사용자 라우트 권한(H 1장 표)은 핸들러가 판정한다. 팀 admin 의 `/team/update` 는 litellm 처럼 설정 `team_admin_editable_team_fields` 가 열어 준 필드만 되고(기본은 비어 있어 못 바꾼다), 우리는 `tpm_limit`·`rpm_limit`·`max_budget`(올리려면 `raise_max_budget`)·`soft_budget`·`metadata` 만 열 수 있다
+- 비관리자의 `/user/info`(v1)를 `user_id` 없이 부르면 litellm 은 모든 팀을 보여 주지만 우리는 본인 정보만 준다
 - 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 그러면 대시보드는 `LITELLM_BACKEND_URL`(호스트 분리) 또는 자기 출처(한 호스트)로 API 를 부른다(11장 운영 구성)
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)

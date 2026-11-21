@@ -234,11 +234,23 @@ func (h *Handlers) deleteUsers(w http.ResponseWriter, r *http.Request) {
 
 // userInfo 는 v1 /user/info 다. 대시보드는 쓰지 않지만(v2 를 쓴다) API 호환을 위해 둔다
 func (h *Handlers) userInfo(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, p := r.Context(), principal(r.Context())
 	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
+	if userID == "" && p.CanViewAll() {
 		// 관리자가 user_id 없이 부르면 litellm 은 모든 팀과 호출자 본인 행을 준다
 		h.adminUserInfo(w, r)
+		return
+	}
+	if userID == "" {
+		userID = p.UserID // 비관리자는 본인이다
+	}
+	if userID == "" {
+		userIDRequired().Write(w)
+		return
+	}
+	if !p.CanViewAll() && userID != p.UserID {
+		core.ProxyError{Status: 403, Type: "internal_server_error",
+			Message: "key not allowed to access this user's info. user_id=" + userID + ", key's user_id=" + p.UserID}.Write(w)
 		return
 	}
 	user, err := h.users.Find(ctx, userID)
@@ -299,15 +311,31 @@ func (h *Handlers) adminUserInfo(w http.ResponseWriter, r *http.Request) {
 
 // userInfoV2 는 사용자 상세 화면의 본체다. 평면 객체이고 teams 는 id 배열이다
 func (h *Handlers) userInfoV2(w http.ResponseWriter, r *http.Request) {
+	p := principal(r.Context())
 	userID := r.URL.Query().Get("user_id")
 	if userID == "" {
-		principal, _ := auth.PrincipalFrom(r.Context())
-		userID = principal.UserID
+		userID = p.UserID
+	}
+	if userID == "" {
+		userIDRequired().Write(w)
+		return
+	}
+	// litellm 은 사용자 없음과 권한 없음을 구분하지 않고 둘 다 404 다. 본인, 관리자 계열, 같은 팀의 admin 만 본다
+	notFound := core.ProxyError{Status: 404, Message: "User not found: " + userID, Type: "internal_server_error"}
+	if !p.CanViewAll() && userID != p.UserID {
+		shared, err := h.sharesAdminTeam(r.Context(), p.UserID, userID)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if !shared {
+			notFound.Write(w)
+			return
+		}
 	}
 	user, err := h.users.Find(r.Context(), userID)
 	if errors.Is(err, auth.ErrUserNotFound) {
-		// litellm 은 사용자 없음과 권한 없음을 구분하지 않고 둘 다 404 다
-		core.ProxyError{Status: 404, Message: "User not found: " + userID, Type: "internal_server_error"}.Write(w)
+		notFound.Write(w)
 		return
 	}
 	if err != nil {
@@ -329,7 +357,17 @@ func (h *Handlers) userInfoV2(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, response)
 }
 
+// userIDRequired 는 사용자 없는 키가 user_id 없이 부를 때의 litellm 오류다
+func userIDRequired() core.ProxyError {
+	return core.ProxyError{Status: 400, Type: "internal_server_error",
+		Message: "user_id is required. Either pass it as a query parameter or authenticate with a user-bound key."}
+}
+
 func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) {
+	if !principal(r.Context()).CanViewAll() {
+		detailError(403, "Only proxy admins and organization admins can list users.").Write(w)
+		return
+	}
 	var errs validationError
 	page := queryInt(r, "page", 1, 1, 0, &errs)
 	pageSize := queryInt(r, "page_size", 25, 1, 100, &errs)

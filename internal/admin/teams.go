@@ -106,23 +106,28 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// teamUpdate 는 /team/update 본문이다(litellm UpdateTeamRequest). 팀 권한 화면 말고 팀 수정 폼도 team_member_permissions 를 보낸다
+type teamUpdate struct {
+	TeamID            *string                     `json:"team_id"`
+	TeamAlias         core.Change[string]         `json:"team_alias"`
+	Models            core.Change[[]string]       `json:"models"`
+	Metadata          core.Change[map[string]any] `json:"metadata"`
+	Blocked           core.Change[bool]           `json:"blocked"`
+	MemberPermissions core.Change[[]string]       `json:"team_member_permissions"`
+	limitFields
+}
+
 func (h *Handlers) updateTeam(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TeamID    *string                     `json:"team_id"`
-		TeamAlias core.Change[string]         `json:"team_alias"`
-		Models    core.Change[[]string]       `json:"models"`
-		Metadata  core.Change[map[string]any] `json:"metadata"`
-		Blocked   core.Change[bool]           `json:"blocked"`
-		// 팀 권한 화면 말고 팀 수정 폼도 이 필드를 보낸다(litellm UpdateTeamRequest)
-		MemberPermissions core.Change[[]string] `json:"team_member_permissions"`
-		limitFields
-	}
+	var req teamUpdate
 	raw, ok := requestBody(w, r, &req)
 	if !ok {
 		return
 	}
 	if req.TeamID == nil {
 		validationError{missing(raw, "team_id")}.write(w)
+		return
+	}
+	if !h.authorizeTeamUpdate(w, r, req) {
 		return
 	}
 	var team auth.Team
@@ -230,6 +235,12 @@ func (h *Handlers) addMember(w http.ResponseWriter, r *http.Request) {
 		errs.write(w)
 		return
 	}
+	teamMissing := func() {
+		detailError(404, "Team doesn't exist in db. Team="+*req.TeamID+". Create team via `/team/new` call.").Write(w)
+	}
+	if !h.authorizeTeamMemberWrite(w, r, "/team/member_add", *req.TeamID, teamMissing) || !h.mayAddMembers(w, r, refs) {
+		return
+	}
 	team, added, err := h.teams.AddMembers(r.Context(), *req.TeamID, refs, single)
 	var already *auth.AlreadyMemberError
 	var mismatch *auth.EmailOwnerMismatchError
@@ -320,8 +331,12 @@ func (h *Handlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 		errs.write(w)
 		return
 	}
-	principal, _ := auth.PrincipalFrom(r.Context())
-	team, err := h.teams.RemoveMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, principal.UserID)
+	// litellm 은 여기서 팀이 없으면 404 가 아니라 400 이다
+	teamMissing := func() { detailError(400, "Team id="+*req.TeamID+" does not exist in db").Write(w) }
+	if !h.authorizeTeamMemberWrite(w, r, "/team/member_delete", *req.TeamID, teamMissing) {
+		return
+	}
+	team, err := h.teams.RemoveMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, principal(r.Context()).UserID)
 	switch {
 	case err == nil:
 		h.writeTeam(w, r, team)
@@ -366,6 +381,11 @@ func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(errs) > 0 {
 		errs.write(w)
+		return
+	}
+	teamMissing := func() { detailError(400, "Team id="+*req.TeamID+" does not exist in db").Write(w) }
+	// 거부 문구의 route 가 member_delete 로 찍히는 것은 litellm 원본 버그다(H 3.7). 대시보드가 보이는 문구라 그대로 둔다
+	if !h.authorizeTeamMemberWrite(w, r, "/team/member_delete", *req.TeamID, teamMissing) {
 		return
 	}
 	userID, err := h.teams.UpdateMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, role)
@@ -418,6 +438,9 @@ func (h *Handlers) teamInfo(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 		return
 	}
+	if !h.authorizeTeamRead(w, r, teamID, func(message string) { authStyle(403, message).Write(w) }) {
+		return
+	}
 	teamRows, members, err := h.rows.teamRows(r.Context(), []auth.Team{team})
 	if err != nil {
 		h.internalError(w, r, err)
@@ -458,7 +481,10 @@ func teamInfoExtras() row {
 
 // listTeamsV1 은 맨 배열, 별칭 오름차순이다
 func (h *Handlers) listTeamsV1(w http.ResponseWriter, r *http.Request) {
-	userID := queryString(r, "user_id")
+	userID, ok := scopeTeamListUser(w, principal(r.Context()), queryString(r, "user_id"))
+	if !ok {
+		return
+	}
 	teams, err := h.teams.ListByAlias(r.Context(), userID)
 	if err != nil {
 		h.internalError(w, r, err)
@@ -495,7 +521,11 @@ func (h *Handlers) listTeamsV2(w http.ResponseWriter, r *http.Request) {
 		detailError(400, "Invalid status value. Currently only 'deleted' is supported.").Write(w)
 		return
 	}
-	userID, teamID := queryString(r, "user_id"), queryString(r, "team_id")
+	userID, ok := scopeTeamListUser(w, principal(r.Context()), queryString(r, "user_id"))
+	if !ok {
+		return
+	}
+	teamID := queryString(r, "team_id")
 	if userID != nil {
 		if ok := h.checkTeamListUser(w, r, *userID, teamID); !ok {
 			return
