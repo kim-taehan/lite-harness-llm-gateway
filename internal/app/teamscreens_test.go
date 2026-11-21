@@ -62,7 +62,9 @@ func TestTeamScreens_MemberPermissionsGateTeamKeys(t *testing.T) {
 	bulk := jsonOf(t, b.doJSON("POST", "/management/v1/teams/t1/members/bulk_update",
 		`{"members":[{"user_id":"lee","max_budget_in_team":null},{"user_id":"lee","max_budget_in_team":5},{"user_id":"nobody"}]}`, kim))
 	rows := bulk["data"].([]any)
-	if rows[0].(map[string]any)["success"] != true || rows[1].(map[string]any)["success"] != false || rows[2].(map[string]any)["success"] != false {
+	second := rows[1].(map[string]any)
+	if rows[0].(map[string]any)["success"] != true || second["success"] != true || second["max_budget"] != 5.0 || second["max_budget_source"] != "member" ||
+		rows[2].(map[string]any)["success"] != false {
 		t.Errorf("bulk_update = %v", bulk)
 	}
 }

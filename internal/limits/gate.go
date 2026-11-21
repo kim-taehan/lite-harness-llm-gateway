@@ -69,7 +69,7 @@ func (p *Permit) AddTokens(tokens int) {
 
 func (s Subject) ids() map[Scope]string {
 	ids := map[Scope]string{}
-	for scope, id := range map[Scope]string{ScopeKey: s.KeyToken, ScopeTeam: s.TeamID, ScopeUser: s.UserID} {
+	for scope, id := range map[Scope]string{ScopeKey: s.KeyToken, ScopeTeam: s.TeamID, ScopeUser: s.UserID, ScopeTeamMember: MemberTarget(s.TeamID, s.UserID)} {
 		if id != "" {
 			ids[scope] = id
 		}
@@ -87,13 +87,13 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, scope := range []Scope{ScopeKey, ScopeTeam, ScopeUser} {
+	for _, scope := range gatedScopes {
 		if p, ok := policies[scope]; ok && p.MaxBudget != nil && p.Spend >= *p.MaxBudget {
 			return nil, budgetExceeded(scope, s, p)
 		}
 	}
 	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}}
-	for _, scope := range []Scope{ScopeKey, ScopeTeam, ScopeUser} {
+	for _, scope := range gatedScopes {
 		p, ok := policies[scope]
 		if !ok {
 			continue
@@ -134,7 +134,10 @@ func counterKey(kind string, scope Scope, id string) string {
 }
 
 // litellm 의 descriptor 이름(parallel_request_limiter_v3.py): 키 api_key, 팀 team, 사용자 user
-var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user"}
+var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member"}
+
+// gatedScopes 는 요청마다 검사하는 대상 종류와 그 순서다
+var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember}
 
 // rateLimited 는 litellm v3 리미터의 429 문구와 retry-after 다. 본문 모양(type)은 litellm 원문에서 확인하지 못했다
 func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.ProxyError {
@@ -147,7 +150,8 @@ func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.Proxy
 
 // budgetExceeded 는 litellm BudgetExceededError 다. 이 포크의 기본 상태 코드는 422 다(J 5.3)
 func budgetExceeded(scope Scope, s Subject, p Policy) core.ProxyError {
-	who := map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID}[scope]
+	who := map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
+		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID}[scope]
 	return core.ProxyError{Status: http.StatusUnprocessableEntity, Type: "budget_exceeded", Param: nil,
 		Message: fmt.Sprintf("Budget has been exceeded! %s Current cost: %s, Max budget: %s", who, formatFloat(p.Spend), formatFloat(*p.MaxBudget))}
 }

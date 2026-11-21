@@ -213,8 +213,14 @@ func (h *Handlers) deleteUsers(w http.ResponseWriter, r *http.Request) {
 	ids := unique(req.UserIDs)
 	var deleted int64
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
-		var err error
+		memberTargets, err := h.memberTargetsOfUsers(ctx, ids)
+		if err != nil {
+			return err
+		}
 		if deleted, err = h.users.Delete(ctx, ids); err != nil {
+			return err
+		}
+		if err := h.limits.Delete(ctx, limits.ScopeTeamMember, memberTargets); err != nil {
 			return err
 		}
 		return h.limits.Delete(ctx, limits.ScopeUser, ids)
@@ -229,6 +235,21 @@ func (h *Handlers) deleteUsers(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// memberTargetsOfUsers 는 사용자들이 속한 모든 팀의 팀원 한도 대상 id 다
+func (h *Handlers) memberTargetsOfUsers(ctx context.Context, userIDs []string) ([]string, error) {
+	var targets []string
+	for _, userID := range userIDs {
+		memberships, err := h.teams.MembershipsOf(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range memberships {
+			targets = append(targets, limits.MemberTarget(m.TeamID, userID))
+		}
+	}
+	return targets, nil
 }
 
 // userInfo 는 v1 /user/info 다. 대시보드는 쓰지 않지만(v2 를 쓴다) API 호환을 위해 둔다

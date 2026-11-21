@@ -120,7 +120,8 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 			rows[i] = []any{e.RequestID, e.CreatedAt, nullable(e.KeyToken), nullable(e.UserID), nullable(e.TeamID), e.Model, nullable(e.DeploymentID),
 				e.PromptTokens, e.CompletionTokens, source, e.Cost, e.Status, e.HTTPStatus, nullable(e.ErrorCode), e.LatencyMS, e.TTFTMS}
 			if e.Cost > 0 {
-				for scope, id := range map[Scope]string{ScopeKey: e.KeyToken, ScopeTeam: e.TeamID, ScopeUser: e.UserID} {
+				for scope, id := range map[Scope]string{ScopeKey: e.KeyToken, ScopeTeam: e.TeamID, ScopeUser: e.UserID,
+					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID)} {
 					if id != "" {
 						spend[[2]string{string(scope), id}] += e.Cost
 					}

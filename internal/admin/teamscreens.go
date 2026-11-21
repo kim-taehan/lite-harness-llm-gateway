@@ -1,16 +1,20 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/limits"
 )
 
-// 팀 화면의 나머지 엔드포인트(I 2.2~2.9). 팀원별 예산(litellm LiteLLM_BudgetTable 연결)은 아직 없다(설계 12장 M5).
-// 그래서 팀원 사용액은 늘 0 이고, 팀원 예산을 "기본값으로 되돌리는" 요청만 성공한다(이미 기본값이다)
+// 팀 화면의 나머지 엔드포인트(I 2.2~2.9). 팀원별 한도는 limit_policy 의 team_member 종류(대상 id "팀:사용자")로 저장한다.
+// litellm 의 팀 기본 팀원 예산(team_member_budget_id)과 팀원별 허용 모델은 아직 없다(설계 9장)
 
 // allTeamMemberKeyRoutes 는 litellm key_management_routes 다(I 2.4). 팀 권한 화면이 체크박스로 그린다
 var allTeamMemberKeyRoutes = []string{"/key/generate", "/key/update", "/key/delete", "/key/info", "/key/regenerate",
@@ -200,21 +204,64 @@ func (h *Handlers) resetTeamMemberSpend(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	// 팀원 사용액은 아직 따로 세지 않아 늘 0 이다. 그보다 큰 값으로는 litellm 처럼 바꿀 수 없다
-	if *req.ResetTo != 0 {
-		detailError(400, "reset_to must be >= 0 and <= current spend (0.0)").Write(w)
+	ctx, target := r.Context(), limits.MemberTarget(teamID, userID)
+	policy, err := h.memberPolicy(ctx, target)
+	if err != nil {
+		h.internalError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, row{"team_id": teamID, "user_id": userID, "spend": 0.0, "previous_spend": 0.0, "max_budget": nil})
+	// litellm 처럼 사용액보다 큰 값으로는 바꿀 수 없다
+	if *req.ResetTo < 0 || *req.ResetTo > policy.Spend {
+		detailError(400, "reset_to must be >= 0 and <= current spend ("+pyFloat(policy.Spend)+")").Write(w)
+		return
+	}
+	previous, err := h.limits.SetSpend(ctx, limits.ScopeTeamMember, target, *req.ResetTo)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, row{"team_id": teamID, "user_id": userID, "spend": *req.ResetTo, "previous_spend": previous, "max_budget": policy.MaxBudget})
 }
 
+// pyFloat 는 파이썬 float 문자열이다(0 은 "0.0"). litellm 문구에 그대로 들어간다
+func pyFloat(v float64) string {
+	text := strconv.FormatFloat(v, 'f', -1, 64)
+	if !strings.Contains(text, ".") {
+		text += ".0"
+	}
+	return text
+}
+
+func (h *Handlers) memberPolicy(ctx context.Context, target string) (limits.Policy, error) {
+	policies, err := h.limits.Find(ctx, limits.ScopeTeamMember, []string{target})
+	return policies[target], err
+}
+
+// resetTeamMemberBudget 은 팀원 한도(예산·TPM·RPM·기간)를 모두 지운다. 팀 기본 팀원 예산은 없으므로 늘 "none" 이다. 사용액은 그대로다
 func (h *Handlers) resetTeamMemberBudget(w http.ResponseWriter, r *http.Request) {
 	teamID, userID, ok := h.memberOfTeamForAdmin(w, r)
 	if !ok {
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, row{"team_id": teamID, "user_id": userID, "budget_id": nil, "previous_budget_id": nil, "budget_source": "none"})
+	ctx, target := r.Context(), limits.MemberTarget(teamID, userID)
+	policy, err := h.memberPolicy(ctx, target)
+	if err == nil {
+		_, err = h.limits.Apply(ctx, limits.ScopeTeamMember, target, clearedMemberLimits)
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	var previous any
+	if policy.MaxBudget != nil || policy.TPMLimit != nil || policy.RPMLimit != nil || policy.BudgetDuration != nil {
+		previous = target // 우리는 예산 행 id 대신 팀원 한도 자체가 대상 id 로 저장된다
+	}
+	core.WriteJSON(w, http.StatusOK, row{"team_id": teamID, "user_id": userID, "budget_id": nil, "previous_budget_id": previous, "budget_source": "none"})
 }
+
+// clearedMemberLimits 는 팀원 한도를 모두 null 로 만드는 변경이다
+var clearedMemberLimits = limits.Patch{MaxBudget: core.Change[float64]{Set: true}, TPMLimit: core.Change[int64]{Set: true},
+	RPMLimit: core.Change[int64]{Set: true}, BudgetDuration: core.Change[string]{Set: true}}
 
 // writeProblem 은 /management/v1/* 의 RFC 9457 오류 문서다(I 2.9)
 func writeProblem(w http.ResponseWriter, status int, kind, title, detail string) {
@@ -224,10 +271,18 @@ func writeProblem(w http.ResponseWriter, status int, kind, title, detail string)
 	_ = json.NewEncoder(w).Encode(row{"type": "urn:litellm:error:" + kind, "title": title, "status": status, "detail": detail})
 }
 
-// bulkUpdateMemberBudgets 는 팀원 예산 일괄 수정이다. 팀원 예산이 없으므로 "기본값으로 되돌리기"(모든 값 null)만 성공한다
+// memberBudgetPatch 는 팀원 한도 일괄 수정의 한 사람이다. merge-patch 라 보내지 않은 필드는 그대로 두고 null 은 지운다(I 2.9)
+type memberBudgetPatch struct {
+	UserID        *string               `json:"user_id"`
+	UserEmail     *string               `json:"user_email"`
+	AllowedModels core.Change[[]string] `json:"allowed_models"`
+	memberLimitFields
+}
+
+// bulkUpdateMemberBudgets 는 팀원 한도 일괄 수정이다. 팀원별 허용 모델(allowed_models)은 아직 없어 값을 정하는 행은 실패로 남긴다
 func (h *Handlers) bulkUpdateMemberBudgets(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Members []map[string]any `json:"members"`
+		Members []memberBudgetPatch `json:"members"`
 	}
 	if _, ok := requestBody(w, r, &req); !ok {
 		return
@@ -255,35 +310,61 @@ func (h *Handlers) bulkUpdateMemberBudgets(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	results := make([]row, 0, len(req.Members))
-	for _, m := range req.Members {
-		userID, _ := m["user_id"].(string)
-		email, _ := m["user_email"].(string)
-		result := row{"user_id": m["user_id"], "user_email": m["user_email"], "success": true, "error": nil, "budget_id": nil,
-			"max_budget": nil, "max_budget_source": nil, "tpm_limit": nil, "rpm_limit": nil, "budget_duration": nil, "allowed_models": nil}
-		if !inRoster(members[teamID], userID, email) {
-			result["success"], result["error"] = false, "User is not a member of team "+teamID
-		} else if setsAnyBudget(m) {
-			result["success"], result["error"] = false, "Per-member team budgets are not supported by this gateway yet"
+	err = h.db.InTx(r.Context(), func(ctx context.Context) error {
+		for _, m := range req.Members {
+			result, err := h.updateMemberBudget(ctx, teamID, members[teamID], m)
+			if err != nil {
+				return err
+			}
+			results = append(results, result)
 		}
-		results = append(results, result)
+		return nil
+	})
+	if err != nil {
+		h.internalError(w, r, err)
+		return
 	}
 	core.WriteJSON(w, http.StatusOK, row{"data": results})
 }
 
-func inRoster(members []auth.TeamMember, userID, email string) bool {
-	for _, m := range members {
-		if (userID != "" && m.UserID == userID) || (email != "" && m.UserEmail != nil && *m.UserEmail == email) {
-			return true
-		}
+// updateMemberBudget 는 한 팀원의 결과 행이다. 명단에 없거나 값이 틀린 행은 실패로 남기고 DB 오류만 돌려준다
+func (h *Handlers) updateMemberBudget(ctx context.Context, teamID string, roster []auth.TeamMember, m memberBudgetPatch) (row, error) {
+	result := row{"user_id": m.UserID, "user_email": m.UserEmail, "success": true, "error": nil, "budget_id": nil,
+		"max_budget": nil, "max_budget_source": nil, "tpm_limit": nil, "rpm_limit": nil, "budget_duration": nil, "allowed_models": nil}
+	fail := func(message string) (row, error) {
+		result["success"], result["error"] = false, message
+		return result, nil
 	}
-	return false
+	userID, found := rosterUser(roster, derefOr(m.UserID, ""), derefOr(m.UserEmail, ""))
+	switch {
+	case !found:
+		return fail("User is not a member of team " + teamID)
+	case m.AllowedModels.Set && m.AllowedModels.Value != nil:
+		return fail("Per-member allowed_models are not supported by this gateway yet")
+	case !m.anySet():
+		return result, nil
+	}
+	policy, err := h.limits.Apply(ctx, limits.ScopeTeamMember, limits.MemberTarget(teamID, userID), m.patch())
+	var invalid *limits.InvalidError
+	if errors.As(err, &invalid) {
+		return fail(invalid.Message)
+	}
+	if err != nil {
+		return nil, err
+	}
+	result["max_budget"], result["tpm_limit"], result["rpm_limit"], result["budget_duration"] = policy.MaxBudget, policy.TPMLimit, policy.RPMLimit, policy.BudgetDuration
+	if policy.MaxBudget != nil {
+		result["max_budget_source"] = "member"
+	}
+	return result, nil
 }
 
-func setsAnyBudget(patch map[string]any) bool {
-	for _, k := range []string{"max_budget_in_team", "tpm_limit", "rpm_limit", "budget_duration", "allowed_models"} {
-		if v, ok := patch[k]; ok && v != nil {
-			return true
+// rosterUser 는 팀 명단에서 user_id 나 이메일로 찾은 사용자 id 다
+func rosterUser(members []auth.TeamMember, userID, email string) (string, bool) {
+	for _, m := range members {
+		if (userID != "" && m.UserID == userID) || (email != "" && m.UserEmail != nil && *m.UserEmail == email) {
+			return m.UserID, true
 		}
 	}
-	return false
+	return "", false
 }

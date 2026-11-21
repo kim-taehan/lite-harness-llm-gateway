@@ -17,10 +17,19 @@ import (
 type Scope string
 
 const (
-	ScopeKey  Scope = "key"
-	ScopeTeam Scope = "team"
-	ScopeUser Scope = "user"
+	ScopeKey        Scope = "key"
+	ScopeTeam       Scope = "team"
+	ScopeUser       Scope = "user"
+	ScopeTeamMember Scope = "team_member"
 )
+
+// MemberTarget 은 팀원 한도의 대상 id 다("팀id:사용자id", litellm descriptor 와 같다). 팀이나 사용자가 없으면 빈 문자열이다
+func MemberTarget(teamID, userID string) string {
+	if teamID == "" || userID == "" {
+		return ""
+	}
+	return teamID + ":" + userID
+}
 
 // Policy 는 대상 하나의 한도 설정이다. nil 은 "정하지 않음"이다
 type Policy struct {

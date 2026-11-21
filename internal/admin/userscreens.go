@@ -1,12 +1,14 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
+	"llm-gateway/internal/limits"
 )
 
 // 사용자 화면의 나머지 엔드포인트(I 3.2~3.4, 2.10)
@@ -136,11 +138,15 @@ func bulkErrorText(err error) string {
 	if errors.As(err, &weak) {
 		return weak.Message
 	}
+	var invalid *limits.InvalidError
+	if errors.As(err, &invalid) {
+		return invalid.Message
+	}
 	return "Internal Server Error"
 }
 
 // bulkAddTeamMembers 는 POST /team/bulk_member_add 다. 선택한 사용자들 또는 전체 사용자를 팀에 넣는다.
-// litellm 처럼 실패해도 200 이고 결과 행에 success:false 를 남긴다. 팀원별 예산(max_budget_in_team)은 아직 없다
+// litellm 처럼 실패해도 200 이고 결과 행에 success:false 를 남긴다. max_budget_in_team 이 있으면 새로 들어온 팀원의 예산으로 정한다
 func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TeamID          *string      `json:"team_id"`
@@ -185,9 +191,7 @@ func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var failure error
-	if req.MaxBudgetInTeam != nil {
-		failure = errMemberBudgetUnsupported
-	} else if _, _, err := h.teams.AddMembers(r.Context(), *req.TeamID, refs, false); err != nil {
+	if err := h.addMembersWithBudget(r.Context(), *req.TeamID, refs, req.MaxBudgetInTeam); err != nil {
 		failure = err
 		if bulkErrorText(err) == "Internal Server Error" {
 			h.logger.Error("팀원 일괄 추가 실패", "team_id", *req.TeamID, "err", err)
@@ -198,7 +202,7 @@ func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 		result := row{"user_id": ref.UserID, "user_email": ref.UserEmail, "success": failure == nil, "error": nil,
 			"updated_user": nil, "updated_team_membership": nil}
 		if failure != nil {
-			result["error"] = failureText(failure)
+			result["error"] = bulkErrorText(failure)
 		}
 		results = append(results, result)
 	}
@@ -210,12 +214,18 @@ func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 		"successful_additions": succeeded, "failed_additions": len(refs) - succeeded, "updated_team": nil})
 }
 
-// errMemberBudgetUnsupported 는 팀원별 예산을 정하려는 요청이다. 팀원 예산은 아직 없다(설계 12장 M5)
-var errMemberBudgetUnsupported = errors.New("per-member team budgets (max_budget_in_team) are not supported by this gateway yet")
-
-func failureText(err error) string {
-	if errors.Is(err, errMemberBudgetUnsupported) {
-		return err.Error()
-	}
-	return bulkErrorText(err)
+// addMembersWithBudget 는 팀원을 넣고, 예산이 있으면 새로 들어온 팀원마다 그 값으로 팀원 예산을 정한다. 한 트랜잭션이다
+func (h *Handlers) addMembersWithBudget(ctx context.Context, teamID string, refs []auth.MemberRef, maxBudget *float64) error {
+	return h.db.InTx(ctx, func(ctx context.Context) error {
+		_, added, err := h.teams.AddMembers(ctx, teamID, refs, false)
+		if err != nil || maxBudget == nil {
+			return err
+		}
+		for _, u := range added {
+			if _, err := h.limits.Apply(ctx, limits.ScopeTeamMember, limits.MemberTarget(teamID, u.UserID), limits.Patch{MaxBudget: core.To(*maxBudget)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

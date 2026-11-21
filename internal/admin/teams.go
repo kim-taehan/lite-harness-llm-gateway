@@ -173,9 +173,16 @@ func (h *Handlers) deleteTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := unique(req.TeamIDs)
 	principal, _ := auth.PrincipalFrom(r.Context())
-	// 팀과 그 팀의 한도를 함께 지운다(팀 키는 auth 가 사본으로 옮긴다)
+	// 팀과 그 팀·팀원의 한도를 함께 지운다(팀 키는 auth 가 사본으로 옮긴다)
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
+		memberTargets, err := h.memberTargetsOfTeams(ctx, ids)
+		if err != nil {
+			return err
+		}
 		if err := h.teams.Delete(ctx, ids, principal.UserID); err != nil {
+			return err
+		}
+		if err := h.limits.Delete(ctx, limits.ScopeTeamMember, memberTargets); err != nil {
 			return err
 		}
 		return h.limits.Delete(ctx, limits.ScopeTeam, ids)
@@ -336,7 +343,17 @@ func (h *Handlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeTeamMemberWrite(w, r, "/team/member_delete", *req.TeamID, teamMissing) {
 		return
 	}
-	team, err := h.teams.RemoveMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, principal(r.Context()).UserID)
+	var team auth.Team
+	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
+		target, err := h.memberTarget(ctx, *req.TeamID, req.UserID, req.UserEmail)
+		if err != nil {
+			return err
+		}
+		if team, err = h.teams.RemoveMember(ctx, *req.TeamID, req.UserID, req.UserEmail, principal(ctx).UserID); err != nil || target == "" {
+			return err
+		}
+		return h.limits.Delete(ctx, limits.ScopeTeamMember, []string{target}) // 다시 들어오는 팀원이 옛 한도·사용액을 물려받지 않게 한다
+	})
 	switch {
 	case err == nil:
 		h.writeTeam(w, r, team)
@@ -350,21 +367,46 @@ func (h *Handlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// updateMember 는 litellm 처럼 저장 결과가 아니라 요청 값을 되돌려 준다. 팀원별 예산은 아직 저장하지 않는다
+// memberTarget 은 user_id 나 이메일로 가리킨 팀원의 한도 대상 id 다. 팀원이 아니면 빈 문자열이다
+func (h *Handlers) memberTarget(ctx context.Context, teamID string, userID, email *string) (string, error) {
+	members, err := h.teams.Members(ctx, []string{teamID})
+	if err != nil {
+		return "", err
+	}
+	id, found := rosterUser(members[teamID], derefOr(userID, ""), derefOr(email, ""))
+	if !found {
+		return "", nil
+	}
+	return limits.MemberTarget(teamID, id), nil
+}
+
+// memberTargetsOfTeams 는 팀들의 모든 팀원 한도 대상 id 다
+func (h *Handlers) memberTargetsOfTeams(ctx context.Context, teamIDs []string) ([]string, error) {
+	members, err := h.teams.Members(ctx, teamIDs)
+	if err != nil {
+		return nil, err
+	}
+	var targets []string
+	for teamID, roster := range members {
+		for _, m := range roster {
+			targets = append(targets, limits.MemberTarget(teamID, m.UserID))
+		}
+	}
+	return targets, nil
+}
+
+// updateMember 는 litellm 처럼 저장 결과가 아니라 요청 값을 되돌려 준다. 팀원 한도는 limits 에 저장한다
 func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TeamID             *string        `json:"team_id"`
 		UserID             *string        `json:"user_id"`
 		UserEmail          *string        `json:"user_email"`
 		Role               *string        `json:"role"`
-		MaxBudgetInTeam    *float64       `json:"max_budget_in_team"`
-		TPMLimit           *int64         `json:"tpm_limit"`
-		RPMLimit           *int64         `json:"rpm_limit"`
-		BudgetDuration     *string        `json:"budget_duration"`
 		AllowedModels      []string       `json:"allowed_models"`
 		TempBudgetIncrease *float64       `json:"temp_budget_increase"`
 		TempBudgetExpiry   *string        `json:"temp_budget_expiry"`
 		ModelMaxBudget     map[string]any `json:"model_max_budget"`
+		memberLimitFields
 	}
 	raw, ok := requestBody(w, r, &req)
 	if !ok {
@@ -388,16 +430,27 @@ func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeTeamMemberWrite(w, r, "/team/member_delete", *req.TeamID, teamMissing) {
 		return
 	}
-	userID, err := h.teams.UpdateMember(r.Context(), *req.TeamID, req.UserID, req.UserEmail, role)
+	var userID string
+	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
+		var err error
+		if userID, err = h.teams.UpdateMember(ctx, *req.TeamID, req.UserID, req.UserEmail, role); err != nil || !req.anySet() {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeTeamMember, limits.MemberTarget(*req.TeamID, userID), req.patch())
+		return err
+	})
+	var invalid *limits.InvalidError
 	switch {
 	case err == nil:
 		core.WriteJSON(w, http.StatusOK, row{
 			"user_id": userID, "user_email": req.UserEmail, "team_id": *req.TeamID,
-			"max_budget_in_team": req.MaxBudgetInTeam, "tpm_limit": req.TPMLimit, "rpm_limit": req.RPMLimit,
-			"budget_duration": req.BudgetDuration, "allowed_models": req.AllowedModels,
+			"max_budget_in_team": req.MaxBudgetInTeam.Value, "tpm_limit": req.TPMLimit.Value, "rpm_limit": req.RPMLimit.Value,
+			"budget_duration": req.BudgetDuration.Value, "allowed_models": req.AllowedModels,
 			"temp_budget_increase": req.TempBudgetIncrease, "temp_budget_expiry": req.TempBudgetExpiry,
 			"model_max_budget": req.ModelMaxBudget,
 		})
+	case errors.As(err, &invalid):
+		detailError(400, invalid.Message).Write(w)
 	case errors.Is(err, auth.ErrTeamNotFound):
 		detailError(400, "Team id="+*req.TeamID+" does not exist in db").Write(w)
 	case errors.Is(err, auth.ErrNotMember):
@@ -406,6 +459,22 @@ func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// memberLimitFields 는 팀원 한도 필드다(/team/member_update, 팀원 일괄 수정). 보내지 않으면 그대로 두고 null 이면 지운다
+type memberLimitFields struct {
+	MaxBudgetInTeam core.Change[float64] `json:"max_budget_in_team"`
+	TPMLimit        core.Change[int64]   `json:"tpm_limit"`
+	RPMLimit        core.Change[int64]   `json:"rpm_limit"`
+	BudgetDuration  core.Change[string]  `json:"budget_duration"`
+}
+
+func (f memberLimitFields) anySet() bool {
+	return f.MaxBudgetInTeam.Set || f.TPMLimit.Set || f.RPMLimit.Set || f.BudgetDuration.Set
+}
+
+func (f memberLimitFields) patch() limits.Patch {
+	return limits.Patch{MaxBudget: f.MaxBudgetInTeam, TPMLimit: f.TPMLimit, RPMLimit: f.RPMLimit, BudgetDuration: f.BudgetDuration}
 }
 
 func memberTargetErrors(raw map[string]any, teamID, userID, userEmail *string) validationError {
