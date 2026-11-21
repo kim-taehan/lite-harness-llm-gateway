@@ -85,31 +85,15 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 			return
 		}
 	}
-	metadata := req.Metadata.Or(nil)
-	if serviceAccount {
-		userID = nil
-		if metadata == nil {
-			metadata = map[string]any{}
-		}
-		if _, ok := metadata["service_account_id"]; !ok {
-			metadata["service_account_id"] = cmp.Or(derefOr(nonEmpty(req.KeyAlias.Value), ""), core.NewUUID())
-		}
-	}
-	input := auth.NewKey{Key: req.Key, KeyAlias: nonEmpty(req.KeyAlias.Value), UserID: userID, TeamID: teamID,
-		Models: req.Models.Or(nil), Metadata: metadata, KeyType: derefOr(req.KeyType, "default"),
-		AllowedRoutes: req.AllowedRoutes, Blocked: req.Blocked.Value, CreatedBy: p.UserID}
-	if d := req.Duration.Value; d != nil && *d != "" {
-		expires, err := expiresAfter(*d, h.now().UTC())
-		if err != nil {
-			plainProxyError(500, err.Error()).Write(w)
-			return
-		}
-		input.Expires = &expires
+	input, err := h.newKeyInput(req.Key, req.keyFields, p.UserID, teamID, userID, serviceAccount)
+	if err != nil {
+		plainProxyError(500, err.Error()).Write(w)
+		return
 	}
 
 	var plain string
 	var key auth.Key
-	err := h.db.InTx(ctx, func(ctx context.Context) error {
+	err = h.db.InTx(ctx, func(ctx context.Context) error {
 		var err error
 		if plain, key, err = h.keys.Generate(ctx, input); err != nil {
 			return err
@@ -141,6 +125,32 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// newKeyInput 은 /key/generate 본문을 저장소 입력으로 바꾼다. 서비스 계정 키는 사용자가 없고 metadata.service_account_id 를 채운다.
+// 만료 기간이 틀리면 오류다
+func (h *Handlers) newKeyInput(key *string, req keyFields, createdBy string, teamID, userID *string, serviceAccount bool) (auth.NewKey, error) {
+	metadata := req.Metadata.Or(nil)
+	if serviceAccount {
+		userID = nil
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		if _, ok := metadata["service_account_id"]; !ok {
+			metadata["service_account_id"] = cmp.Or(derefOr(nonEmpty(req.KeyAlias.Value), ""), core.NewUUID())
+		}
+	}
+	input := auth.NewKey{Key: key, KeyAlias: nonEmpty(req.KeyAlias.Value), UserID: userID, TeamID: teamID,
+		Models: req.Models.Or(nil), Metadata: metadata, KeyType: derefOr(req.KeyType, "default"),
+		AllowedRoutes: req.AllowedRoutes, Blocked: req.Blocked.Value, CreatedBy: createdBy}
+	if d := req.Duration.Value; d != nil && *d != "" {
+		expires, err := expiresAfter(*d, h.now().UTC())
+		if err != nil {
+			return auth.NewKey{}, err
+		}
+		input.Expires = &expires
+	}
+	return input, nil
 }
 
 // keyCheckFailed 는 권한 검사 중 DB 오류다. 원인은 로그에만 남기고 응답에는 내부 내용을 싣지 않는다
@@ -210,11 +220,7 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	p := principal(ctx)
 	key, err := h.keyTarget(ctx, req.Key, req.KeyAlias.Value)
 	if errors.Is(err, auth.ErrKeyNotFound) {
-		message, param := "Key not found.", "key"
-		if req.Key == nil {
-			message, param = "Key not found. No key with key_alias='"+*req.KeyAlias.Value+"'.", "key_alias"
-		}
-		core.ProxyError{Status: 404, Message: message, Type: "not_found_error", Param: param}.Write(w)
+		keyNotFound(req.Key, req.KeyAlias.Value).Write(w)
 		return
 	}
 	if err != nil {
@@ -227,27 +233,10 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	patch := auth.KeyPatch{KeyAlias: req.KeyAlias, UserID: req.UserID, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked, UpdatedBy: p.UserID}
-	if req.Key == nil {
-		patch.KeyAlias = core.Change[string]{} // alias 로 찾았으면 그 alias 는 바꾸는 값이 아니다
-	}
-	// litellm: team_id "" 는 보내지 않은 것으로 본다
-	if req.TeamID.Set && (req.TeamID.Value == nil || *req.TeamID.Value != "") {
-		patch.TeamID = req.TeamID
-	}
-	// litellm: duration null 이나 "-1" 은 만료 해제, "" 는 무시, 값이 있으면 지금부터
-	if req.Duration.Set {
-		switch d := req.Duration.Value; {
-		case d == nil || *d == "-1":
-			patch.Expires = core.Change[time.Time]{Set: true}
-		case *d != "":
-			expires, err := expiresAfter(*d, h.now().UTC())
-			if err != nil {
-				authStyle(400, "Authentication Error, "+err.Error()).Write(w)
-				return
-			}
-			patch.Expires = core.To(expires)
-		}
+	patch, err := h.keyPatch(req.keyFields, req.Key == nil, p.UserID)
+	if err != nil {
+		authStyle(400, "Authentication Error, "+err.Error()).Write(w)
+		return
 	}
 
 	var updated auth.Key
@@ -278,6 +267,40 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+func keyNotFound(key, alias *string) core.ProxyError {
+	message, param := "Key not found.", "key"
+	if key == nil {
+		message, param = "Key not found. No key with key_alias='"+*alias+"'.", "key_alias"
+	}
+	return core.ProxyError{Status: 404, Message: message, Type: "not_found_error", Param: param}
+}
+
+// keyPatch 는 /key/update 본문을 저장소가 받는 바꿀 값으로 바꾼다. 만료 기간이 틀리면 오류다
+func (h *Handlers) keyPatch(req keyFields, foundByAlias bool, updatedBy string) (auth.KeyPatch, error) {
+	patch := auth.KeyPatch{KeyAlias: req.KeyAlias, UserID: req.UserID, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked, UpdatedBy: updatedBy}
+	if foundByAlias {
+		patch.KeyAlias = core.Change[string]{} // alias 로 찾았으면 그 alias 는 바꾸는 값이 아니다
+	}
+	// litellm: team_id "" 는 보내지 않은 것으로 본다
+	if req.TeamID.Set && (req.TeamID.Value == nil || *req.TeamID.Value != "") {
+		patch.TeamID = req.TeamID
+	}
+	// litellm: duration null 이나 "-1" 은 만료 해제, "" 는 무시, 값이 있으면 지금부터
+	if req.Duration.Set {
+		switch d := req.Duration.Value; {
+		case d == nil || *d == "-1":
+			patch.Expires = core.Change[time.Time]{Set: true}
+		case *d != "":
+			expires, err := expiresAfter(*d, h.now().UTC())
+			if err != nil {
+				return auth.KeyPatch{}, err
+			}
+			patch.Expires = core.To(expires)
+		}
+	}
+	return patch, nil
 }
 
 func (h *Handlers) keyTarget(ctx context.Context, key, alias *string) (auth.Key, error) {
@@ -460,22 +483,7 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.Expires = core.To(expires)
 	}
-	var plain string
-	var regenerated auth.Key
-	err = h.db.InTx(ctx, func(ctx context.Context) error {
-		var err error
-		if plain, regenerated, err = h.keys.Regenerate(ctx, key.Token, req.NewKey, p.UserID); err != nil {
-			return err
-		}
-		if err := h.limits.Retarget(ctx, limits.ScopeKey, key.Token, regenerated.Token); err != nil {
-			return err
-		}
-		if regenerated, err = h.keys.Update(ctx, regenerated.Token, patch); err != nil {
-			return err
-		}
-		_, err = h.limits.Apply(ctx, limits.ScopeKey, regenerated.Token, req.patch())
-		return err
-	})
+	plain, regenerated, err := h.rotateKey(ctx, key.Token, req.NewKey, p.UserID, patch, req.patch())
 	var invalid *limits.InvalidError
 	var badKey *auth.InvalidCustomKeyError
 	switch {
@@ -497,6 +505,27 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// rotateKey 는 새 해시로 키를 바꾸고, 그 키의 한도를 새 해시로 옮기고, 바꾸는 값을 적용한다. 한 트랜잭션이다
+func (h *Handlers) rotateKey(ctx context.Context, oldToken string, newKey *string, by string, patch auth.KeyPatch, limitPatch limits.Patch) (string, auth.Key, error) {
+	var plain string
+	var rotated auth.Key
+	err := h.db.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if plain, rotated, err = h.keys.Regenerate(ctx, oldToken, newKey, by); err != nil {
+			return err
+		}
+		if err := h.limits.Retarget(ctx, limits.ScopeKey, oldToken, rotated.Token); err != nil {
+			return err
+		}
+		if rotated, err = h.keys.Update(ctx, rotated.Token, patch); err != nil {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, rotated.Token, limitPatch)
+		return err
+	})
+	return plain, rotated, err
 }
 
 func (h *Handlers) blockKey(w http.ResponseWriter, r *http.Request)   { h.setKeyBlocked(w, r, true) }

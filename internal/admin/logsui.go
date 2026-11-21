@@ -49,65 +49,21 @@ func (h *Handlers) logScope(ctx context.Context, p auth.Principal) (*limits.LogS
 // spendLogsUI 는 GET /spend/logs/ui 다. 표는 늘 group_by_session=true 로 부른다. 우리는 세션이 없어 요청 하나가 세션 하나다
 func (h *Handlers) spendLogsUI(w http.ResponseWriter, r *http.Request) {
 	ctx, q, p := r.Context(), r.URL.Query(), principal(r.Context())
-	var errs validationError
-	page := queryInt(r, "page", 1, 1, 0, &errs)
-	pageSize := queryInt(r, "page_size", 50, 1, 1000, &errs)
-	if len(errs) > 0 {
-		errs.write(w)
+	lq, sortBy, ok := logQueryFromRequest(w, r)
+	if !ok {
 		return
 	}
-	lq := limits.LogQuery{RequestID: queryString(r, "request_id"), UserID: queryString(r, "user_id"), TeamID: queryString(r, "team_id"),
-		KeyToken: queryString(r, "api_key"), Search: queryString(r, "search"), Limit: pageSize, Offset: (page - 1) * pageSize}
-	if lq.RequestID == nil {
-		start, end, ok := logWindow(w, q)
-		if !ok {
-			return
-		}
-		lq.Start, lq.End = &start, &end
-	}
-	sortBy := q.Get("sort_by")
-	if sortBy == "" {
-		sortBy = "startTime"
-	}
-	order, known := logSorts[sortBy]
-	if !known {
-		badRequest("Invalid sort_by: "+sortBy+". Allowed: spend, total_tokens, startTime, endTime, request_duration_ms, model, ttft_ms", "sort_by").Write(w)
-		return
-	}
-	lq.SortBy = order
-	switch q.Get("sort_order") {
-	case "", "desc":
-		lq.Desc = true
-	case "asc":
-	default:
-		badRequest("Invalid sort_order. Allowed: asc, desc", "sort_order").Write(w)
-		return
-	}
-	if v := q.Get("cache_hit_filter"); v != "" && v != "hit" && v != "miss" {
-		badRequest("Invalid cache_hit_filter: "+v+". Allowed: hit, miss", "cache_hit_filter").Write(w)
-		return
-	}
-	if v := q.Get("span_type"); v != "" && !slices.Contains([]string{"llm", "agent", "mcp", "batch"}, v) {
-		badRequest("Invalid span_type: "+v+". Allowed: llm, agent, mcp, batch", "span_type").Write(w)
-		return
-	}
+	page, pageSize := lq.Offset/lq.Limit+1, lq.Limit
 	impossible, err := h.applyLogFilters(ctx, q, &lq)
 	if err != nil {
 		h.internalError(w, r, err)
 		return
 	}
-	if lq.TeamID != nil && !p.CanViewAll() {
-		allowed, err := h.teamMemberMay(ctx, p, *lq.TeamID, "/spend/logs")
-		if err != nil {
-			h.internalError(w, r, err)
-			return
-		}
-		if !allowed {
-			proxyError(403, "Not authorized to view team spend for team_id="+*lq.TeamID).Write(w)
-			return
-		}
-	} else if lq.Scope, err = h.logScope(ctx, p); err != nil {
+	if denial, denied, err := h.scopeLogQuery(ctx, p, &lq); err != nil {
 		h.internalError(w, r, err)
+		return
+	} else if denied {
+		denial.Write(w)
 		return
 	}
 	grouped := q.Get("group_by_session") == "true" && lq.RequestID == nil && lq.Search == nil && sortBy == "startTime"
@@ -141,6 +97,68 @@ func (h *Handlers) spendLogsUI(w http.ResponseWriter, r *http.Request) {
 		body["has_more"], body["next_session_cursor"] = hasMore, next
 	}
 	core.WriteJSON(w, http.StatusOK, body)
+}
+
+// logQueryFromRequest 는 쿼리 문자열을 검증해 LogQuery 로 바꾼다. 틀리면 litellm 오류를 쓰고 false 다
+func logQueryFromRequest(w http.ResponseWriter, r *http.Request) (limits.LogQuery, string, bool) {
+	q := r.URL.Query()
+	var errs validationError
+	page := queryInt(r, "page", 1, 1, 0, &errs)
+	pageSize := queryInt(r, "page_size", 50, 1, 1000, &errs)
+	if len(errs) > 0 {
+		errs.write(w)
+		return limits.LogQuery{}, "", false
+	}
+	lq := limits.LogQuery{RequestID: queryString(r, "request_id"), UserID: queryString(r, "user_id"), TeamID: queryString(r, "team_id"),
+		KeyToken: queryString(r, "api_key"), Search: queryString(r, "search"), Limit: pageSize, Offset: (page - 1) * pageSize}
+	if lq.RequestID == nil {
+		start, end, ok := logWindow(w, q)
+		if !ok {
+			return limits.LogQuery{}, "", false
+		}
+		lq.Start, lq.End = &start, &end
+	}
+	sortBy := q.Get("sort_by")
+	if sortBy == "" {
+		sortBy = "startTime"
+	}
+	order, known := logSorts[sortBy]
+	if !known {
+		badRequest("Invalid sort_by: "+sortBy+". Allowed: spend, total_tokens, startTime, endTime, request_duration_ms, model, ttft_ms", "sort_by").Write(w)
+		return limits.LogQuery{}, "", false
+	}
+	lq.SortBy = order
+	switch q.Get("sort_order") {
+	case "", "desc":
+		lq.Desc = true
+	case "asc":
+	default:
+		badRequest("Invalid sort_order. Allowed: asc, desc", "sort_order").Write(w)
+		return limits.LogQuery{}, "", false
+	}
+	if v := q.Get("cache_hit_filter"); v != "" && v != "hit" && v != "miss" {
+		badRequest("Invalid cache_hit_filter: "+v+". Allowed: hit, miss", "cache_hit_filter").Write(w)
+		return limits.LogQuery{}, "", false
+	}
+	if v := q.Get("span_type"); v != "" && !slices.Contains([]string{"llm", "agent", "mcp", "batch"}, v) {
+		badRequest("Invalid span_type: "+v+". Allowed: llm, agent, mcp, batch", "span_type").Write(w)
+		return limits.LogQuery{}, "", false
+	}
+	return lq, sortBy, true
+}
+
+// scopeLogQuery 는 비관리자가 볼 수 있는 범위로 좁힌다. 팀을 지정했으면 그 팀의 로그 열람 권한을 보고, 아니면 logScope 로 좁힌다
+func (h *Handlers) scopeLogQuery(ctx context.Context, p auth.Principal, lq *limits.LogQuery) (core.ProxyError, bool, error) {
+	if lq.TeamID == nil || p.CanViewAll() {
+		scope, err := h.logScope(ctx, p)
+		lq.Scope = scope
+		return core.ProxyError{}, false, err
+	}
+	allowed, err := h.teamMemberMay(ctx, p, *lq.TeamID, "/spend/logs")
+	if err != nil || allowed {
+		return core.ProxyError{}, false, err
+	}
+	return proxyError(403, "Not authorized to view team spend for team_id="+*lq.TeamID), true, nil
 }
 
 // logWindow 는 litellm 이 받는 유일한 형식 "YYYY-MM-DD HH:MM:SS"(UTC) 의 기간이다
