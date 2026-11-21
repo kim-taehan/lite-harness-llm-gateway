@@ -49,7 +49,7 @@ func (h *Handlers) Routes() []core.Route {
 	route := func(method, path string, access core.Access, handler http.HandlerFunc) core.Route {
 		return core.Route{Method: method, Path: path, Access: access, Handler: handler}
 	}
-	return []core.Route{
+	return append(h.stubRoutes(),
 		route(http.MethodPost, "/team/new", adminOnly, h.createTeam),
 		route(http.MethodPost, "/team/update", handlerDecide, h.updateTeam),
 		route(http.MethodPost, "/team/delete", adminOnly, h.deleteTeams),
@@ -138,7 +138,7 @@ func (h *Handlers) Routes() []core.Route {
 		// 모델 추가 폼(litellm 도 인증 없이 연다)
 		route(http.MethodGet, "/public/providers/fields", core.Public(), serveEmbedded("provider_fields.json", "application/json")),
 		route(http.MethodGet, "/public/litellm_model_cost_map", core.Public(), serveEmbedded("model_cost_map.json", "application/json")),
-	}
+	)
 }
 
 // internalError 는 예상 밖의 오류다. 원인은 로그에만 남기고 응답에는 내부 내용을 싣지 않는다
