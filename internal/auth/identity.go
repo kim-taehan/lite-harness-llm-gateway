@@ -25,8 +25,10 @@ type Team struct {
 	Models    []string
 	Metadata  map[string]any
 	Blocked   bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// 팀 일반 멤버(role=user)가 부를 수 있는 키 라우트. nil 이면 litellm 기본값을 쓴다
+	MemberPermissions []string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type User struct {
@@ -73,6 +75,8 @@ type TeamPatch struct {
 	Models    core.Change[[]string]
 	Metadata  core.Change[map[string]any]
 	Blocked   core.Change[bool]
+	// MemberPermissions 는 /team/permissions_update 가 바꾼다
+	MemberPermissions core.Change[[]string]
 }
 
 type NewUser struct {

@@ -20,10 +20,38 @@ import (
 // 팀 일반 멤버(role=user)가 기본으로 부를 수 있는 키 라우트(litellm TMP:18-23)
 var defaultTeamMemberKeyRoutes = []string{"/key/info", "/key/health"}
 
-func teamMemberPermissionError(route, teamID string) core.ProxyError {
+// memberKeyRoutes 는 팀 일반 멤버가 부를 수 있는 키 라우트다. 팀 관리 화면(/team/permissions_update)에서 바꾼다
+func memberKeyRoutes(t auth.Team) []string {
+	if t.MemberPermissions != nil {
+		return t.MemberPermissions
+	}
+	return defaultTeamMemberKeyRoutes
+}
+
+func teamMemberPermissionError(route string, team auth.Team) core.ProxyError {
 	return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: route,
 		Message: fmt.Sprintf("Team member does not have permissions for endpoint: %s. You only have access to the following endpoints: %s for team %s. "+
-			"To create keys for this team, ask a team admin to grant you access.", route, pyList(defaultTeamMemberKeyRoutes), teamID)}
+			"To create keys for this team, ask a team admin to grant you access.", route, pyList(memberKeyRoutes(team)), team.TeamID)}
+}
+
+// teamMemberMay 는 litellm does_team_member_have_permissions_for_endpoint 다: proxy_admin 과 팀 admin 은 모든 팀 키 라우트,
+// 일반 멤버는 팀 권한 목록에 그 라우트가 있을 때만
+func (h *Handlers) teamMemberMay(ctx context.Context, p auth.Principal, teamID, route string) (bool, error) {
+	if p.IsAdmin() {
+		return true, nil
+	}
+	role, member, err := h.teamRole(ctx, teamID, p.UserID)
+	if err != nil || !member {
+		return false, err
+	}
+	if role == auth.TeamRoleAdmin {
+		return true, nil
+	}
+	team, err := h.teams.Find(ctx, teamID)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(memberKeyRoutes(team), route), nil
 }
 
 func pyList(items []string) string {
@@ -138,8 +166,12 @@ func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req
 		}
 		return core.ProxyError{}, false
 	}
-	if _, err := h.teams.Find(ctx, *teamID); errors.Is(err, auth.ErrTeamNotFound) {
+	team, err := h.teams.Find(ctx, *teamID)
+	if errors.Is(err, auth.ErrTeamNotFound) {
 		return plainProxyError(400, "Team not found for team_id="+*teamID+". Non-admin users cannot create keys for non-existent teams."), true
+	}
+	if err != nil {
+		return plainProxyError(500, "Internal Server Error"), true
 	}
 	role, member, err := h.teamRole(ctx, *teamID, p.UserID)
 	if err != nil {
@@ -148,8 +180,8 @@ func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req
 	if !member {
 		return plainProxyError(400, "User="+p.UserID+" not assigned to team="+*teamID), true
 	}
-	if role != auth.TeamRoleAdmin {
-		return teamMemberPermissionError("/key/generate", *teamID), true
+	if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), "/key/generate") {
+		return teamMemberPermissionError("/key/generate", team), true
 	}
 	if **userID != p.UserID {
 		if _, isMember, _ := h.teamRole(ctx, *teamID, **userID); !isMember {
@@ -280,8 +312,12 @@ func (h *Handlers) checkKeyUpdate(ctx context.Context, p auth.Principal, key aut
 			return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: "/key/update",
 				Message: fmt.Sprintf("User %s does not belong to team %s. Team-scoped key management endpoints can only be used for keys in your own team.", p.UserID, *key.TeamID)}, true
 		}
-		if role != auth.TeamRoleAdmin {
-			return teamMemberPermissionError("/key/update", *key.TeamID), true
+		team, err := h.teams.Find(ctx, *key.TeamID)
+		if err != nil {
+			return plainProxyError(500, "Internal Server Error"), true
+		}
+		if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), "/key/update") {
+			return teamMemberPermissionError("/key/update", team), true
 		}
 		return core.ProxyError{}, false
 	}
@@ -381,7 +417,7 @@ func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Ke
 		return true, nil
 	}
 	if k.TeamID != nil {
-		return h.isTeamAdmin(ctx, p, *k.TeamID)
+		return h.teamMemberMay(ctx, p, *k.TeamID, "/key/delete")
 	}
 	return false, nil
 }
@@ -681,7 +717,7 @@ func (h *Handlers) setKeyBlocked(w http.ResponseWriter, r *http.Request, blocked
 	}
 	allowed := p.IsAdmin()
 	if !allowed && key.TeamID != nil {
-		if allowed, err = h.isTeamAdmin(ctx, p, *key.TeamID); err != nil {
+		if allowed, err = h.teamMemberMay(ctx, p, *key.TeamID, route); err != nil {
 			h.internalError(w, r, err)
 			return
 		}
@@ -748,7 +784,7 @@ func (h *Handlers) resetKeySpend(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := p.IsAdmin()
 	if !allowed && key.TeamID != nil {
-		if allowed, err = h.isTeamAdmin(ctx, p, *key.TeamID); err != nil {
+		if allowed, err = h.teamMemberMay(ctx, p, *key.TeamID, "/key/{key_id}/reset_spend"); err != nil {
 			h.internalError(w, r, err)
 			return
 		}

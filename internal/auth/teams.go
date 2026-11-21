@@ -22,11 +22,11 @@ func NewTeams(db *core.DB, users *Users, cache *KeyCache) *Teams {
 	return &Teams{db: db, users: users, cache: cache}
 }
 
-const teamColumns = "team_id, team_alias, models, metadata, blocked, created_at, updated_at"
+const teamColumns = "team_id, team_alias, models, metadata, blocked, member_permissions, created_at, updated_at"
 
 func scanTeam(row pgx.Row) (Team, error) {
 	var t Team
-	err := row.Scan(&t.TeamID, &t.TeamAlias, &t.Models, &t.Metadata, &t.Blocked, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.TeamID, &t.TeamAlias, &t.Models, &t.Metadata, &t.Blocked, &t.MemberPermissions, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
 
@@ -138,6 +138,9 @@ func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Tea
 	}
 	if patch.Blocked.Set {
 		set("blocked", patch.Blocked.Or(false))
+	}
+	if patch.MemberPermissions.Set {
+		set("member_permissions", patch.MemberPermissions.Value)
 	}
 	sql := "UPDATE team SET " + strings.Join(sets, ", ") + " WHERE team_id = $1 RETURNING " + teamColumns
 	team, err := scanTeam(t.db.Q(ctx).QueryRow(ctx, sql, args...))

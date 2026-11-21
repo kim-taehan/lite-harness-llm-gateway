@@ -26,7 +26,7 @@ func teamRow(t auth.Team, members []auth.TeamMember, p limits.Policy) row {
 		"admins":                      []string{},
 		"members":                     []string{},
 		"members_with_roles":          memberRows,
-		"team_member_permissions":     nil,
+		"team_member_permissions":     t.MemberPermissions,
 		"metadata":                    t.Metadata,
 		"tpm_limit":                   p.TPMLimit,
 		"rpm_limit":                   p.RPMLimit,

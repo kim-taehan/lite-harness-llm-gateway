@@ -113,6 +113,8 @@ func (h *Handlers) updateTeam(w http.ResponseWriter, r *http.Request) {
 		Models    core.Change[[]string]       `json:"models"`
 		Metadata  core.Change[map[string]any] `json:"metadata"`
 		Blocked   core.Change[bool]           `json:"blocked"`
+		// 팀 권한 화면 말고 팀 수정 폼도 이 필드를 보낸다(litellm UpdateTeamRequest)
+		MemberPermissions core.Change[[]string] `json:"team_member_permissions"`
 		limitFields
 	}
 	raw, ok := requestBody(w, r, &req)
@@ -126,7 +128,8 @@ func (h *Handlers) updateTeam(w http.ResponseWriter, r *http.Request) {
 	var team auth.Team
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
 		var err error
-		patch := auth.TeamPatch{TeamAlias: req.TeamAlias, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked}
+		patch := auth.TeamPatch{TeamAlias: req.TeamAlias, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked,
+			MemberPermissions: req.MemberPermissions}
 		if team, err = h.teams.Update(ctx, *req.TeamID, patch); err != nil {
 			return err
 		}
