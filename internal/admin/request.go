@@ -4,10 +4,8 @@ package admin
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -145,12 +143,4 @@ func proxyError(status int, message string) core.ProxyError {
 // detailError 는 (B) 모양 {"detail":{"error": …}} 이다
 func detailError(status int, message string) core.DetailError {
 	return core.DetailError{Status: status, Detail: map[string]string{"error": message}}
-}
-
-// uuid 는 litellm uuid4() 문자열 모양이다
-func uuid() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b) // crypto/rand 는 실패하지 않는다(Go 1.24+)
-	b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

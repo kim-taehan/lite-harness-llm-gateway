@@ -2,12 +2,12 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"llm-gateway/internal/core"
 )
 
 // 초대 링크(L 6.1). 관리자가 사용자에게 링크를 주면 그 사용자가 자기 비밀번호를 정한다. 7일 뒤 만료되고 한 번만 쓴다
@@ -48,24 +48,35 @@ func (u *Users) CreateInvitation(ctx context.Context, userID, by string, now tim
 	}
 	return scanInvitation(u.db.Q(ctx).QueryRow(ctx, `
 		INSERT INTO invitation (id, user_id, expires_at, created_by, updated_by) VALUES ($1, $2, $3, $4, $4)
-		RETURNING `+invitationColumns, newUUID(), userID, now.Add(invitationTTL), by))
+		RETURNING `+invitationColumns, core.NewUUID(), userID, now.Add(invitationTTL), by))
 }
 
 func (u *Users) findInvitation(ctx context.Context, id string) (Invitation, error) {
 	return scanInvitation(u.db.Q(ctx).QueryRow(ctx, "SELECT "+invitationColumns+" FROM invitation WHERE id = $1", id))
 }
 
-// acceptInvitation 은 아직 쓰지 않은 링크만 쓴 것으로 바꾼다. 이미 썼으면 false 다(동시에 두 번 눌러도 한 번만 된다)
-func (u *Users) acceptInvitation(ctx context.Context, id string, now time.Time) (bool, error) {
-	tag, err := u.db.Q(ctx).Exec(ctx,
-		"UPDATE invitation SET is_accepted = true, accepted_at = $2, updated_at = $2 WHERE id = $1 AND NOT is_accepted", id, now)
-	return err == nil && tag.RowsAffected() == 1, err
-}
+// ErrInvitationUsed 는 이미 쓴 초대 링크다
+var ErrInvitationUsed = errors.New("이미 쓴 초대 링크다")
 
-// newUUID 는 uuid4 문자열이다
-func newUUID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b) // crypto/rand 는 실패하지 않는다(Go 1.24+)
-	b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+// ClaimInvitation 은 초대받은 사용자가 비밀번호를 정한다. 링크를 쓴 것으로 바꾸고, 비밀번호를 정하고, 사용자를 돌려주는 것을
+// 한 트랜잭션으로 한다. 링크는 아직 쓰지 않은 것만 쓴 것으로 바뀌므로 동시에 두 번 눌러도 한 번만 된다.
+// 실패: ErrInvitationUsed, *PasswordPolicyError
+func (u *Users) ClaimInvitation(ctx context.Context, inv Invitation, password string, now time.Time) (User, error) {
+	var user User
+	err := u.db.InTx(ctx, func(ctx context.Context) error {
+		tag, err := u.db.Q(ctx).Exec(ctx,
+			"UPDATE invitation SET is_accepted = true, accepted_at = $2, updated_at = $2 WHERE id = $1 AND NOT is_accepted", inv.ID, now)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrInvitationUsed
+		}
+		if err := u.SetPassword(ctx, inv.UserID, password, false, now); err != nil {
+			return err
+		}
+		user, err = u.Find(ctx, inv.UserID)
+		return err
+	})
+	return user, err
 }

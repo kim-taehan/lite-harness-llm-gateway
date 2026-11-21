@@ -33,7 +33,7 @@ func scanTeam(row pgx.Row) (Team, error) {
 // Create 는 팀을 만든다. litellm 처럼 호출자(creatorUserID)를 팀 admin 으로 함께 넣는다(proxy_admin 도 마찬가지).
 // 실패: ErrTeamIDReserved, ErrTeamIDTaken, *EmailOwnerMismatchError
 func (t *Teams) Create(ctx context.Context, input NewTeam, creatorUserID string) (Team, error) {
-	teamID := newID()
+	teamID := core.NewUUID()
 	if input.TeamID != nil && *input.TeamID != "" {
 		teamID = *input.TeamID
 	}

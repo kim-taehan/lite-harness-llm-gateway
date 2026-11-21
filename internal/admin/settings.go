@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 
+	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 )
 
@@ -44,7 +45,7 @@ var (
 	uiSettingsForm   = loadSettingsForm("ui_settings", "ui_settings.json", "UI settings updated successfully")
 	uiThemeForm      = loadSettingsForm("ui_theme_config", "ui_theme_settings.json", "UI theme settings updated successfully")
 	defaultTeamForm  = loadSettingsForm("default_team_params", "default_team_settings.json", "Default team settings updated successfully")
-	internalUserForm = loadSettingsForm("default_internal_user_params", "internal_user_settings.json", "Internal user settings updated successfully")
+	internalUserForm = loadSettingsForm(auth.DefaultUserParamsSetting, "internal_user_settings.json", "Internal user settings updated successfully")
 )
 
 // settingsValues 는 기본값 위에 저장값을 얹는다. 스키마에 없는 키는 내지 않는다(litellm 허용 목록과 같다)

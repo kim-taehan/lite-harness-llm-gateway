@@ -93,7 +93,7 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 			metadata = map[string]any{}
 		}
 		if _, ok := metadata["service_account_id"]; !ok {
-			metadata["service_account_id"] = cmp.Or(derefOr(nonEmpty(req.KeyAlias.Value), ""), uuid())
+			metadata["service_account_id"] = cmp.Or(derefOr(nonEmpty(req.KeyAlias.Value), ""), core.NewUUID())
 		}
 	}
 	input := auth.NewKey{Key: req.Key, KeyAlias: nonEmpty(req.KeyAlias.Value), UserID: userID, TeamID: teamID,

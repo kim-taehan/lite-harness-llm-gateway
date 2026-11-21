@@ -3,8 +3,6 @@ package inference
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -67,7 +65,7 @@ var (
 // 끝나면(끊겨도) 사용량을 기록한다
 func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI, d Deployment, body map[string]any, requested string, stream bool, permit *limits.Permit) {
 	p, _ := auth.PrincipalFrom(r.Context())
-	x := &exchange{requestID: newRequestID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
+	x := &exchange{requestID: core.NewUUID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
 	// litellm 과 같은 이름의 요청 ID 헤더(설계 11.3)
 	w.Header().Set("x-litellm-call-id", x.requestID)
 	defer func() { h.record(r, x) }()
@@ -301,10 +299,4 @@ func withModel(data []byte, model string) []byte {
 		return data
 	}
 	return out
-}
-
-func newRequestID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b[:4]) + "-" + hex.EncodeToString(b[4:6]) + "-" + hex.EncodeToString(b[6:8]) + "-" + hex.EncodeToString(b[8:10]) + "-" + hex.EncodeToString(b[10:])
 }

@@ -33,7 +33,7 @@ func scanUser(row pgx.Row) (User, error) {
 // Create 는 사용자를 만들고, TeamID 가 있으면 그 팀에 role=user 로 넣는다(litellm 과 같다). 소속 팀 id 를 함께 돌려준다.
 // 실패: ErrUserIDTaken, *EmailTakenError, ErrTeamNotFound
 func (u *Users) Create(ctx context.Context, input NewUser) (User, []string, error) {
-	userID := newID()
+	userID := core.NewUUID()
 	if input.UserID != nil && *input.UserID != "" {
 		userID = *input.UserID
 	}
@@ -221,7 +221,7 @@ func (u *Users) resolveMember(ctx context.Context, ref MemberRef) (User, error) 
 	if ref.UserID == nil {
 		user, err := u.FindByEmail(ctx, deref(ref.UserEmail))
 		if errors.Is(err, ErrUserNotFound) {
-			return u.insert(ctx, newID(), ref.UserEmail, nil, &internalUser, nil, nil)
+			return u.insert(ctx, core.NewUUID(), ref.UserEmail, nil, &internalUser, nil, nil)
 		}
 		return user, err
 	}
@@ -398,6 +398,10 @@ func (u *Users) upsertSSOUser(ctx context.Context, c oidcClaims) (User, error) {
 	return result, err
 }
 
+// DefaultUserParamsSetting 은 대시보드 "Default User Settings" 가 저장하는 core.Settings 이름이다(litellm default_internal_user_params).
+// 새 SSO 사용자의 역할·모델을 이것으로 정하므로 소유 모듈인 auth 가 이름을 정하고 admin 이 쓴다
+const DefaultUserParamsSetting = "default_internal_user_params"
+
 var (
 	errSSOSubjectMismatch = errors.New("이 이메일은 다른 SSO 주체에 묶여 있다")
 	errSSOEmailUnverified = errors.New("IdP 가 확인하지 않은 이메일로 기존 계정에 들어올 수 없다")
@@ -406,7 +410,7 @@ var (
 // newUserDefaults 는 SSO 로 처음 들어온 사용자의 역할·모델이다. 대시보드 "Default User Settings"
 // (litellm default_internal_user_params)에 값이 있으면 그것을, 없으면 litellm 기본(internal_user_viewer, 모델 없음)을 쓴다
 func (u *Users) newUserDefaults(ctx context.Context) (core.Role, []string, error) {
-	stored, err := core.NewSettings(u.db).Get(ctx, "default_internal_user_params")
+	stored, err := core.NewSettings(u.db).Get(ctx, DefaultUserParamsSetting)
 	if err != nil {
 		return "", nil, err
 	}

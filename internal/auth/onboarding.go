@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -118,27 +117,13 @@ func (l *Login) claimOnboarding(w http.ResponseWriter, r *http.Request) {
 		invitationError(w, "Invalid onboarding session for invitation link.")
 		return
 	}
-	var user User
-	err = l.users.db.InTx(r.Context(), func(ctx context.Context) error {
-		accepted, err := l.users.acceptInvitation(ctx, inv.ID, l.now())
-		if err != nil {
-			return err
-		}
-		if !accepted {
-			return errInvitationUsed
-		}
-		if err := l.users.SetPassword(ctx, inv.UserID, req.Password, false, l.now()); err != nil {
-			return err
-		}
-		user, err = l.users.Find(ctx, inv.UserID)
-		return err
-	})
+	user, err := l.users.ClaimInvitation(r.Context(), inv, req.Password, l.now())
 	var weak *PasswordPolicyError
 	switch {
 	case errors.As(err, &weak):
 		core.ProxyError{Status: http.StatusBadRequest, Message: weak.Message, Type: "validation_error", Param: "password"}.Write(w)
 		return
-	case errors.Is(err, errInvitationUsed):
+	case errors.Is(err, ErrInvitationUsed):
 		invitationError(w, "Invitation link has already been used.")
 		return
 	case err != nil:
@@ -153,8 +138,6 @@ func (l *Login) claimOnboarding(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]any{"login_url": l.publicURL + "/ui?login=success", "token": token, "user_email": user.UserEmail,
 		"user": map[string]any{"user_id": user.UserID, "user_email": user.UserEmail, "user_alias": user.UserAlias, "user_role": user.UserRole}})
 }
-
-var errInvitationUsed = errors.New("이미 쓴 초대 링크다")
 
 // changePassword 는 본인 비밀번호 변경이다. litellm 처럼 비밀번호로 로그인한 대시보드 세션만 된다.
 // 바꾸면 그 사용자의 대시보드 세션이 모두 끊긴다(litellm 은 지금 세션은 남긴다, 설계 9장)

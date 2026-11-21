@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"math/big"
 	"strings"
 	"time"
@@ -77,7 +76,7 @@ func scanDeployment(row pgx.Row) (Deployment, error) {
 }
 
 func (s *Deployments) Create(ctx context.Context, n NewDeployment) (Deployment, error) {
-	id := newDeploymentID()
+	id := core.NewUUID()
 	if n.ID != nil && *n.ID != "" {
 		id = *n.ID
 	}
@@ -181,10 +180,4 @@ func (d Deployment) endpoint(path string) string {
 		return base + "/" + path
 	}
 	return base + "/v1/" + path
-}
-
-func newDeploymentID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

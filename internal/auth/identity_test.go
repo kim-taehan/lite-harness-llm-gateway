@@ -248,7 +248,7 @@ func TestSSOUser_NewUserGetsDefaultUserSettings(t *testing.T) {
 	if err != nil || first.UserID != "kim@corp.local" || *first.UserRole != core.RoleInternalUserViewer || len(first.Models) != 0 {
 		t.Fatalf("기본값(litellm) = %+v %v", first, err)
 	}
-	if _, err := core.NewSettings(db).Merge(ctx, "default_internal_user_params", map[string]any{"user_role": "internal_user", "models": []string{"m1"}}); err != nil {
+	if _, err := core.NewSettings(db).Merge(ctx, DefaultUserParamsSetting, map[string]any{"user_role": "internal_user", "models": []string{"m1"}}); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := users.upsertSSOUser(ctx, oidcClaims{Subject: "s2", Email: "lee@corp.local"})
