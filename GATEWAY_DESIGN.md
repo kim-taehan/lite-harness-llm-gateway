@@ -85,9 +85,8 @@ func (a *Authenticator) Guard(route core.Route) http.Handler   // 라우트 권�
 // 키·사용자·팀 발급·수정·차단·조회. admin 모듈만 부른다
 
 // limits
-func (g *Gate) Admit(ctx context.Context, p auth.Principal, d DeploymentRef) (*Permit, error)  // 예산·RPM·TPM·동시성을 한 번에 검사하고 슬롯을 잡는다
-var ErrBudgetExceeded error
-type RateLimitedError struct{ RetryAfter time.Duration }
+func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error)  // 예산·RPM·TPM·동시성을 한 번에 검사하고 슬롯을 잡는다. 한도는 쿼리 한 번으로 읽는다
+// 막으면 litellm 모양의 core.ProxyError 를 그대로 돌려준다(예산 초과 422, 속도 제한 429 + retry-after). 호출자가 가를 별도 오류 타입은 없다
 func (p *Permit) Release()                      // 응답이 끝나거나 취소되면 defer 로 반납
 func (r *UsageRecorder) Record(u UsageEvent)    // 채널에 넣고 바로 돌아온다(막히지 않는다)
 // 기간·키·팀·사용자별 집계, limit_policy 설정·spend 리셋. admin 이 부른다
