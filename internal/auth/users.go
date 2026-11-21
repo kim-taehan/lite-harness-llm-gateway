@@ -327,13 +327,19 @@ func (u *Users) checkPassword(ctx context.Context, login, password string) (User
 		Scan(&userID, &hash)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && hash == nil) {
 		// 사용자가 없어도 같은 시간이 걸리게 한 번 계산한다(아이디가 있는지 알아내는 것을 막는다)
-		verifyPassword(dummyPasswordHash(), password)
+		if _, err := verifyPasswordLimited(ctx, dummyPasswordHash(), password); err != nil {
+			return User{}, err
+		}
 		return User{}, ErrBadCredentials
 	}
 	if err != nil {
 		return User{}, err
 	}
-	if !verifyPassword(*hash, password) {
+	matched, err := verifyPasswordLimited(ctx, *hash, password)
+	if err != nil {
+		return User{}, err
+	}
+	if !matched {
 		return User{}, ErrBadCredentials
 	}
 	return u.Find(ctx, userID)

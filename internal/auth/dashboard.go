@@ -65,25 +65,21 @@ func (l *Login) loginForm(w http.ResponseWriter, r *http.Request) {
 // DB 사용자 비밀번호는 빌드에 비밀번호 로그인이 있을 때만 된다. 관리자 로그인은 SSO 만 넣은 빌드에서도 된다(대시보드를 처음 여는 길)
 func (l *Login) signInUI(w http.ResponseWriter, r *http.Request, username, password string) (string, bool) {
 	ctx := r.Context()
-	attempt := attemptKey(username, clientIP(r))
-	if l.attempts.blocked(attempt) {
+	user, err := l.gate.attempt(username, clientIP(r), func() (User, error) {
+		switch {
+		case username == uiAdminUsername && l.master.Matches(password):
+			return l.users.ensureProxyAdmin(ctx, uiAdminUserID)
+		case l.methods.Password:
+			return l.users.checkPassword(ctx, username, password)
+		}
+		return User{}, ErrBadCredentials
+	})
+	switch {
+	case errors.Is(err, ErrTooManyAttempts):
 		core.ProxyError{Status: http.StatusTooManyRequests, Type: "auth_error", Param: "None", Message: "Too many failed sign-in attempts. Try again later.",
 			Headers: map[string]string{"Retry-After": "900"}}.Write(w)
 		return "", false
-	}
-	var user User
-	var err error
-	switch {
-	case username == uiAdminUsername && l.master.Matches(password):
-		user, err = l.users.ensureProxyAdmin(ctx, uiAdminUserID)
-	case l.methods.Password:
-		user, err = l.users.checkPassword(ctx, username, password)
-	default:
-		err = ErrBadCredentials
-	}
-	switch {
 	case errors.Is(err, ErrBadCredentials):
-		l.attempts.fail(attempt)
 		core.ProxyError{Status: http.StatusUnauthorized, Type: "auth_error", Param: "invalid_credentials", Message: invalidUICredentials}.Write(w)
 		return "", false
 	case err != nil:
@@ -91,7 +87,6 @@ func (l *Login) signInUI(w http.ResponseWriter, r *http.Request, username, passw
 		core.ProxyError{Status: http.StatusInternalServerError, Type: "auth_error", Param: "None", Message: "Failed to sign in"}.Write(w)
 		return "", false
 	}
-	l.attempts.succeed(attempt)
 	return l.startUISession(w, r, user, uiMethodPassword)
 }
 

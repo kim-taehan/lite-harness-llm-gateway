@@ -176,10 +176,17 @@ func (l *Login) changePassword(w http.ResponseWriter, r *http.Request) {
 	badRequest := func(message string) {
 		core.DetailError{Status: http.StatusBadRequest, Detail: map[string]any{"error": message}}.Write(w)
 	}
-	if _, err := l.users.checkPassword(r.Context(), p.UserID, req.CurrentPassword); errors.Is(err, ErrBadCredentials) {
+	// 세션 토큰을 훔친 사람이 현재 비밀번호를 무작위로 넣어 보지 못하게 로그인과 같은 시도 제한을 건다
+	_, err := l.gate.check(r.Context(), p.UserID, req.CurrentPassword, clientIP(r))
+	switch {
+	case errors.Is(err, ErrTooManyAttempts):
+		core.ProxyError{Status: http.StatusTooManyRequests, Type: "auth_error", Param: "None", Message: "Too many failed attempts. Try again later.",
+			Headers: map[string]string{"Retry-After": "900"}}.Write(w)
+		return
+	case errors.Is(err, ErrBadCredentials):
 		badRequest("Current password is incorrect.")
 		return
-	} else if err != nil {
+	case err != nil:
 		l.internalError(w, err)
 		return
 	}
@@ -187,7 +194,7 @@ func (l *Login) changePassword(w http.ResponseWriter, r *http.Request) {
 		badRequest("New password must be different from the current password.")
 		return
 	}
-	err := l.users.SetPassword(r.Context(), p.UserID, req.NewPassword, false, l.now())
+	err = l.users.SetPassword(r.Context(), p.UserID, req.NewPassword, false, l.now())
 	var weak *PasswordPolicyError
 	switch {
 	case errors.As(err, &weak):

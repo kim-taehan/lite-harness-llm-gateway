@@ -154,6 +154,28 @@ func TestDashboard_UserPasswordLoginAndLogout(t *testing.T) {
 	}
 }
 
+// 세션 토큰을 훔친 사람이 현재 비밀번호를 무작위로 넣어 보는 것도 로그인과 같은 시도 제한에 걸린다.
+// 제한에 걸리면 맞는 비밀번호도 창이 지날 때까지 막힌다
+func TestDashboard_PasswordChangeIsRateLimited(t *testing.T) {
+	api := newAPI(t)
+	b := browser{t: t, h: api.h}
+	api.ok("POST", "/user/new", map[string]any{"user_id": "kim", "user_role": "internal_user"})
+	api.ok("POST", "/user/update", map[string]any{"user_id": "kim", "password": "Admin-set-2026"})
+	_, _, cookie := dashboardLogin(t, b, "kim", "Admin-set-2026")
+	session := map[string]string{"Authorization": "Bearer " + uiClaims(t, cookie)["key"].(string)}
+	change := func(current string) int {
+		return b.doJSON("POST", "/user/password/change", `{"current_password":"`+current+`","new_password":"Kim-own-pass-1"}`, session).Code
+	}
+	for i := 0; i < 10; i++ {
+		if code := change("wrong"); code != 400 {
+			t.Fatalf("%d 번째 틀린 현재 비밀번호: %d", i+1, code)
+		}
+	}
+	if code := change("Admin-set-2026"); code != 429 {
+		t.Errorf("제한에 걸린 뒤 맞는 비밀번호: %d", code)
+	}
+}
+
 func TestDashboard_InvitationOnboardingSetsPassword(t *testing.T) {
 	api := newAPI(t)
 	b := browser{t: t, h: api.h}

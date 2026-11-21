@@ -1,12 +1,14 @@
 package auth
 
 import (
+	"context"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -32,6 +34,21 @@ func hashPassword(password string) (string, error) {
 	}
 	enc := base64.RawStdEncoding
 	return fmt.Sprintf("pbkdf2_sha256$%d$%s$%s", passwordIterations, enc.EncodeToString(salt), enc.EncodeToString(key)), nil
+}
+
+// hashSlots 는 동시에 돌릴 PBKDF2 계산 수다. 계산 하나가 CPU 코어 하나를 한참 쓰므로, 공개 로그인 라우트에 요청이 몰려도
+// 서버가 다른 일을 못 하게 되지 않도록 제한한다. 슬롯을 기다리다 클라이언트가 끊으면 바로 포기한다
+var hashSlots = make(chan struct{}, max(2, runtime.NumCPU()/2))
+
+// verifyPasswordLimited 는 슬롯을 얻어서 verifyPassword 를 돌린다
+func verifyPasswordLimited(ctx context.Context, stored, password string) (bool, error) {
+	select {
+	case hashSlots <- struct{}{}:
+		defer func() { <-hashSlots }()
+		return verifyPassword(stored, password), nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 }
 
 // PasswordPolicyError 는 비밀번호 정책 위반이다. Message 는 litellm 문구 그대로다(400 validation_error, param=password)

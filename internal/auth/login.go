@@ -52,7 +52,7 @@ func (m LoginMethods) String() string {
 type Login struct {
 	methods   LoginMethods
 	flows     *cliFlows
-	attempts  *loginAttempts
+	gate      passwordGate
 	keys      *loginKeys
 	master    MasterKey   // 대시보드 관리자 로그인과 token JWT 서명
 	oidc      *oidcClient // SSO 를 넣지 않은 빌드면 nil
@@ -66,7 +66,7 @@ type Login struct {
 // NewLogin 은 SSO 가 들어간 빌드면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, methods LoginMethods, master MasterKey, oidc OIDCConfig, users *Users, teams *Teams,
 	client *http.Client, now func() time.Time, logger *slog.Logger) (*Login, error) {
-	l := &Login{methods: methods, flows: newCLIFlows(now), attempts: newLoginAttempts(now), keys: newLoginKeys(master), master: master, users: users, teams: teams,
+	l := &Login{methods: methods, flows: newCLIFlows(now), gate: passwordGate{users: users, attempts: newLoginAttempts(now)}, keys: newLoginKeys(master), master: master, users: users, teams: teams,
 		publicURL: strings.TrimRight(oidc.PublicURL, "/"), now: now, logger: logger}
 	if methods.SSO {
 		if oidc.Issuer == "" || oidc.ClientID == "" || oidc.PublicURL == "" {
@@ -210,25 +210,21 @@ func (l *Login) passwordSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.PostFormValue("username")
 	signinPage := page{Title: "LiteLLM CLI Login", Action: l.publicURL + "/sso/cli/password/" + loginID, Password: true}
-	attempt := attemptKey(username, clientIP(r))
-	if l.attempts.blocked(attempt) {
+	user, err := l.gate.check(r.Context(), username, r.PostFormValue("password"), clientIP(r))
+	switch {
+	case errors.Is(err, ErrTooManyAttempts):
 		signinPage.Error = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."
 		writePage(w, http.StatusTooManyRequests, "signin", signinPage)
 		return
-	}
-	user, err := l.users.checkPassword(r.Context(), username, r.PostFormValue("password"))
-	if errors.Is(err, ErrBadCredentials) {
-		l.attempts.fail(attempt)
+	case errors.Is(err, ErrBadCredentials):
 		signinPage.Error = "이메일(아이디) 또는 비밀번호가 맞지 않습니다."
 		writePage(w, http.StatusUnauthorized, "signin", signinPage)
 		return
-	}
-	if err != nil {
+	case err != nil:
 		l.logger.Error("비밀번호 로그인 실패", "err", err)
 		detail(w, http.StatusInternalServerError, "Failed to sign in")
 		return
 	}
-	l.attempts.succeed(attempt)
 	l.finishSignIn(w, r, loginID, user)
 }
 
