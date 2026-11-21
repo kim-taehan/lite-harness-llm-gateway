@@ -36,6 +36,12 @@ func accessDenied(kind, model string) core.ProxyError {
 		Message: "The requested model '" + model + "' is not available for this API key, or the model name is invalid. Check the models available to you and try again."}
 }
 
+// ModelVisible 은 이 신원이 그 모델 이름을 쓸 수 있는지다(관리 화면의 모델 목록도 같은 기준으로 거른다)
+func ModelVisible(p auth.Principal, model string) bool {
+	_, denied := modelDenied(p, model)
+	return !denied
+}
+
 // visible 은 이 신원이 쓸 수 있는 모델 이름이다(/v1/models)
 func visible(p auth.Principal, names []string) []string {
 	var result []string

@@ -79,6 +79,9 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
 		route(http.MethodPost, "/model/new", adminOnly, h.createModel),
 		route(http.MethodPost, "/model/delete", adminOnly, h.deleteModel),
+		route(http.MethodPatch, "/model/{model_id}/update", adminOnly, h.updateModel),
+		route(http.MethodGet, "/v2/model/info", handlerDecide, h.modelInfoV2),
+		route(http.MethodGet, "/v1/model/info", handlerDecide, h.modelInfoV1),
 		// 사용량(K 9장). /spend/logs 는 litellm spend_tracking_routes(internal_user·viewer), 일별 사용량은 self_managed
 		route(http.MethodGet, "/user/daily/activity", handlerDecide, h.dailyActivity),
 		route(http.MethodGet, "/spend/logs", spendTracking, h.spendLogs),
