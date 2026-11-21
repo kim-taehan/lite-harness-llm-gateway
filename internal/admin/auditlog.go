@@ -117,7 +117,8 @@ func keyTargets(r *http.Request, req, resp map[string]any) []string {
 			ids = append(ids, auth.TokenOf(v))
 		}
 	}
-	return ids
+	slices.Sort(ids) // 생성 응답은 token_id 와 token 에 같은 해시를 싣는다. 한 번만 남긴다
+	return slices.Compact(ids)
 }
 
 func auditStrings(value any) []string {

@@ -54,9 +54,14 @@ func TestAudit_RecordsAdminChangesWithoutSecretsAndFiltersThem(t *testing.T) {
 	if byHash := auditLogs(t, api, "object_key_hash="+hash); len(byHash) != 3 {
 		t.Errorf("object_key_hash 필터 = %d 건", len(byHash))
 	}
+	// 키 원문을 요청에 넣지 않으면 대상은 응답의 해시다. 한 번 만들면 한 줄이다
+	auto := api.ok("POST", "/key/generate", map[string]any{"key_alias": "auto"})["token_id"].(string)
+	if byAuto := auditLogs(t, api, "object_id="+auto); len(byAuto) != 1 {
+		t.Errorf("자동 생성 키의 기록 = %d 건, want 1", len(byAuto))
+	}
 
 	page := api.ok("GET", "/audit?page_size=2", nil)
-	if page["total"] != 4.0 || page["total_pages"] != 2.0 || len(page["audit_logs"].([]any)) != 2 {
+	if page["total"] != 5.0 || page["total_pages"] != 3.0 || len(page["audit_logs"].([]any)) != 2 {
 		t.Errorf("쪽 나누기 = %v", page)
 	}
 	id := logs[0].(map[string]any)["id"].(string)
