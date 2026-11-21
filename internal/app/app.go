@@ -113,7 +113,8 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, l
 			core.HealthRoutes(lifecycle, db),
 			login.Routes(),
 			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
-			admin.NewHandlers(db, teams, users, keys, policies, deployments, limits.NewUsageQuery(db), settings, time.Now, logger).Routes(),
+			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Policies: policies, Deployments: deployments,
+				Usage: limits.NewUsageQuery(db), Settings: settings, Now: time.Now, Logger: logger}).Routes(),
 		),
 	}
 }
@@ -137,8 +138,8 @@ func noProxyTransport() *http.Transport {
 // usageOptions 는 설계 11.1 기본값이다(100건 또는 1초, 채널 1만)
 var usageOptions = limits.UsageOptions{BatchSize: 100, FlushInterval: time.Second, QueueCapacity: 10_000}
 
-// Handler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
-func Handler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, login *auth.Login, usage *limits.UsageRecorder, logger *slog.Logger) http.Handler {
+// buildHandler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
+func buildHandler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, login *auth.Login, usage *limits.UsageRecorder, logger *slog.Logger) http.Handler {
 	m := assemble(cfg, lifecycle, db, id, login, usage, logger)
 	mux := http.NewServeMux()
 	for _, route := range m.routes {
@@ -192,7 +193,7 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	lifecycle := &core.Lifecycle{}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           Handler(cfg, lifecycle, db, id, login, usage, logger),
+		Handler:           buildHandler(cfg, lifecycle, db, id, login, usage, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout 은 두지 않는다. LLM 스트림은 수 분 이어질 수 있다
 	}

@@ -4,15 +4,11 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"llm-gateway/internal/core"
-	"llm-gateway/internal/core/dbtest"
 )
 
 // M3 완료 기준(설계 4.2): 클라이언트가 끊으면 업스트림 호출을 취소하고, 받은 만큼을 추정치로 499 로 기록한다
@@ -33,11 +29,7 @@ func stallingUpstream(t *testing.T) (srv *httptest.Server, cancelled <-chan stru
 
 func TestChat_ClientDisconnectCancelsUpstreamAndRecordsEstimate(t *testing.T) {
 	upstream, upstreamCancelled := stallingUpstream(t)
-	cfg, _ := LoadConfig(testEnv)
-	db, pool := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, pool := testGateway(t)
 	api := apiClient{t: t, h: h}
 	api.ok("POST", "/model/new", map[string]any{"model_name": "m1", "litellm_params": map[string]any{"model": "ollama/x", "api_base": upstream.URL}})
 	key := api.ok("POST", "/key/generate", map[string]any{})["key"].(string)
@@ -86,11 +78,7 @@ func TestChat_UpstreamErrorBodyAndStatusAreRelayedAndRecorded(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"message":"model is loading","type":"server_error"}}`)
 	}))
 	t.Cleanup(upstream.Close)
-	cfg, _ := LoadConfig(testEnv)
-	db, pool := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, pool := testGateway(t)
 	api := apiClient{t: t, h: h}
 	api.ok("POST", "/model/new", map[string]any{"model_name": "m1", "litellm_params": map[string]any{"model": "ollama/x", "api_base": upstream.URL}})
 	key := api.ok("POST", "/key/generate", map[string]any{})["key"].(string)

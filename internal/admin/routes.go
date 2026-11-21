@@ -27,10 +27,23 @@ type Handlers struct {
 	logger      *slog.Logger
 }
 
-func NewHandlers(db *core.DB, teams *auth.Teams, users *auth.Users, keys *auth.Keys, policies *limits.Policies,
-	deployments *inference.Deployments, usage *limits.UsageQuery, settings *core.Settings, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{db: db, teams: teams, users: users, keys: keys, limits: policies, deployments: deployments, usage: usage, settings: settings,
-		rows: rows{teams: teams, users: users, limits: policies}, now: now, logger: logger}
+// Deps 는 관리 API 가 쓰는 다른 모듈들이다. 인자가 많아 이름을 붙여 넘긴다
+type Deps struct {
+	DB          *core.DB
+	Teams       *auth.Teams
+	Users       *auth.Users
+	Keys        *auth.Keys
+	Policies    *limits.Policies
+	Deployments *inference.Deployments
+	Usage       *limits.UsageQuery
+	Settings    *core.Settings
+	Now         func() time.Time
+	Logger      *slog.Logger
+}
+
+func NewHandlers(d Deps) *Handlers {
+	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, deployments: d.Deployments, usage: d.Usage,
+		settings: d.Settings, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, now: d.Now, logger: d.Logger}
 }
 
 // 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.

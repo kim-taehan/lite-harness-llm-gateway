@@ -71,7 +71,7 @@ func ssoApp(t *testing.T, idp *fakeIdP) (browser, apiClient) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler(cfg, &core.Lifecycle{}, db, id, login, startUsage(t, db, logger), logger)
+	h := buildHandler(cfg, &core.Lifecycle{}, db, id, login, startUsage(t, db, logger), logger)
 	return browser{t: t, h: h}, apiClient{t: t, h: h}
 }
 

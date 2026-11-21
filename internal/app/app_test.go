@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 	"llm-gateway/internal/core/dbtest"
@@ -32,15 +34,22 @@ func testEnv(name string) string {
 
 func testHandler(t *testing.T) (http.Handler, *core.Lifecycle) {
 	t.Helper()
+	h, lifecycle, _ := testGateway(t)
+	return h, lifecycle
+}
+
+// testGateway 는 시험용 DB 위에 조립한 게이트웨이다. 시험이 DB 를 직접 들여다보려면 pool 을 쓴다
+func testGateway(t *testing.T) (http.Handler, *core.Lifecycle, *pgxpool.Pool) {
+	t.Helper()
 	cfg, err := LoadConfig(testEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, _ := dbtest.Open(t)
+	db, pool := dbtest.Open(t)
 	lifecycle := &core.Lifecycle{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	id := newIdentity(db)
-	return Handler(cfg, lifecycle, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger), lifecycle
+	return buildHandler(cfg, lifecycle, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger), lifecycle, pool
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {

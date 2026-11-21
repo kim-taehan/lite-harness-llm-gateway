@@ -2,26 +2,17 @@ package app
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"llm-gateway/internal/core"
-	"llm-gateway/internal/core/dbtest"
 )
 
 // 대시보드 사용량·로그 화면(N 문서)을 대시보드가 보내는 쿼리 그대로 확인한다
 
 func TestUsageScreens_AggregatedKeysUsersExportAndLogs(t *testing.T) {
 	upstream, _ := fakeOllama(t)
-	cfg, _ := LoadConfig(testEnv)
-	db, _ := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, _ := testGateway(t)
 	api := apiClient{t: t, h: h}
 	b := browser{t: t, h: h}
 

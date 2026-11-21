@@ -2,26 +2,17 @@ package app
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"llm-gateway/internal/core"
-	"llm-gateway/internal/core/dbtest"
 )
 
 // 데스크탑 계정 화면(K 9장)이 부르는 API 를 데스크탑과 같은 쿼리로 확인한다
 
 func TestAccountScreen_DesktopCallsWork(t *testing.T) {
 	upstream, _ := fakeOllama(t)
-	cfg, _ := LoadConfig(testEnv)
-	db, _ := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, _ := testGateway(t)
 	api := apiClient{t: t, h: h}
 
 	api.ok("POST", "/model/new", map[string]any{"model_name": "m1", "litellm_params": map[string]any{"model": "ollama/x", "api_base": upstream.URL}})

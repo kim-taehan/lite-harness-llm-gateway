@@ -4,17 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"llm-gateway/internal/core"
-	"llm-gateway/internal/core/dbtest"
 )
 
 // 추론 경로(설계 4장)를 가짜 업스트림으로 확인한다: 중계, 모델 이름 되돌리기, usage 청크 걸러 내기, 사용량 기록
@@ -78,11 +73,7 @@ func fakeOllama(t *testing.T) (*httptest.Server, *upstreamLog) {
 
 func TestChat_RelaysStreamRecordsUsageAndHidesUnrequestedUsageChunk(t *testing.T) {
 	upstream, received := fakeOllama(t)
-	cfg, _ := LoadConfig(testEnv)
-	db, pool := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, pool := testGateway(t)
 	api := apiClient{t: t, h: h}
 
 	api.ok("POST", "/model/new", map[string]any{"model_name": "chat-small",
@@ -187,11 +178,7 @@ func TestModels_ShowsOnlyAllowedModelsAndGroupInfo(t *testing.T) {
 
 func TestResponsesAndEmbeddings_RelayAndRecordUsage(t *testing.T) {
 	upstream, received := fakeOllama(t)
-	cfg, _ := LoadConfig(testEnv)
-	db, pool := dbtest.Open(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	id := newIdentity(db)
-	h := Handler(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger)
+	h, _, pool := testGateway(t)
 	api := apiClient{t: t, h: h}
 	api.ok("POST", "/model/new", map[string]any{"model_name": "m", "litellm_params": map[string]any{"model": "ollama/tiny:1b", "api_base": upstream.URL}})
 
