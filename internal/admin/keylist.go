@@ -52,7 +52,12 @@ func (h *Handlers) keyInfo(w http.ResponseWriter, r *http.Request) {
 			h.internalError(w, r, err)
 			return
 		}
-		if allowed, err := h.canViewKey(ctx, p, deleted.Key); err != nil || !allowed {
+		allowed, err := h.canViewKey(ctx, p, deleted.Key)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if !allowed {
 			notFound.Write(w)
 			return
 		}

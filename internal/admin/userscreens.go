@@ -38,7 +38,7 @@ func (h *Handlers) filterUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.users.Page(r.Context(), query)
 	if err != nil {
-		core.DetailError{Status: 500, Detail: "Error searching users: " + err.Error()}.Write(w)
+		h.internalError(w, r, err) // DB 오류 원문은 로그에만 남기고 응답에 싣지 않는다
 		return
 	}
 	result := make([]row, 0, len(page.Items))
