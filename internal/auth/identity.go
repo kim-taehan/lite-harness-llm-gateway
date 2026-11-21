@@ -47,6 +47,14 @@ type User struct {
 	UpdatedAt             time.Time
 }
 
+// EffectiveRole 은 인증 때 쓰는 역할이다. litellm 처럼 역할을 정하지 않은 사용자는 internal_user 다
+func (u User) EffectiveRole() core.Role {
+	if u.UserRole == nil {
+		return core.RoleInternalUser
+	}
+	return *u.UserRole
+}
+
 type TeamMember struct {
 	TeamID    string
 	UserID    string

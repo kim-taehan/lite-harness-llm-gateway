@@ -421,9 +421,6 @@ func memberTargetErrors(raw map[string]any, teamID, userID, userEmail *string) v
 
 func (h *Handlers) teamInfo(w http.ResponseWriter, r *http.Request) {
 	// /team/info 는 litellm 에서 auth_error·"None" 으로 감싼다(TE:5389-5408)
-	authStyle := func(status int, message string) core.ProxyError {
-		return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
-	}
 	teamID := r.URL.Query().Get("team_id")
 	if teamID == "" {
 		authStyle(422, pyDict("message", "Malformed request. No team id passed in.")).Write(w)

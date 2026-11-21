@@ -49,6 +49,21 @@ func (e DetailError) Write(w http.ResponseWriter) {
 	WriteJSON(w, e.Status, map[string]any{"detail": e.Detail})
 }
 
+// DetailMessage 는 {"detail":{"error": 메시지}} 모양 오류다. litellm 관리 API 가 HTTPException 에 dict 를 담아 던질 때의 모양이다
+func DetailMessage(status int, message string) DetailError {
+	return DetailError{Status: status, Detail: map[string]string{"error": message}}
+}
+
+// DecodeJSONBody 는 작은 JSON 본문(최대 1MB)을 dst 로 읽는다. 읽지 못하면 FastAPI 와 같은 422 json_invalid 를 쓰고 false 다
+func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(dst); err != nil {
+		DetailError{Status: http.StatusUnprocessableEntity, Detail: []map[string]any{{"type": "json_invalid", "loc": []string{"body"},
+			"msg": "JSON decode error", "input": nil}}}.Write(w)
+		return false
+	}
+	return true
+}
+
 // WriteRouteNotFound 는 등록되지 않은 경로에 FastAPI 기본 404 와 같은 본문을 준다
 func WriteRouteNotFound(w http.ResponseWriter) {
 	DetailError{Status: http.StatusNotFound, Detail: "Not Found"}.Write(w)

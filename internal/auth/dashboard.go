@@ -46,7 +46,8 @@ func (l *Login) loginJSON(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body) // 깨진 본문은 빈 자격 증명으로 본다(litellm 은 "None" 문자열로 바꿔 401)
+	// 깨진 본문은 빈 자격 증명으로 본다(litellm 은 "None" 문자열로 바꿔 401). 크기는 제한한다(공개 라우트다)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 	token, ok := l.signInUI(w, r, body.Username, body.Password)
 	if !ok {
 		return
@@ -119,12 +120,8 @@ func (l *Login) uiToken(user User, method string) (string, error) {
 
 // uiClaims 는 litellm ReturnedUITokenObject 다(exp 는 부르는 쪽이 정한다)
 func uiClaims(user User, method, key string) map[string]any {
-	role := core.RoleInternalUser
-	if user.UserRole != nil {
-		role = *user.UserRole
-	}
 	return map[string]any{
-		"user_id": user.UserID, "key": key, "user_email": user.UserEmail, "user_role": role, "login_method": method,
+		"user_id": user.UserID, "key": key, "user_email": user.UserEmail, "user_role": user.EffectiveRole(), "login_method": method,
 		"premium_user": true, "auth_header_name": "Authorization", "disabled_non_admin_personal_key_creation": false,
 		"server_root_path": "", "password_reset_required": method == uiMethodPassword && user.PasswordResetRequired,
 	}
@@ -197,12 +194,12 @@ func (l *Login) ssoUISettings(w http.ResponseWriter, _ *http.Request) {
 func (l *Login) logout(w http.ResponseWriter, r *http.Request) {
 	p, _ := PrincipalFrom(r.Context())
 	if p.UIMethod == "" {
-		core.DetailError{Status: http.StatusForbidden, Detail: map[string]any{"error": "Only UI session tokens can be revoked through this endpoint."}}.Write(w)
+		core.DetailMessage(http.StatusForbidden, "Only UI session tokens can be revoked through this endpoint.").Write(w)
 		return
 	}
 	if err := l.users.revokeUISessions(r.Context(), p.UserID, l.now().UTC().Truncate(time.Microsecond)); err != nil {
 		l.logger.Error("세션 폐기 실패", "err", err)
-		core.DetailError{Status: http.StatusInternalServerError, Detail: map[string]any{"error": "Failed to revoke session"}}.Write(w)
+		core.DetailMessage(http.StatusInternalServerError, "Failed to revoke session").Write(w)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "token", Value: "", Path: "/", MaxAge: -1})

@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -27,7 +26,7 @@ func (l *Login) onboardingRoutes() []core.Route {
 }
 
 func invitationError(w http.ResponseWriter, message string) {
-	core.DetailError{Status: http.StatusUnauthorized, Detail: map[string]any{"error": message}}.Write(w)
+	core.DetailMessage(http.StatusUnauthorized, message).Write(w)
 }
 
 // usableInvitation 은 링크가 있고, 만료되지 않았고, 쓰지 않았는지 본다. litellm 처럼 만료는 날짜만 비교한다
@@ -50,7 +49,7 @@ func (l *Login) usableInvitation(w http.ResponseWriter, r *http.Request, id stri
 
 func (l *Login) internalError(w http.ResponseWriter, err error) {
 	l.logger.Error("온보딩 처리 실패", "err", err)
-	core.DetailError{Status: http.StatusInternalServerError, Detail: map[string]any{"error": "Internal Server Error"}}.Write(w)
+	core.DetailMessage(http.StatusInternalServerError, "Internal Server Error").Write(w)
 }
 
 // onboardingToken 은 초대 링크를 연 화면이 부른다. 바깥 JWT 의 key 클레임에 15분짜리 온보딩 JWT 를 넣는다(litellm 과 같은 두 겹)
@@ -90,9 +89,7 @@ func (l *Login) claimOnboarding(w http.ResponseWriter, r *http.Request) {
 		UserID         string `json:"user_id"`
 		Password       string `json:"password"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		core.DetailError{Status: http.StatusUnprocessableEntity, Detail: []map[string]any{{"type": "json_invalid", "loc": []string{"body"},
-			"msg": "JSON decode error", "input": nil}}}.Write(w)
+	if !core.DecodeJSONBody(w, r, &req) {
 		return
 	}
 	inv, ok := l.usableInvitation(w, r, req.InvitationLink)
@@ -151,14 +148,10 @@ func (l *Login) changePassword(w http.ResponseWriter, r *http.Request) {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		core.DetailError{Status: http.StatusUnprocessableEntity, Detail: []map[string]any{{"type": "json_invalid", "loc": []string{"body"},
-			"msg": "JSON decode error", "input": nil}}}.Write(w)
+	if !core.DecodeJSONBody(w, r, &req) {
 		return
 	}
-	badRequest := func(message string) {
-		core.DetailError{Status: http.StatusBadRequest, Detail: map[string]any{"error": message}}.Write(w)
-	}
+	badRequest := func(message string) { core.DetailMessage(http.StatusBadRequest, message).Write(w) }
 	// 세션 토큰을 훔친 사람이 현재 비밀번호를 무작위로 넣어 보지 못하게 로그인과 같은 시도 제한을 건다
 	_, err := l.gate.check(r.Context(), p.UserID, req.CurrentPassword, clientIP(r))
 	switch {

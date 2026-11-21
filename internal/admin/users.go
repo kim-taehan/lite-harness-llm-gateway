@@ -161,9 +161,8 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// /user/update 는 litellm 에서 auth_error·"None" 으로 감싼다(IU:1729-1746)
-	authStyle := func(status int, message string) core.ProxyError {
-		return core.ProxyError{Status: status, Message: pyDict("error", message), Type: "auth_error", Param: "None"}
-	}
+	// /user/update 의 message 는 {'error': …} repr 로 감싼다
+	userUpdateError := func(status int, message string) core.ProxyError { return authStyle(status, pyDict("error", message)) }
 	user, policy, err := h.applyUserUpdate(r.Context(), req)
 	var invalid *limits.InvalidError
 	var taken *auth.EmailTakenError
@@ -179,12 +178,12 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		core.WriteJSON(w, http.StatusOK, row{"user_id": user.UserID, "data": userRow(user, teamIDs[user.UserID], policy)})
 	case errors.As(err, &invalid):
-		authStyle(400, invalid.Message).Write(w)
+		userUpdateError(400, invalid.Message).Write(w)
 	case errors.Is(err, auth.ErrUserNotFound):
 		// litellm 은 proxy_admin 이 없는 user_id 로 부르면 사용자를 만든다. 버그로 보고 따르지 않는다(설계 9장)
-		authStyle(404, "User not found, passed user_id="+derefOr(req.UserID, derefOr(req.UserEmail.Value, ""))).Write(w)
+		userUpdateError(404, "User not found, passed user_id="+derefOr(req.UserID, derefOr(req.UserEmail.Value, ""))).Write(w)
 	case errors.As(err, &taken):
-		authStyle(409, "User with email "+taken.Existing+" already exists").Write(w)
+		userUpdateError(409, "User with email "+taken.Existing+" already exists").Write(w)
 	default:
 		h.internalError(w, r, err)
 	}

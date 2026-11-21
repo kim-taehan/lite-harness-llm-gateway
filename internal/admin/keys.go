@@ -207,9 +207,6 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// /key/update 는 litellm 에서 auth_error·"None" 으로 감싼다(KM:4069-4088)
-	authStyle := func(status int, message string) core.ProxyError {
-		return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
-	}
 	ctx := r.Context()
 	p := principal(ctx)
 	key, err := h.keyTarget(ctx, req.Key, req.KeyAlias.Value)
@@ -293,9 +290,6 @@ func (h *Handlers) keyTarget(ctx context.Context, key, alias *string) (auth.Key,
 
 // checkKeyUpdate 는 비관리자의 키 수정 권한이다(J 3.3): 팀 키는 팀 admin, 개인 키는 작성자이자 소유자만. 예산 변경은 admin 만
 func (h *Handlers) checkKeyUpdate(ctx context.Context, p auth.Principal, key auth.Key, req keyFields) (core.ProxyError, bool) {
-	authStyle := func(status int, message string) core.ProxyError {
-		return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
-	}
 	if req.UserID.Set {
 		switch v := req.UserID.Value; {
 		case v == nil:

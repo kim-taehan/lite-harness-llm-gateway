@@ -142,5 +142,11 @@ func proxyError(status int, message string) core.ProxyError {
 
 // detailError 는 (B) 모양 {"detail":{"error": …}} 이다
 func detailError(status int, message string) core.DetailError {
-	return core.DetailError{Status: status, Detail: map[string]string{"error": message}}
+	return core.DetailMessage(status, message)
+}
+
+// authStyle 은 litellm 이 auth_error·param "None" 으로 감싸는 오류다(/team/info, /key/update, /user/update 등).
+// message 는 부르는 쪽이 그대로 정한다(repr 로 감쌀지는 엔드포인트마다 다르다)
+func authStyle(status int, message string) core.ProxyError {
+	return core.ProxyError{Status: status, Message: message, Type: "auth_error", Param: "None"}
 }
