@@ -25,7 +25,7 @@ func TestStubs_CrashSensitiveShapes(t *testing.T) {
 		status       int
 		want         string
 	}{
-		{"GET", "/telemetry/settings", 404, notSupported},
+		{"GET", "/telemetry/settings", 200, `{"environment_variables":[],"vetoed":true,"groups":[],"available_destinations":[]}`},
 		{"GET", "/get/config/callbacks", 200, `{"callbacks":[],"available_callbacks":{},"alerts":[],"router_settings":{}}`},
 		{"GET", "/management/v1/budgets", 200, `{"data":[],"meta":{"total_count":0}}`},
 		{"GET", "/v1/mcp/server", 200, `[]`},
@@ -53,7 +53,7 @@ func TestStubs_CrashSensitiveShapes(t *testing.T) {
 		{"GET", "/v2/guardrails/list", 200, `{"guardrails":[]}`},
 		{"GET", "/model/cost_map/source", 404, notSupported},
 		{"GET", "/gateway/errors/activity", 200, `{"by_date":[],"by_status_code":[],"by_key":[],"by_team":[],"by_user":[],"by_model":[]}`},
-		{"GET", "/global/activity/cache_hits", 404, notSupported},
+		{"GET", "/global/activity/cache_hits", 200, `{"filter_options":{"key_aliases":[],"models":[]},"groups":[],"error_breakdown":[],"totals":{"cache_hits":0}}`},
 		{"GET", "/auto_router/benchmarks", 404, notSupported},
 		{"GET", "/lens", 200, `{"lenses":[]}`},
 		{"GET", "/tag/dau", 200, `{"results":[]}`},
@@ -64,7 +64,7 @@ func TestStubs_CrashSensitiveShapes(t *testing.T) {
 		{"GET", "/get/sso_settings", 200, `{"values":{}}`},
 		{"GET", "/coordination_redis/settings", 200, `{"values":{}}`},
 		{"GET", "/email/event_settings", 200, `{"settings":[]}`},
-		{"GET", "/model-insights?metric=spend", 404, notSupported},
+		{"GET", "/model-insights?metric=spend", 200, `{"top_models":[],"daily":[],"daily_totals":[]}`},
 		{"GET", "/get/latest_release_info", 404, notSupported},
 		{"GET", "/get/user_banner", 200, `{"enabled":false,"message":""}`},
 		{"GET", "/tag/daily/activity/aggregated", 200, `{"results":[],"metadata":{}}`},

@@ -117,6 +117,7 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodGet, "/team/daily/activity/aggregated/model_top_keys", handlerDecide, h.activity(entityTeam, "model_top_keys")),
 		route(http.MethodGet, "/team/daily/activity/export", handlerDecide, h.activityExport(entityTeam)),
 		route(http.MethodGet, "/team/spend/by_user", handlerDecide, h.teamSpendByUser),
+		route(http.MethodGet, "/model-insights", handlerDecide, h.modelInsights),
 		route(http.MethodGet, "/spend/logs/ui", spendTracking, h.spendLogsUI),
 		route(http.MethodGet, "/spend/logs/ui/{request_id}", spendTracking, h.spendLogDetail),
 		route(http.MethodGet, "/spend/logs/session/ui", spendTracking, h.sessionLogs),

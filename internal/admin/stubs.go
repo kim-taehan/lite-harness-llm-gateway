@@ -109,8 +109,11 @@ func stubs() []stub {
 		stubUnsupported("User banner", "PATCH /update/user_banner"),
 		stubNotFound("License", "GET /health/license"),
 		stubNotFound("License", "GET /user/available_users"),
-		// {} 를 주면 모든 화면 위 배너가 environment_variables.length 에서 깨진다
-		stubNotFound("Telemetry", "GET /telemetry/settings"),
+		// 폐쇄망이라 텔레메트리는 늘 꺼져 있다(vetoed). 모양을 다 채워야 텔레메트리 화면이 그려진다({} 면 모든 화면 위 배너가 깨진다).
+		// environment_variables 를 비워 두면 모든 화면 위 배너는 나오지 않는다
+		stubOK("GET /telemetry/settings", `{"available_destinations":[],"destination":null,"destination_set_by_environment":true,`+
+			`"editable":false,"environment_variables":[],"flush_interval_seconds":0,"groups":[],"report":null,"report_is_sample":false,`+
+			`"retention_days":0,"set_by_environment":true,"stored_destination":null,"stored_groups":null,"vetoed":true}`),
 		stubUnsupported("Telemetry", "PUT /telemetry/settings"),
 		stubOK("GET /telemetry/ui_events/enabled", `{"enabled":false}`).public(),
 		stubUnsupported("Telemetry", "POST /telemetry/ui_events"),
@@ -251,8 +254,9 @@ func stubs() []stub {
 		stubUnsupported(autoRouter, "POST /auto_router/shadow_eval/start"),
 		stubUnsupported(autoRouter, "POST /auto_router/shadow_eval/{job_id}/stop"),
 
-		// caching(사용량 탭): filter_options 없는 200 은 깨진다
-		stubNotFound("Cache analytics", "GET /global/activity/cache_hits"),
+		// caching(사용량 탭): 캐시가 없어 늘 0 이다. filter_options 까지 다 채운 빈 모양이어야 깨지지 않는다
+		stubOK("GET /global/activity/cache_hits", `{"error_breakdown":[],"filter_options":{"key_aliases":[],"models":[]},"groups":[],`+
+			`"totals":{"api_requests":0,"cache_hit_ratio":0,"cache_hits":0,"cached_completion_tokens":0,"failed_requests":0}}`),
 
 		// guardrails-monitor·tool-policies
 		stubOK("GET /guardrails/usage/overview", `{"rows":[],"chart":[],"totalRequests":0,"totalBlocked":0,"passRate":0,"totalCost":null,"totalUntrackedUsageUnits":0}`),
@@ -270,9 +274,6 @@ func stubs() []stub {
 		stubUnsupported("Tags", "POST /tag/update"),
 		stubOK("POST /tag/info", `{}`),
 		stubUnsupported("Tags", "POST /tag/delete"),
-
-		// model-insights: 날짜 없는 200 은 toISOString RangeError 라 404
-		stubNotFound("Model insights", "GET /model-insights"),
 
 		// playground: 우리에게 없는 추론 종류
 		stubUnsupported("Anthropic messages", "POST /v1/messages"),
