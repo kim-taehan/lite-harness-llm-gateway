@@ -179,38 +179,38 @@ func (u *Users) Delete(ctx context.Context, userIDs []string) (int64, error) {
 
 // Page 는 /user/list 의 한 쪽이다
 func (u *Users) Page(ctx context.Context, q UserQuery) (core.Page[User], error) {
-	var lq listQuery
+	var lq core.ListQuery
 	if q.Role != nil {
-		lq.where("user_role = ?", *q.Role)
+		lq.Where("user_role = ?", *q.Role)
 	}
 	switch len(q.UserIDs) {
 	case 0:
 	case 1:
 		// litellm: user_ids 가 하나면 부분 일치(대소문자 무시), 여러 개면 정확히 일치
-		lq.where("user_id ILIKE ?", likeContains(q.UserIDs[0]))
+		lq.Where("user_id ILIKE ?", core.LikeContains(q.UserIDs[0]))
 	default:
-		lq.where("user_id = ANY(?)", q.UserIDs)
+		lq.Where("user_id = ANY(?)", q.UserIDs)
 	}
 	if len(q.SSOUserIDs) > 0 {
-		lq.where("sso_user_id = ANY(?)", q.SSOUserIDs)
+		lq.Where("sso_user_id = ANY(?)", q.SSOUserIDs)
 	}
 	if q.UserEmailContains != nil {
-		lq.where("user_email ILIKE ?", likeContains(*q.UserEmailContains))
+		lq.Where("user_email ILIKE ?", core.LikeContains(*q.UserEmailContains))
 	}
 	if q.Search != nil {
-		lq.where("(user_id ILIKE ? OR user_email ILIKE ?)", likeContains(*q.Search), likeContains(*q.Search))
+		lq.Where("(user_id ILIKE ? OR user_email ILIKE ?)", core.LikeContains(*q.Search), core.LikeContains(*q.Search))
 	}
 	if q.TeamID != nil {
-		lq.where("user_id IN (SELECT user_id FROM team_member WHERE team_id = ?)", *q.TeamID)
+		lq.Where("user_id IN (SELECT user_id FROM team_member WHERE team_id = ?)", *q.TeamID)
 	}
 	var total int64
-	if err := u.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM app_user "+lq.clause(), lq.args...).Scan(&total); err != nil {
+	if err := u.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM app_user "+lq.Clause(), lq.Args...).Scan(&total); err != nil {
 		return core.Page[User]{}, err
 	}
-	sql := "SELECT " + userColumns + " FROM app_user " + lq.clause() +
+	sql := "SELECT " + userColumns + " FROM app_user " + lq.Clause() +
 		orderBy(q.SortBy, []string{"user_id", "user_email", "created_at", "user_alias", "user_role"}, q.SortOrder, "user_id") +
-		lq.page(q.Page, q.PageSize)
-	items, err := u.list(ctx, sql, lq.args...)
+		lq.Page(q.Page, q.PageSize)
+	items, err := u.list(ctx, sql, lq.Args...)
 	return core.Page[User]{Items: items, Total: total}, err
 }
 

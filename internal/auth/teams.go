@@ -302,30 +302,30 @@ func (t *Teams) UpdateMember(ctx context.Context, teamID string, userID, userEma
 
 // Page 는 /v2/team/list 의 한 쪽이다
 func (t *Teams) Page(ctx context.Context, q TeamQuery) (core.Page[Team], error) {
-	var lq listQuery
+	var lq core.ListQuery
 	if q.MemberUserID != nil {
-		lq.where("team_id IN (SELECT team_id FROM team_member WHERE user_id = ?)", *q.MemberUserID)
+		lq.Where("team_id IN (SELECT team_id FROM team_member WHERE user_id = ?)", *q.MemberUserID)
 	}
 	if q.TeamID != nil {
-		lq.where("team_id = ?", *q.TeamID)
+		lq.Where("team_id = ?", *q.TeamID)
 	}
 	if q.TeamAliasContains != nil {
-		lq.where("team_alias ILIKE ?", likeContains(*q.TeamAliasContains))
+		lq.Where("team_alias ILIKE ?", core.LikeContains(*q.TeamAliasContains))
 	}
 	if q.Search != nil {
 		if q.SearchTeamIDPrefix {
-			lq.where("(team_id LIKE ? OR team_alias ILIKE ?)", likePrefix(*q.Search), likeContains(*q.Search))
+			lq.Where("(team_id LIKE ? OR team_alias ILIKE ?)", core.LikePrefix(*q.Search), core.LikeContains(*q.Search))
 		} else {
-			lq.where("(team_id = ? OR team_alias ILIKE ?)", *q.Search, likeContains(*q.Search))
+			lq.Where("(team_id = ? OR team_alias ILIKE ?)", *q.Search, core.LikeContains(*q.Search))
 		}
 	}
 	var total int64
-	if err := t.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM team "+lq.clause(), lq.args...).Scan(&total); err != nil {
+	if err := t.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM team "+lq.Clause(), lq.Args...).Scan(&total); err != nil {
 		return core.Page[Team]{}, err
 	}
-	sql := "SELECT " + teamColumns + " FROM team " + lq.clause() +
-		orderBy(q.SortBy, []string{"team_id", "team_alias", "created_at"}, q.SortOrder, "team_id") + lq.page(q.Page, q.PageSize)
-	items, err := t.list(ctx, sql, lq.args...)
+	sql := "SELECT " + teamColumns + " FROM team " + lq.Clause() +
+		orderBy(q.SortBy, []string{"team_id", "team_alias", "created_at"}, q.SortOrder, "team_id") + lq.Page(q.Page, q.PageSize)
+	items, err := t.list(ctx, sql, lq.Args...)
 	return core.Page[Team]{Items: items, Total: total}, err
 }
 

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"llm-gateway/internal/core"
 )
 
 // 대시보드 사용량·로그 화면용 조회(N 문서). litellm 은 일별 집계 표를 미리 쌓지만 우리는 request_log 를 그때그때 묶는다.
@@ -103,7 +105,7 @@ func scanLog(row pgx.CollectableRow) (LogRow, error) {
 
 // LogRows 는 조건에 맞는 요청 행을 정렬해 Offset 부터 Limit 개 읽는다
 func (q *UsageQuery) LogRows(ctx context.Context, lq LogQuery) ([]LogRow, error) {
-	where, args := logWhere(lq)
+	w := logWhere(lq)
 	order, ok := logSortColumns[lq.SortBy]
 	if !ok {
 		order = "created_at"
@@ -112,10 +114,8 @@ func (q *UsageQuery) LogRows(ctx context.Context, lq LogQuery) ([]LogRow, error)
 	if lq.Desc {
 		dir = "DESC"
 	}
-	args = append(args, lq.Limit, lq.Offset)
-	rows, err := q.db.Q(ctx).Query(ctx, "SELECT "+logColumns+" FROM request_log "+where+
-		" ORDER BY "+order+" "+dir+" NULLS LAST, request_id "+dir+
-		" LIMIT $"+strconv.Itoa(len(args)-1)+" OFFSET $"+strconv.Itoa(len(args)), args...)
+	rows, err := q.db.Q(ctx).Query(ctx, "SELECT "+logColumns+" FROM request_log "+w.Clause()+
+		" ORDER BY "+order+" "+dir+" NULLS LAST, request_id "+dir+w.LimitOffset(lq.Limit, lq.Offset), w.Args...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +124,9 @@ func (q *UsageQuery) LogRows(ctx context.Context, lq LogQuery) ([]LogRow, error)
 
 // LogCount 는 조건에 맞는 행 수다. litellm 처럼 MaxLogTotal 에서 자른다
 func (q *UsageQuery) LogCount(ctx context.Context, lq LogQuery) (int, error) {
-	where, args := logWhere(lq)
+	w := logWhere(lq)
 	var total int
-	err := q.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM request_log "+where+" LIMIT "+strconv.Itoa(MaxLogTotal)+") t", args...).Scan(&total)
+	err := q.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM request_log "+w.Clause()+" LIMIT "+strconv.Itoa(MaxLogTotal)+") t", w.Args...).Scan(&total)
 	return total, err
 }
 
@@ -149,43 +149,63 @@ func (q *UsageQuery) LogPage(ctx context.Context, lq LogQuery) ([]LogRow, int, b
 	return logs, total, hasMore, nil
 }
 
-func logWhere(lq LogQuery) (string, []any) {
-	var failed *string
+// logWhere 는 조건이 있는 것만 WHERE 에 더한다. 슬라이스는 nil 이면 거르지 않고 비어 있으면 아무것도 맞지 않는다
+func logWhere(lq LogQuery) *core.ListQuery {
+	var w core.ListQuery
+	if lq.Start != nil {
+		w.Where("created_at >= ?", *lq.Start)
+	}
+	if lq.End != nil {
+		w.Where("created_at <= ?", *lq.End)
+	}
+	if lq.RequestID != nil {
+		w.Where("request_id = ?", *lq.RequestID)
+	}
+	if lq.UserID != nil {
+		w.Where("user_id = ?", *lq.UserID)
+	}
+	if lq.TeamID != nil {
+		w.Where("team_id = ?", *lq.TeamID)
+	}
+	if lq.KeyToken != nil {
+		w.Where("key_token = ?", *lq.KeyToken)
+	}
+	if lq.DeploymentIDs != nil {
+		w.Where("deployment_id = ANY(?)", lq.DeploymentIDs)
+	}
+	if lq.Model != nil {
+		w.Where("model = ?", *lq.Model)
+	}
 	if lq.Failed != nil {
-		s := "success"
-		if *lq.Failed {
-			s = "failure"
-		}
-		failed = &s
+		w.Where("(status = 'success') = ?", !*lq.Failed)
 	}
-	var scopeUser *string
-	var scopeTeams []string
+	if lq.HTTPStatus != nil {
+		w.Where("http_status = ?", *lq.HTTPStatus)
+	}
+	if lq.Search != nil {
+		w.Where("?::text IN (request_id, key_token, team_id, user_id, deployment_id)", *lq.Search)
+	}
 	if lq.Scope != nil {
-		scopeUser, scopeTeams = &lq.Scope.UserID, lq.Scope.TeamIDs
-		if scopeTeams == nil {
-			scopeTeams = []string{}
-		}
+		w.Where("(user_id = ? OR team_id = ANY(?))", lq.Scope.UserID, lq.Scope.TeamIDs)
 	}
-	return `WHERE ($1::timestamptz IS NULL OR created_at >= $1) AND ($2::timestamptz IS NULL OR created_at <= $2)
-		  AND ($3::text IS NULL OR request_id = $3) AND ($4::text IS NULL OR user_id = $4) AND ($5::text IS NULL OR team_id = $5)
-		  AND ($6::text IS NULL OR key_token = $6) AND ($7::text[] IS NULL OR deployment_id = ANY($7)) AND ($8::text IS NULL OR model = $8)
-		  AND ($9::text IS NULL OR (status = 'success') = ($9 = 'success')) AND ($10::int IS NULL OR http_status = $10)
-		  AND ($11::text IS NULL OR $11 IN (request_id, key_token, team_id, user_id, deployment_id))
-		  AND ($12::text IS NULL OR user_id = $12 OR team_id = ANY($13)) AND ($14::text[] IS NULL OR key_token = ANY($14))`,
-		[]any{lq.Start, lq.End, lq.RequestID, lq.UserID, lq.TeamID, lq.KeyToken, lq.DeploymentIDs, lq.Model, failed, lq.HTTPStatus,
-			lq.Search, scopeUser, scopeTeams, lq.KeyTokens}
+	if lq.KeyTokens != nil {
+		w.Where("key_token = ANY(?)", lq.KeyTokens)
+	}
+	return &w
 }
 
 // LogUsers 는 기간 안 요청의 사용자 id 다(로그 화면 사용자 필터). litellm 처럼 최근 MaxLogTotal 행 안에서 고르고 오름차순으로 쪽을 나눈다
 func (q *UsageQuery) LogUsers(ctx context.Context, start, end time.Time, search *string, scope *LogScope, offset, limit int) ([]string, bool, error) {
-	where, args := logWhere(LogQuery{Start: &start, End: &end, Scope: scope})
-	args = append(args, search, limit+1, offset)
-	n := len(args)
+	w := logWhere(LogQuery{Start: &start, End: &end, Scope: scope})
+	w.Where("user_id IS NOT NULL AND user_id <> ''")
+	outer := ""
+	if search != nil {
+		outer = "WHERE user_id ILIKE " + w.Arg(core.LikeContains(*search))
+	}
 	rows, err := q.db.Q(ctx).Query(ctx, `
-		SELECT DISTINCT user_id FROM (SELECT user_id FROM request_log `+where+` AND user_id IS NOT NULL AND user_id <> ''
-		                              ORDER BY created_at DESC LIMIT `+strconv.Itoa(MaxLogTotal)+`) recent
-		WHERE ($`+strconv.Itoa(n-2)+`::text IS NULL OR user_id ILIKE '%' || $`+strconv.Itoa(n-2)+` || '%')
-		ORDER BY user_id LIMIT $`+strconv.Itoa(n-1)+` OFFSET $`+strconv.Itoa(n), args...)
+		SELECT DISTINCT user_id FROM (SELECT user_id FROM request_log `+w.Clause()+`
+		                              ORDER BY created_at DESC LIMIT `+strconv.Itoa(MaxLogTotal)+`) recent `+outer+`
+		ORDER BY user_id`+w.LimitOffset(limit+1, offset), w.Args...)
 	if err != nil {
 		return nil, false, err
 	}

@@ -334,12 +334,12 @@ func (k *Keys) SetBlocked(ctx context.Context, token string, blocked bool, by st
 func (k *Keys) Page(ctx context.Context, q KeyQuery) (core.Page[Key], error) {
 	lq := keyFilter(q)
 	var total int64
-	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM api_key "+lq.clause(), lq.args...).Scan(&total); err != nil {
+	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM api_key "+lq.Clause(), lq.Args...).Scan(&total); err != nil {
 		return core.Page[Key]{}, err
 	}
-	sql := "SELECT " + keyColumns + " FROM api_key " + lq.clause() +
-		keyOrder(q.SortBy, q.SortOrder) + lq.page(q.Page, q.PageSize)
-	items, err := k.list(ctx, sql, lq.args...)
+	sql := "SELECT " + keyColumns + " FROM api_key " + lq.Clause() +
+		keyOrder(q.SortBy, q.SortOrder) + lq.Page(q.Page, q.PageSize)
+	items, err := k.list(ctx, sql, lq.Args...)
 	return core.Page[Key]{Items: items, Total: total}, err
 }
 
@@ -348,11 +348,11 @@ func (k *Keys) PageDeleted(ctx context.Context, q KeyQuery) (core.Page[DeletedKe
 	q.Status = ""
 	lq := keyFilter(q)
 	var total int64
-	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM deleted_api_key "+lq.clause(), lq.args...).Scan(&total); err != nil {
+	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM deleted_api_key "+lq.Clause(), lq.Args...).Scan(&total); err != nil {
 		return core.Page[DeletedKey]{}, err
 	}
-	rows, err := k.db.Q(ctx).Query(ctx, "SELECT "+keyColumns+", deleted_at, deleted_by FROM deleted_api_key "+lq.clause()+
-		" ORDER BY deleted_at DESC, token"+lq.page(q.Page, q.PageSize), lq.args...)
+	rows, err := k.db.Q(ctx).Query(ctx, "SELECT "+keyColumns+", deleted_at, deleted_by FROM deleted_api_key "+lq.Clause()+
+		" ORDER BY deleted_at DESC, token"+lq.Page(q.Page, q.PageSize), lq.Args...)
 	if err != nil {
 		return core.Page[DeletedKey]{}, err
 	}
@@ -367,23 +367,23 @@ func (k *Keys) PageDeleted(ctx context.Context, q KeyQuery) (core.Page[DeletedKe
 
 // Aliases 는 /key/aliases 다. alias 오름차순, 빈 alias 는 뺀다
 func (k *Keys) Aliases(ctx context.Context, visible *KeyVisibility, search, teamID *string, page, size int) (core.Page[string], error) {
-	var lq listQuery
-	lq.where("key_alias IS NOT NULL AND key_alias <> ''")
-	lq.where("(team_id IS NULL OR team_id <> ?)", dashboardTeamID)
+	var lq core.ListQuery
+	lq.Where("key_alias IS NOT NULL AND key_alias <> ''")
+	lq.Where("(team_id IS NULL OR team_id <> ?)", dashboardTeamID)
 	if visible != nil {
-		lq.where("(user_id = ? OR team_id = ANY(?))", visible.UserID, visible.MemberTeams)
+		lq.Where("(user_id = ? OR team_id = ANY(?))", visible.UserID, visible.MemberTeams)
 	}
 	if search != nil {
-		lq.where("key_alias ILIKE ?", likeContains(*search))
+		lq.Where("key_alias ILIKE ?", core.LikeContains(*search))
 	}
 	if teamID != nil {
-		lq.where("team_id = ?", *teamID)
+		lq.Where("team_id = ?", *teamID)
 	}
 	var total int64
-	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM api_key "+lq.clause(), lq.args...).Scan(&total); err != nil {
+	if err := k.db.Q(ctx).QueryRow(ctx, "SELECT count(*) FROM api_key "+lq.Clause(), lq.Args...).Scan(&total); err != nil {
 		return core.Page[string]{}, err
 	}
-	rows, err := k.db.Q(ctx).Query(ctx, "SELECT key_alias FROM api_key "+lq.clause()+" ORDER BY key_alias"+lq.page(page, size), lq.args...)
+	rows, err := k.db.Q(ctx).Query(ctx, "SELECT key_alias FROM api_key "+lq.Clause()+" ORDER BY key_alias"+lq.Page(page, size), lq.Args...)
 	if err != nil {
 		return core.Page[string]{}, err
 	}
@@ -391,10 +391,10 @@ func (k *Keys) Aliases(ctx context.Context, visible *KeyVisibility, search, team
 	return core.Page[string]{Items: items, Total: total}, err
 }
 
-func keyFilter(q KeyQuery) *listQuery {
-	lq := &listQuery{}
+func keyFilter(q KeyQuery) *core.ListQuery {
+	lq := &core.ListQuery{}
 	// 대시보드 세션 키(team_id=litellm-dashboard)는 목록에서 늘 뺀다
-	lq.where("(team_id IS NULL OR team_id <> ?)", dashboardTeamID)
+	lq.Where("(team_id IS NULL OR team_id <> ?)", dashboardTeamID)
 	if v := q.Visible; v != nil {
 		conditions := []string{"user_id = ?"}
 		args := []any{v.UserID}
@@ -406,38 +406,38 @@ func keyFilter(q KeyQuery) *listQuery {
 			conditions = append(conditions, "team_id = ANY(?)", "(user_id IS NULL AND team_id = ANY(?))")
 			args = append(args, v.AdminTeams, v.MemberTeams)
 		}
-		lq.where("("+strings.Join(conditions, " OR ")+")", args...)
+		lq.Where("("+strings.Join(conditions, " OR ")+")", args...)
 	}
 	if q.UserID != nil {
 		if q.UserIDContains {
-			lq.where("user_id ILIKE ?", likeContains(*q.UserID))
+			lq.Where("user_id ILIKE ?", core.LikeContains(*q.UserID))
 		} else {
-			lq.where("user_id = ?", *q.UserID)
+			lq.Where("user_id = ?", *q.UserID)
 		}
 	}
 	if q.TeamID != nil {
-		lq.where("team_id = ?", *q.TeamID)
+		lq.Where("team_id = ?", *q.TeamID)
 	}
 	if q.KeyHash != nil {
-		lq.where("token = ?", *q.KeyHash)
+		lq.Where("token = ?", *q.KeyHash)
 	}
 	if q.KeyAlias != nil {
 		if q.AliasContains {
-			lq.where("key_alias ILIKE ?", likeContains(*q.KeyAlias))
+			lq.Where("key_alias ILIKE ?", core.LikeContains(*q.KeyAlias))
 		} else {
-			lq.where("key_alias = ?", *q.KeyAlias)
+			lq.Where("key_alias = ?", *q.KeyAlias)
 		}
 	}
 	if q.Search != nil {
-		lq.where("(token = ? OR key_alias ILIKE ?)", *q.Search, likeContains(*q.Search))
+		lq.Where("(token = ? OR key_alias ILIKE ?)", *q.Search, core.LikeContains(*q.Search))
 	}
 	switch q.Status {
 	case "revoked":
-		lq.where("blocked IS TRUE")
+		lq.Where("blocked IS TRUE")
 	case "expired":
-		lq.where("blocked IS NOT TRUE AND expires < ?", q.Now)
+		lq.Where("blocked IS NOT TRUE AND expires < ?", q.Now)
 	case "active":
-		lq.where("blocked IS NOT TRUE AND (expires IS NULL OR expires >= ?)", q.Now)
+		lq.Where("blocked IS NOT TRUE AND (expires IS NULL OR expires >= ?)", q.Now)
 	}
 	return lq
 }
