@@ -89,6 +89,9 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/key/unblock", keyManagement, h.unblockKey),
 		// 키는 sk-… 나 sha256 hex 라 / 가 없다
 		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
+		route(http.MethodPost, "/key/{key}/regenerate", keyManagement, h.regenerateKey),
+		route(http.MethodPost, "/key/regenerate", keyManagement, h.regenerateKey),
+		route(http.MethodPost, "/key/service-account/generate", keyManagement, h.generateServiceAccountKey),
 		route(http.MethodPost, "/model/new", adminOnly, h.createModel),
 		route(http.MethodPost, "/model/delete", adminOnly, h.deleteModel),
 		route(http.MethodPatch, "/model/{model_id}/update", adminOnly, h.updateModel),

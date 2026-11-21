@@ -361,6 +361,9 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 대시보드 세션 키도 데스크탑과 같은 자기 완결 로그인 키다(`L_dashboard_login_contract.md`). litellm 은 로그인마다 DB 에 가상 키(`team_id="litellm-dashboard"`, 예산 1 USD)를 하나씩 만들고 지우지 않는다. 그래서 세션 키에 1 USD 예산이 없고 `/key/list` 에 나올 일이 없다. 로그아웃은 그 사용자의 대시보드 세션을 **모두** 끊는다(사용자 행의 `ui_sessions_revoked_at` 보다 먼저 발급된 세션을 거부한다. litellm 은 그 세션 하나만). 데스크탑 로그인 키는 로그아웃과 상관없다
 - 대시보드 세션도 7일간 유효하다(litellm `LITELLM_UI_SESSION_DURATION` 기본 24시간)
 - 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 SSO 만 넣은 빌드에서도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 비밀번호를 넣은 빌드에서만 된다
+- 키 재발급(`/key/{key}/regenerate`)의 `grace_period`(옛 키를 정한 시간 동안 더 받기)는 아직 받지 않는다. 재발급하면 옛 키는 바로 401 이다(뒤 단계)
+- 팀원별 예산(`max_budget_in_team`, 팀원 예산 일괄 수정)은 아직 없다. 팀원 사용액은 늘 0 이고, 값을 정하려는 요청은 결과 행에 실패로 남긴다(뒤 단계)
+- 모델 추가 폼의 제공자는 우리가 중계하는 Ollama·Ollama Chat·Hosted vLLM 만 보인다. 업스트림 API 키(`api_key` 등)는 저장하지 않는다
 - 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 대시보드는 자기 출처로 API 를 부른다(nginx 가 대시보드와 API 를 같은 출처로 낸다)
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)

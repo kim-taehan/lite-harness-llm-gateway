@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 )
 
 // litellm 가상 키 관리 API(docs/litellm-inventory/J_key_contract.md 3장).
-// regenerate 는 litellm 에서도 유료 기능이고 유예 기간 표가 필요해 뒤 단계로 미룬다(설계 12장 M5)
+// regenerate 의 유예 기간(grace_period, 옛 키를 잠시 더 받기)은 별도 표가 필요해 뒤 단계로 미룬다(설계 9장)
 
 // 팀 일반 멤버(role=user)가 기본으로 부를 수 있는 키 라우트(litellm TMP:18-23)
 var defaultTeamMemberKeyRoutes = []string{"/key/info", "/key/health"}
@@ -86,6 +87,15 @@ type keyFields struct {
 }
 
 func (h *Handlers) generateKey(w http.ResponseWriter, r *http.Request) {
+	h.issueKey(w, r, "/key/generate", false)
+}
+
+// generateServiceAccountKey 는 팀 소유이고 사용자가 없는 키다(J 3.2). litellm 처럼 user_id 를 비우고 metadata.service_account_id 를 채운다
+func (h *Handlers) generateServiceAccountKey(w http.ResponseWriter, r *http.Request) {
+	h.issueKey(w, r, "/key/service-account/generate", true)
+}
+
+func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string, serviceAccount bool) {
 	var req struct {
 		Key *string `json:"key"`
 		keyFields
@@ -97,14 +107,28 @@ func (h *Handlers) generateKey(w http.ResponseWriter, r *http.Request) {
 	p := principal(ctx)
 	teamID := nonEmpty(req.TeamID.Value) // litellm: team_id "" 는 null
 	userID := req.UserID.Value
+	if serviceAccount && teamID == nil {
+		detailError(400, "team_id is required for service account keys").Write(w)
+		return
+	}
 	if !p.IsAdmin() {
-		if denial, denied := h.checkKeyGeneration(ctx, p, req.keyFields, teamID, &userID); denied {
+		if denial, denied := h.checkKeyGeneration(ctx, p, req.keyFields, teamID, &userID, route); denied {
 			denial.Write(w)
 			return
 		}
 	}
+	metadata := req.Metadata.Or(nil)
+	if serviceAccount {
+		userID = nil
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		if _, ok := metadata["service_account_id"]; !ok {
+			metadata["service_account_id"] = cmp.Or(derefOr(nonEmpty(req.KeyAlias.Value), ""), uuid())
+		}
+	}
 	input := auth.NewKey{Key: req.Key, KeyAlias: nonEmpty(req.KeyAlias.Value), UserID: userID, TeamID: teamID,
-		Models: req.Models.Or(nil), Metadata: req.Metadata.Or(nil), KeyType: derefOr(req.KeyType, "default"),
+		Models: req.Models.Or(nil), Metadata: metadata, KeyType: derefOr(req.KeyType, "default"),
 		AllowedRoutes: req.AllowedRoutes, Blocked: req.Blocked.Value, CreatedBy: p.UserID}
 	if d := req.Duration.Value; d != nil && *d != "" {
 		expires, err := expiresAfter(*d, h.now().UTC())
@@ -152,7 +176,7 @@ func (h *Handlers) generateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkKeyGeneration 은 비관리자의 키 생성 권한이다(J 3.1). userID 를 기본값(호출자)으로 채운다
-func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req keyFields, teamID *string, userID **string) (core.ProxyError, bool) {
+func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req keyFields, teamID *string, userID **string, route string) (core.ProxyError, bool) {
 	if len(req.AllowedRoutes) > 0 || (req.KeyType != nil && *req.KeyType == "management") {
 		return plainProxyError(403, pyDict("error", "Only proxy admins can set `allowed_routes` on a key. Use `key_type` to pick a preset route bucket instead.")), true
 	}
@@ -180,8 +204,8 @@ func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req
 	if !member {
 		return plainProxyError(400, "User="+p.UserID+" not assigned to team="+*teamID), true
 	}
-	if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), "/key/generate") {
-		return teamMemberPermissionError("/key/generate", team), true
+	if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), route) {
+		return teamMemberPermissionError(route, team), true
 	}
 	if **userID != p.UserID {
 		if _, isMember, _ := h.teamRole(ctx, *teamID, **userID); !isMember {
@@ -354,7 +378,7 @@ func (h *Handlers) deleteKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, k := range found {
-		allowed, err := h.canModifyKey(ctx, p, k)
+		allowed, err := h.canModifyKey(ctx, p, k, "/key/delete")
 		if err != nil {
 			h.internalError(w, r, err)
 			return
@@ -409,7 +433,7 @@ func (h *Handlers) deleteTargets(ctx context.Context, keys, aliases []string) ([
 }
 
 // canModifyKey 는 litellm can_modify_verification_token 이다: proxy_admin, 팀 키면 팀 admin 이나 소유자, 개인 키면 소유자
-func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Key) (bool, error) {
+func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Key, route string) (bool, error) {
 	if p.IsAdmin() {
 		return true, nil
 	}
@@ -417,9 +441,95 @@ func (h *Handlers) canModifyKey(ctx context.Context, p auth.Principal, k auth.Ke
 		return true, nil
 	}
 	if k.TeamID != nil {
-		return h.teamMemberMay(ctx, p, *k.TeamID, "/key/delete")
+		return h.teamMemberMay(ctx, p, *k.TeamID, route)
 	}
 	return false, nil
+}
+
+// regenerateKey 는 POST /key/{key}/regenerate 다(J 3.9). 본문의 key 가 경로보다 우선한다.
+// 바꾸는 값(alias·기간·한도)은 새 키에 함께 적용한다. grace_period(옛 키를 잠시 더 받기)는 아직 없다(설계 9장)
+func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Key      *string             `json:"key"`
+		NewKey   *string             `json:"new_key"`
+		KeyAlias core.Change[string] `json:"key_alias"`
+		Duration *string             `json:"duration"`
+		limitFields
+	}
+	if _, ok := requestBody(w, r, &req); !ok {
+		return
+	}
+	input := cmp.Or(derefOr(req.Key, ""), r.PathValue("key"))
+	if input == "" {
+		proxyError(400, "No key passed in.").Write(w)
+		return
+	}
+	ctx := r.Context()
+	p := principal(ctx)
+	key, err := h.keys.Find(ctx, auth.TokenOf(input))
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		proxyError(404, "Key "+input+" not found.").Write(w)
+		return
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	allowed, err := h.canModifyKey(ctx, p, key, "/key/regenerate")
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	if !allowed {
+		proxyError(403, "You are not authorized to regenerate this key").Write(w)
+		return
+	}
+	patch := auth.KeyPatch{KeyAlias: req.KeyAlias, UpdatedBy: p.UserID}
+	if req.Duration != nil && *req.Duration != "" { // 대시보드는 빈 문자열을 보낼 수 있고 litellm 은 무시한다
+		expires, err := expiresAfter(*req.Duration, h.now().UTC())
+		if err != nil {
+			plainProxyError(500, err.Error()).Write(w)
+			return
+		}
+		patch.Expires = core.To(expires)
+	}
+	var plain string
+	var regenerated auth.Key
+	err = h.db.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if plain, regenerated, err = h.keys.Regenerate(ctx, key.Token, req.NewKey, p.UserID); err != nil {
+			return err
+		}
+		if err := h.limits.Retarget(ctx, limits.ScopeKey, key.Token, regenerated.Token); err != nil {
+			return err
+		}
+		if regenerated, err = h.keys.Update(ctx, regenerated.Token, patch); err != nil {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, regenerated.Token, req.patch())
+		return err
+	})
+	var invalid *limits.InvalidError
+	var badKey *auth.InvalidCustomKeyError
+	switch {
+	case err == nil:
+		kr, err := h.rows.keyRowOf(ctx, regenerated)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		// litellm: token 은 빼고(null) token_id 에 새 해시, key 에 새 원문(이 응답에서만)
+		kr["key"], kr["token_id"], kr["token"] = plain, regenerated.Token, nil
+		core.WriteJSON(w, http.StatusOK, kr)
+	case errors.As(err, &badKey):
+		proxyError(400, badKey.Message).Write(w)
+	case errors.Is(err, auth.ErrKeyAliasTaken):
+		aliasTakenError(derefOr(req.KeyAlias.Value, "")).Write(w)
+	case errors.As(err, &invalid):
+		proxyError(400, invalid.Message).Write(w)
+	default:
+		h.internalError(w, r, err)
+	}
 }
 
 func (h *Handlers) keyInfo(w http.ResponseWriter, r *http.Request) {

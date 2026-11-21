@@ -131,6 +131,12 @@ func (p *Policies) SetSpend(ctx context.Context, scope Scope, id string, value f
 	return previous, err
 }
 
+// Retarget 은 대상 id 가 바뀔 때 한도·사용액을 옮긴다(키 재발급은 키 해시가 바뀐다)
+func (p *Policies) Retarget(ctx context.Context, scope Scope, from, to string) error {
+	_, err := p.db.Q(ctx).Exec(ctx, "UPDATE limit_policy SET target_id = $3 WHERE scope = $1 AND target_id = $2", scope, from, to)
+	return err
+}
+
 func (p *Policies) Delete(ctx context.Context, scope Scope, ids []string) error {
 	if len(ids) == 0 {
 		return nil

@@ -45,7 +45,22 @@
 
 ## 1. 요약 — 가장 중요한 사실
 
-__SUMMARY__
+1. **Usage 는 일별 집계 표만 읽는다.** 요청 로그는 읽지 않는다(DSQL:31-40). 예외는 `/team/spend/by_user` 로, `LiteLLM_SpendLogs` 를 요청 단위로 묶는다(TE:7114-7134). 우리는 둘 다 `request_log` 를 그때그때 묶어서 만든다(§10).
+2. 날짜 버킷은 startTime 의 **UTC 날짜**다. 양 끝을 포함하고 정확한 `YYYY-MM-DD` 만 받는다. user aggregated 를 뺀 나머지는 400일 제한이 있다(§2.3). `timezone` 은 `include_current_utc_day` 와 함께일 때만 효과가 있다. usage 화면은 그 플래그를 보내지 않는다.
+3. 범위:
+   - user 는 관리자 2역할만 전체를 보고, 나머지는 자기 것으로 고정된다(다른 id 를 주면 403).
+   - team 은 비관리자면 내 팀으로 제한된다. 모든 요청 팀에서 팀 관리자이거나 `/team/daily/activity` 권한이 없으면 **내 키로만** 좁힌다(§3.2).
+4. 응답 `results[]` 는 날짜 내림차순이고 0 채우기가 없다. models·model_groups·providers·endpoints·mcp_servers 엔트리의 `metadata` 는 항상 `{}` 다. `api_keys[*].metadata` 는 활성 키 → 삭제 키 → 복구 순서로 `key_alias, team_id, user_id, user_email, key_exists` 를 채운다(§3.4). team 의 `entities` 는 `team_id`(없으면 `"Unassigned"`) → `{"team_alias":…}` 다.
+5. **렌더 예외 위험**: `day.metrics`·`entry.metrics` 가 없을 때, `metadata.total_*` 다섯 칸이 없거나 null 일 때(Keys 탭이 항상 마운트돼 있다), `/keys` 에 `total_api_keys` 가 없을 때, `/users` 에 `users`·`total_users` 가 없을 때, `/team/spend/by_user` 행에 요청 수 칸이 없을 때다(§3.5, §4.6, §5).
+6. **Logs 표는 항상 `group_by_session=true` 와 `sort_by=startTime` 을 보낸다.** 그래서 실제 응답은 세션 묶음 응답이다. 다음 쪽은 `has_more`·`next_session_cursor` 로만 연다(§6.3, §6.5).
+7. 로그 행에서 반드시 지킬 것은 넷이다.
+   - `data` 는 배열이다.
+   - `cache_hit` 은 **문자열**이다(boolean 이면 서랍 예외).
+   - `spend` 는 숫자다.
+   - 시각에 **`Z`/`+00:00`** 을 붙인다(없으면 현지 시각으로 해석된다).
+8. 실패 표시는 표가 `status` 를, 서랍이 `metadata.status` 를 본다. **둘 다** `"failure"` 로 넣는다. 키 열은 최상위 `api_key` 가 아니라 `metadata.user_api_key`·`user_api_key_alias`·`user_api_key_team_alias` 를 읽는다(§6.5).
+9. `/spend/logs/ui` 는 날짜 형식을 **`YYYY-MM-DD HH:MM:SS`(UTC) 하나만** 받는다. `total` 은 10,000 에서 자른다. 비관리자는 "내 행 OR 내가 관리하거나 `/spend/logs` 권한이 있는 팀의 행"을 본다(§6.4).
+10. 우리 표에 없는 것은 빈 값으로 낸다: endpoint, call_type, session, end_user, tags, cache, 본문, 오류 메시지. 이 값으로 거르는 필터는 빈 결과로 처리한다(§10).
 
 ---
 
@@ -368,7 +383,59 @@ __SUMMARY__
 - 주의: 비관리자이고 `team_id` 가 없고 request_id 조회도 아닌데 역할이 internal_user 계열이 아니면(또는 user_id 가 없으면) `user_scope_applies=false` → `AllRows()` 다(SME:2805-2812). 라우트 단계에서 네 역할만 들어오므로 실제로는 **user_id 없는 internal_user 키**만 해당한다. 우리는 이 경우를 "행 없음"으로 막는 것이 안전하다(litellm 과 다르다. 일탈로 기록할 것).
 
 ### 6.5 대시보드가 읽는 것
-__LOGS_READS__
+**요청** (NW:1986-2025, LG/request/useLogFilterLogic.ts:159-203)
+- `start_date`·`end_date` 는 항상 보낸다. `moment(x).utc().format("YYYY-MM-DD HH:mm:ss")` 로 만든 **UTC 값**이다(useLogFilterLogic.ts:64-74). 기본 창은 최근 24시간이고 시작 초는 항상 `:00` 이다(LG/request/LogsTableToolbar.tsx:16-34).
+- `page_size` 기본은 **25** 이고 25/50/100 중에서 고른다(LG/request/RequestLogsPanel.tsx:36).
+- **표는 항상 `group_by_session=true`** 를 보낸다(useLogFilterLogic.ts:200). 기본 정렬이 `startTime desc` 이므로 **실제로 쓰이는 길은 §6.3 세션 묶음 응답**이다.
+- `session_cursor` 는 "다음"으로 넘어온 쪽에서만 보낸다. 직전 응답의 `next_session_cursor` 를 쪽 번호별로 저장해 둔다(:141-142, RequestLogsPanel.tsx:219-226).
+- URL `log_id` 로 한 건을 열 때는 `request_id` 와 `page_size=1` 만 보내고 group_by_session 은 없다(RequestLogsPanel.tsx:143-151).
+- `sort_by` 값은 `startTime, spend, total_tokens, request_duration_ms, model, ttft_ms` 다(LG/types.ts:2-9).
+- 필터는 값이 있을 때만 보낸다(useLogFilterLogic.ts:181-196): `api_key, team_id, request_id, search, session_id, user_id, end_user, status_filter(success|failure), cache_hit_filter, used_client_oauth_token, span_type, model_id, model, key_alias, error_code, error_message`. `exclude_internal_health_checks` 는 true 일 때만 보낸다(NW:2009-2010). `min_spend`·`max_spend` 는 보내지 않는다.
+
+**응답 봉투** (RequestLogsPanel.tsx:175-179, 219-226)
+- `data`: **배열 필수**. 없으면 `rows.length`, `data.flatMap`(LG/request/RequestLogsTable.tsx:92)에서 예외다.
+- `total`: 행 수 계산에 쓴다(`Math.max(total, …)`). 없으면 NaN 이 되지만 예외는 없다.
+- `has_more`: `false` 면 마지막 쪽이다. 없으면 `rows.length < pageSize` 로 대신 판단한다.
+- `next_session_cursor`: 시간 정렬(기본)일 때 "다음" 버튼이 쓴다. null 이면 다음 쪽으로 못 간다.
+- `page`, `page_size`, `total_pages`, `total_is_capped`: 목록에서는 안 읽는다.
+
+**행 — 표 열** (LG/request/RequestLogsTableColumns.tsx = Cols)
+
+| 필드 | 근거 | 성격 / 없을 때 |
+|---|---|---|
+| `request_id` | RequestLogsTable.tsx:106, RequestLogsPanel.tsx:37-39, Cols:186-191 | 필수(행 id, 서랍 열기). batch call_type 이면 `.endsWith` 예외(`batchLogUtils.ts:40`) |
+| `startTime` | Cols:85 → `new Date(v)` (`shared/table_cells/date_cell.tsx:30`) | 필수. 잘못되면 "-" |
+| `status` → `metadata.status` → "Success" | Cols:146-147 | 필수. 소문자로 `"failure"` 일 때만 실패다 |
+| `metadata.user_api_key` | Cols:286 ("Key Hash" 열. 클릭하면 `keyInfoV1Call`, RequestLogsPanel.tsx:126) | 표시. **최상위 `api_key` 가 아니라 metadata 값을 읽는다** |
+| `metadata.user_api_key_alias` | Cols:294 | 표시 |
+| `metadata.user_api_key_team_alias` | Cols:278 | 표시 |
+| `metadata.user_api_key_user_email` | Cols:370 | 표시 |
+| `spend` | Cols:206-209 → `money_cell.tsx:16` | **JSON 숫자**여야 한다(문자열이면 "-") |
+| `request_duration_ms` | Cols:238-240 | null 이면 "-" |
+| `completionStartTime`, `endTime` | Cols:254-264 (TTFT) | 장식 |
+| `total_tokens`, `prompt_tokens`, `completion_tokens` | Cols:342-351 (`String(x \|\| "0")`) | 안전 |
+| `model`, `custom_llm_provider`(로고) | Cols:304-306 | 안전 |
+| `user`, `end_user` | Cols:367-381 | 표시 |
+| `session_id`, `session_total_count`(`\|\| 1`) | Cols:95,168,207,237,342, RequestLogsPanel.tsx:167,256 | `>1` 이면 세션 서랍(§8 호출)을 연다 |
+| `session_total_spend/duration_ms/tokens/prompt/completion`, `session_llm_count`, `session_agent_count`, `session_cache_hit_count`, `mcp_tool_call_count/spend` | Cols:98-134,206-209,238-239,342-345 | count>1 일 때만 쓴다. 없으면 행 값으로 대신한다 |
+| `session_models` | Cols:305-307 (`?? []`) | 배열이 아닌 값이 오면 `.join` 예외 |
+| `request_tags` | Cols:391-395 (`Object.entries`) | 안전 |
+| `call_type` | Cols:96-102 (MCP/agent/batch 배지, `LG/constants.ts:16-22`) | 배지 |
+| `litellm_call_id` | Cols:186, RequestLogsPanel.tsx:37-39 | 장식 |
+| 최상위 `api_key`, `team_id`, `organization_id`, `agent_id`, `mcp_namespaced_tool_name` | 로그 화면에서 안 읽는다 | — |
+
+**행 — 상세 서랍** (LG/detail/LogDetailsDrawer.tsx, LG/detail/LogDetailContent.tsx = LDC)
+- 상태 표시는 **`metadata.status === "failure"` 만** 본다(LogDetailsDrawer.tsx:269-270, LDC:79). 최상위 `status` 만 failure 로 주면 표는 실패, 서랍은 성공으로 나온다. **둘 다 채워야 한다.**
+- 오류 배너는 `metadata.error_information.{error_code,error_message,error_class}` 로 그린다(LDC:79-114, 329-343). 모두 안전하게 읽는다.
+- 환경 배지는 `metadata.user_api_key_team_alias || "default"` 다(LogDetailsDrawer.tsx:271).
+- **`cache_hit` 은 문자열이어야 한다.** `cacheHit?.toLowerCase()`(LG/detail/sections/CostBreakdownViewer.tsx:54) 때문에 boolean 이면 예외다. litellm 은 `"True"`/`"False"`/`""` 문자열을 저장한다(SP:739).
+- **`metadata.litellm_overhead_time_ms` 가 있으면 숫자여야 한다.** null 이 아니면 `.toFixed` 를 부른다(LDC:582-584).
+- `metadata.cost_breakdown`, `usage_object`/`additional_usage_values`, `guardrail_information`, `routing_decision`, `attempted_retries`/`max_retries` 등은 있을 때만 그린다(LDC:94-209, 395-602, CostBreakdownViewer.tsx:57-69). `metadata` 전체를 JSON 으로도 보여 준다(LDC:268).
+- `model, model_id, model_group, api_base, custom_llm_provider, call_type, user, requester_ip_address, cache_key` 는 장식이다(LDC:150-174, 487, `LG/detail/DrawerHeader.tsx:56-86`).
+
+**시각 해석**
+- `new Date(str)`, `Date.parse`, `moment(str)` 를 쓴다(date_cell.tsx:30, LogDetailsDrawer.tsx:69-277, DrawerHeader.tsx:297-300).
+- 오프셋이 없는 문자열은 **브라우저 현지 시각**으로 해석된다. 그러므로 **`Z` 또는 `+00:00` 을 반드시 붙여야** 한다. 화면은 현지 시간대로 보여 준다.
 
 ---
 
@@ -379,7 +446,9 @@ __LOGS_READS__
 - 응답:
   - 행이 없고 커스텀 로거 결과도 없으면 **`null`**(HTTP 200, 본문 `null`)이다(SME:3472-3473).
   - 있으면 `{"messages": …, "response": …, "proxy_server_request": …}` 세 칸뿐이다(`RequestResponsePayload._asdict()`, SME:3267-3270, 3481-3482). DB 에 프롬프트를 저장하지 않으면 각 칸은 `{}` 이다. 콜드 스토리지 키가 있으면 거기서 가져온다(SME:3324-3387).
-- 대시보드가 읽는 것: __DETAIL_READS__
+- 대시보드가 읽는 것: `messages`, `response`, `proxy_server_request` 셋만 읽는다. 각각 값이 truthy 일 때만 쓰고, 아니면 목록 행 값을 쓴다(LogDetailsDrawer.tsx:256-263). `null`·`{}` 본문도 안전하다.
+  - 요청의 `start_date` 는 표 창의 시작이다(RequestLogsPanel.tsx:350, NW:4779-4805).
+  - 2xx 가 아니면 `response.json()` 후 토스트를 띄운다. 그러므로 **오류 본문도 JSON** 이어야 한다.
 
 ## 8. `GET /spend/logs/session/ui` (SME:4536-4637)
 - 쿼리: `session_id`(필수, **정확히 일치**), `page`(기본 1), `page_size`(기본 50, **1..100**).
@@ -389,7 +458,10 @@ __LOGS_READS__
   - `metadata` 는 객체로 풀어 준다. 정렬은 `startTime DESC` 다.
   - `total_is_capped` 는 없다.
 - 오류: DB 가 없으면 500 (B) `{"detail":"Database not connected"}`, 그 밖은 500 (B) `{"detail":"<str(e)>"}` 다(SME:4630-4637).
-- 대시보드가 읽는 것: __SESSION_READS__
+- 대시보드가 읽는 것 (NW:5559-5597, LogDetailsDrawer.tsx:63-285):
+  - 요청: `page_size=100` 으로 최대 50쪽까지, 5개씩 동시에 받는다(:138-157).
+  - 봉투: `data`(`firstPage.data || firstPage`. **`{}` 면 `.map` 예외**), `total_pages`(`?? 1`), `total`(`?? rows.length`).
+  - 행: `request_id, startTime, endTime, request_duration_ms`(없으면 end-start), `spend, total_tokens, call_type, model, model_group, cache_hit, metadata.internal_call_origin`.
 
 ## 9. `GET /management/v1/spend_logs/users` 와 `/end_users` (MV1:154-240)
 - 쿼리(선언되지 않은 쿼리를 주면 400 RFC 9457 problem, LAC:97-107):
@@ -408,10 +480,103 @@ __LOGS_READS__
 ```
   - `links.self` 는 alias 이름이다. `next`·`prev` 는 경로에 쿼리를 붙인 상대 URL 이고, 없으면 null 이다(LAC:110-120).
 - 오류는 RFC 9457 `application/problem+json` `{"type":"urn:litellm:error:…","title","status","detail"}` 이다. DB 가 없으면 503, 그 밖은 500 `"Failed to list spend log users."` 다(MV1:75-83, 139-151, LAC:26-39).
-- 대시보드가 읽는 것: __FACET_READS__
+- 대시보드가 읽는 것 (`app/(dashboard)/hooks/spendLogs/useSpendLogUsers.ts`, `useSpendLogEndUsers.ts`):
+  - 요청: `filter[startTime][gte|lte]` 는 표와 같은 UTC `"YYYY-MM-DD HH:mm:ss"` 값이다. 공백 구분이고 오프셋이 없다. FastAPI datetime 파싱이 받는 형식이다. 미확인: pydantic 버전별로 공백 구분을 받는지. 그 밖에 `page_size=25`, `q`(있을 때만), `page` 를 보낸다.
+  - `data` 는 **배열 필수**다(`.flatMap`, LG/request/RequestLogsFilters.tsx:194,239).
+  - 다음 쪽은 **`links.next` 안의 `page=` 값**으로 정한다. 없거나 null 이면 멈춘다(useSpendLogEndUsers.ts:14-19). 따라서 `links` 객체는 반드시 있어야 한다.
+  - `meta.has_more` 는 안 읽는다.
 
 ---
 
 ## 10. 우리 request_log 로 만들 수 있는 것 / 없는 것
 
-__MAPPING__
+전제가 둘 있다.
+- litellm 은 일별 표를 미리 쌓아 두지만, 우리는 `request_log` 를 그때그때 묶어서 같은 응답을 만든다.
+- 날짜 버킷은 `(created_at AT TIME ZONE 'UTC')::date` 로 litellm 과 같게 둔다(§2.1).
+
+표기는 셋이다: **직접**(request_log 칸), **조인**(다른 표와 묶어서 얻음), **없음**(안전한 빈 값을 냄).
+
+### 10.1 일별 집계 (`/aggregated`, `/keys`, `/search`, `/model_top_keys`, `/users`, `/export`)
+
+| 필요한 값 | 출처 | 값 |
+|---|---|---|
+| `date` | 직접 | `created_at` 의 UTC 날짜 `YYYY-MM-DD` |
+| `spend` | 직접 | `SUM(cost)`. JSON **숫자**로 낸다 |
+| `prompt_tokens`, `completion_tokens` | 직접 | SUM. `total_tokens` 는 둘의 합(CDA:725 와 같음) |
+| `api_requests` | 직접 | `COUNT(*)` |
+| `successful_requests` / `failed_requests` | 직접 | `status='success'` / `status IN ('error','cancelled')`. litellm 은 `metadata.status=='failure'` 만 실패로 센다. 우리 cancelled 를 실패에 넣을지는 결정 사항이다(litellm 의 클라이언트 끊김 기록 방식은 미확인) |
+| `total_response_time_ms`, `timed_requests` | 직접 | 성공 행만 대상으로 `SUM(latency_ms)`, `COUNT(*)` 다(DSW:321-331 과 같은 규칙) |
+| `cache_read_input_tokens`, `cache_creation_input_tokens`, `compression_*`, `*_savings_spend`, `flat_cost`, `ptu_hours` | 없음 | `0` (칸은 반드시 낸다. null 금지, §3.5) |
+| `breakdown.model_groups` 키 | 직접 | `model` (우리 모델 그룹 이름) |
+| `breakdown.models` 키 | 조인 | `model_deployment.upstream_model` (`deployment_id`). 배포를 지웠거나 deployment_id 가 null 이면 `model` 로 대신한다(litellm 의 `COALESCE(model_group, model)` 과 반대 방향의 대체) |
+| `breakdown.providers` 키 | 조인 | `model_deployment.provider`. 없으면 `"unknown"` (CDA:830 과 같음) |
+| `breakdown.endpoints` | 없음 | `{}`. call_type 칸이 없다. 채팅만 중계하는 동안 `"/chat/completions"` 상수로 낼 수도 있다(결정 사항) |
+| `breakdown.mcp_servers` | 없음 | `{}` |
+| `breakdown.api_keys` 키 | 직접 | `key_token`. key_token 이 null 인 행은 litellm 의 `api_key=""` 에 해당한다. 미확인: 그런 행이 키 목록에 어떻게 나오는지 |
+| `api_keys[*].metadata.key_alias/team_id/user_id` | 조인 | `api_key` 에 있으면 그 값과 `key_exists=true`. 없으면 `deleted_api_key`(같은 token 중 가장 늦게 지운 것)와 `key_exists=false`. 둘 다 없으면 전부 null 과 `key_exists=false` |
+| `api_keys[*].metadata.user_email` | 조인 | `app_user.user_email` (위에서 얻은 user_id 기준) |
+| litellm 고유 복구(CLI 세션 키, 이중 해시, SpendLogs metadata, §3.4 의 3·4단계) | 없음 | 하지 않는다. 우리 키 형식에는 해당하지 않는다 |
+| `entities` (team) 키 | 직접 | `team_id`. null·빈 값이면 `"Unassigned"` |
+| `entities[*].metadata.team_alias` | 조인 | `team.team_alias`. 팀이 없으면 `{}` |
+| `api_key_breakdown`, `api_key_limit` | 직접 | (차원, key_token) 묶음. 기간 spend 상위 N 키로 제한한다(DSQL:140-148) |
+| `metadata.total_api_keys`, `entity_total_api_keys` | 직접 | `COUNT(DISTINCT key_token)` (전체 / 팀별) |
+| `/users` 행 `user_email`, `user_alias` | 조인 | `app_user` |
+| `/team/spend/by_user` 전체 | 직접 + 조인 | `(team_id, user_id)` 로 묶고 `app_user`, `team` 과 조인한다. 날짜는 `created_at >= start AND < end+1일` (UTC) |
+| `/export` `entity_alias` | 조인 | team 이면 `team.team_alias`, user 면 null |
+| `/export` `key_alias`, `user_id`, `user_email` | 조인 | 위 키 메타데이터와 같다 |
+
+### 10.2 요청 로그 (`/spend/logs/ui`, `/session/ui`, `/{request_id}`)
+
+| 행 필드 | 출처 | 값 |
+|---|---|---|
+| `request_id` | 직접 | `request_id` |
+| `litellm_call_id` | 직접 | `request_id` 와 같은 값 |
+| `startTime` | 직접 | `created_at`. RFC 3339 **`Z` 포함**(§6.5) |
+| `endTime` | 직접 | `created_at + latency_ms` |
+| `completionStartTime` | 직접 | `created_at + ttft_ms`. ttft 가 null 이면 null |
+| `request_duration_ms` | 직접 | `latency_ms` |
+| `spend` | 직접 | `cost` (숫자) |
+| `prompt_tokens`, `completion_tokens`, `total_tokens` | 직접 | `total_tokens` 는 합 |
+| `model_group` | 직접 | `model` |
+| `model_id` | 직접 | `deployment_id` |
+| `model` | 조인 | `model_deployment.upstream_model`. 없으면 `model` |
+| `custom_llm_provider` | 조인 | `model_deployment.provider`. 없으면 `""` |
+| `api_base` | 조인 | `model_deployment.base_url`. 장식이라 `""` 도 된다 |
+| `api_key`, `metadata.user_api_key` | 직접 | `key_token` (표의 Key Hash 열은 metadata 쪽을 읽는다) |
+| `metadata.user_api_key_alias` | 조인 | `api_key.key_alias`. 없으면 `deleted_api_key`. litellm 은 요청 시점 값을 저장하지만 우리는 현재 값을 낸다. 일탈로 기록할 것 |
+| `metadata.user_api_key_team_id`, `user_api_key_user_id` | 직접 | `team_id`, `user_id` |
+| `metadata.user_api_key_team_alias` | 조인 | `team.team_alias` |
+| `metadata.user_api_key_user_email` | 조인 | `app_user.user_email` |
+| `user`, `team_id` | 직접 | `user_id`, `team_id` |
+| `status`, `metadata.status` | 직접 | `success` → `"success"`, `error`·`cancelled` → `"failure"`. **두 곳 모두** 넣는다(§6.5) |
+| `metadata.error_information.error_code` | 직접 | litellm 은 HTTP 상태 문자열이다(예: `"404"`, SME:2580). 실패 행이면 `http_status` 를 문자열로 낸다. 우리 `error_code` 를 넣을지는 결정 사항이다 |
+| `metadata.error_information.error_message` | 없음 | 본문을 저장하지 않으므로 null 또는 `error_code` 다. `error_message` 필터는 아무 행도 맞지 않게 한다 |
+| `call_type` | 없음 | `"acompletion"` (채팅만 중계하는 동안). null 이어도 표는 `.includes` 비교만 하므로 예외가 없다(Cols:96-102, `components/logs/batchLogUtils.ts:19`). 다른 곳은 확인하지 않았다 |
+| `cache_hit` | 없음 | **문자열 `""`** (boolean 이면 예외, §6.5). `cache_key` 도 `""` |
+| `session_id` | 없음 | null. 그러면 `session_total_count=1` 이고, 세션 서랍과 `/spend/logs/session/ui` 는 불리지 않는다(RequestLogsPanel.tsx:167,256) |
+| `end_user`, `organization_id`, `requester_ip_address`, `agent_id`, `mcp_namespaced_tool_name` | 없음 | null |
+| `request_tags` | 없음 | `[]` |
+| `messages`, `response`, `proxy_server_request` (`/{request_id}`) | 없음 | `{"messages":{},"response":{},"proxy_server_request":{}}`. litellm 이 프롬프트를 저장하지 않을 때와 같은 모양이다(SME:3337-3351). 권한이 있고 행이 없으면 `null` |
+| `metadata.litellm_overhead_time_ms`, `cost_breakdown`, `usage_object` 등 | 없음 | 넣지 않는다. 넣는다면 `litellm_overhead_time_ms` 는 숫자만 넣는다 |
+
+**필터와 정렬 대응** (§6.1)
+- `user_id`, `team_id`, `api_key`, `model_id`, `model`(upstream 조인), `request_id`, `status_filter` 는 그대로 대응한다.
+- `key_alias` 는 alias 조인 후 LIKE 로 처리한다.
+- `error_code` 는 http_status 로 처리한다.
+- `search` 는 `request_id`, `key_token`, `team_id`, `user_id`, `deployment_id` 다섯 칸으로 찾는다. end_user·session 은 없다.
+- 맞는 행이 있을 수 없는 필터는 **빈 결과**로 처리한다(무시하면 결과가 너무 많이 나온다). 해당 필터: `end_user`, `session_id`, `cache_hit_filter=hit`, `span_type∈{agent,mcp,batch}`, `used_client_oauth_token`.
+- `cache_hit_filter=miss` 와 `span_type=llm` 은 모든 행이 맞는다.
+- 정렬 대응: `startTime`→`created_at`, `endTime`→`created_at+latency_ms`, `request_duration_ms`→`latency_ms`, `ttft_ms`→`ttft_ms NULLS LAST`, `spend`→`cost`, `total_tokens`→합, `model`→upstream.
+
+**세션 묶음** (§6.3)
+- session_id 가 없으면 모든 행이 혼자 한 세션이다. 그래서 `group_by_session=true` 응답은 평면 목록과 같은 행을 낸다. 키셋 순서는 `(created_at, request_id, key_token)` 이다.
+- 대신 `has_more`(page_size+1 개를 읽어 판단)와 `next_session_cursor` 를 꼭 넣어야 한다. 커서는 대시보드가 그대로 돌려보내기만 하므로(§6.5) 모양을 litellm 과 맞출 필요는 없다. 다만 `<last_activity>|<api_key>|<session_key>` 를 그대로 쓰는 편이 단순하다.
+- `total` 은 10,000 에서 자른다.
+
+**`/management/v1/spend_logs/users`·`/end_users`**
+- `users` 는 `DISTINCT user_id` 다. §9 규칙(창 안 최근 10,000 행, 오름차순, 범위)을 그대로 따른다.
+- `end_users` 는 **없음**이다. `{"data":[],"meta":{…,"has_more":false},"links":{"self":"…","prev":null,"next":null}}` 를 낸다.
+
+**범위(권한)**
+- §3.2·§5·§6.4 의 판정은 우리 표만으로 모두 할 수 있다. 필요한 표는 `app_user.user_role`, `team_member.role='admin'`, 팀 멤버 권한(`/team/daily/activity`, `/spend/logs`), `api_key.user_id` 다.
+- 팀 멤버 권한 목록을 어디에 두는지는 H·I 문서를 따른다. 미확인: 우리 스키마에 팀별 member_permissions 가 있는지.

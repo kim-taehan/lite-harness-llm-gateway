@@ -291,6 +291,40 @@ func archiveAndDelete(ctx context.Context, q core.Querier, where string, deleted
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
+// Regenerate 는 키의 원문을 새로 만든다(J 3.9). 같은 행의 token 을 새 해시로 바꾸므로 사용자·팀·설정은 이어진다.
+// litellm 처럼 옛 행은 deleted_api_key 에 사본으로 남긴다. 옛 원문은 바로 쓸 수 없게 된다. 실패: ErrKeyNotFound, *InvalidCustomKeyError
+func (k *Keys) Regenerate(ctx context.Context, token string, newKey *string, by string) (string, Key, error) {
+	plain := generateKey()
+	if newKey != nil {
+		if err := validateCustomKey(*newKey); err != nil {
+			return "", Key{}, err
+		}
+		plain = *newKey
+	}
+	var regenerated Key
+	err := k.db.InTx(ctx, func(ctx context.Context) error {
+		tag, err := k.db.Q(ctx).Exec(ctx, `
+			INSERT INTO deleted_api_key (id, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
+			                             blocked, expires, created_by, updated_by, created_at, updated_at, deleted_by)
+			SELECT gen_random_uuid()::text, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
+			       blocked, expires, created_by, updated_by, created_at, updated_at, $2 FROM api_key WHERE token = $1`, token, by)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrKeyNotFound
+		}
+		regenerated, err = scanKey(k.db.Q(ctx).QueryRow(ctx, `
+			UPDATE api_key SET token = $2, key_name = $3, updated_by = $4, updated_at = now() WHERE token = $1 RETURNING `+keyColumns,
+			token, hashKey(plain), keyName(plain), by))
+		return err
+	})
+	if err == nil {
+		k.cache.forget(token)
+	}
+	return plain, regenerated, err
+}
+
 // SetBlocked 는 차단을 바꾸고 캐시에서 지운다
 func (k *Keys) SetBlocked(ctx context.Context, token string, blocked bool, by string) (Key, error) {
 	return k.Update(ctx, token, KeyPatch{Blocked: core.To(blocked), UpdatedBy: by})
