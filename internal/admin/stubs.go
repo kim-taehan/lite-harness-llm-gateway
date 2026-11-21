@@ -227,8 +227,7 @@ func stubs() []stub {
 		stubUnsupported("CloudZero", "POST /cloudzero/dry-run"),
 		stubUnsupported("CloudZero", "DELETE /cloudzero/delete"),
 
-		// logs: 감사 로그·규정 준수
-		stubOK("GET /audit", `{"audit_logs":[],"total":0,"page":1,"page_size":50,"total_pages":0}`),
+		// logs: 규정 준수(감사 로그는 auditlog.go)
 		stubUnsupported("Compliance checks", "POST /compliance/eu-ai-act"),
 		stubUnsupported("Compliance checks", "POST /compliance/gdpr"),
 

@@ -305,7 +305,7 @@ type CounterStore interface {
 - `limit_policy`(`limits` 소유, scope=키·팀 + 대상 id): `max_budget`, `spend`, `tpm_limit`, `rpm_limit`, `max_parallel`, `budget_duration`, `budget_reset_at`
 - `api_key`·`team`(`auth` 소유): `blocked`
 - `model_deployment`: `input_cost_per_token`, `output_cost_per_token`(없으면 비용 0)
-- `audit_log`: 관리 변경 기록(litellm 은 유료라 쓰지 않았지만 운영자에게 필요하다). 후순위로 둬도 된다
+- `audit_log`: 관리 변경 기록(litellm 은 유료라 쓰지 않았지만 운영자에게 필요하다). 9장에 기록 범위
 - 키 재생성은 `key_hash` 교체 + 옛 해시 유예 기간(`previous_key_hash`, `previous_expires_at`)
 
 **넣지 않을 것**: 조직·프로젝트·고객, MCP·에이전트·벡터·프롬프트·워크플로 같은 부가 기능 테이블 약 50개, 삭제 사본 테이블(soft delete 로 대체), 일별 롤업(처음에는 `request_log` GROUP BY. 느려지면 추가), 요청·응답 본문 컬럼(litellm 도 기본 꺼짐. 폐쇄망 감사에 본문이 필요하다고 정해지면 추가).
@@ -320,7 +320,7 @@ type CounterStore interface {
 | `limit_policy` | limits | `scope`(`key`·`team`), `target_id`, `max_budget`, `spend`, `tpm_limit`, `rpm_limit`, `max_parallel`, `budget_duration`, `budget_reset_at`, `updated_at`, PK(scope, target_id) |
 | `model_deployment` | inference | `id`, `model_name`(클라이언트가 부르는 이름, 그룹), `provider`, `base_url`, `upstream_model`, `api_key_encrypted`, `weight`, `order`, `max_parallel`, `input_cost_per_token`, `output_cost_per_token`, `active`, `created_at`, `updated_at` |
 | `request_log` | limits | `request_id`, `created_at`, `key_id`, `user_id`, `team_id`, `model`, `deployment_id`, `prompt_tokens`, `completion_tokens`, `usage_source`(`provider`·`estimate`), `cost`, `status`(`success`·`error`·`cancelled`), `http_status`, `error_code`, `latency_ms`, `ttft_ms` |
-| `audit_log` | admin | `id`, `created_at`, `actor_user_id`, `action`, `target_type`, `target_id`, `before`, `after`(jsonb, 비밀 값 제외) |
+| `audit_log` | admin | `id`, `updated_at`, `changed_by`, `changed_by_api_key`, `action`, `table_name`, `object_id`, `before_value`, `updated_values`(jsonb, 비밀 값 제외). litellm LiteLLM_AuditLog 와 같은 모양이라 대시보드 감사 화면이 그대로 읽는다 |
 
 - 다른 모듈의 id 를 가리키는 컬럼(`request_log.key_id`, `limit_policy.target_id` 등)에는 외래 키를 걸지 않는다. 모듈 경계를 넘는 제약이고, 삭제는 soft delete 라 고아 행이 생기지 않는다. 같은 모듈 안(`api_key.team_id → team`)에는 건다
 - `request_log` 인덱스: (`created_at`), (`key_id`, `created_at`), (`team_id`, `created_at`), (`user_id`, `created_at`). 파티셔닝은 보관 기간 삭제가 느려지면 월 단위로 추가한다
@@ -360,6 +360,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 대시보드 세션 키도 데스크탑과 같은 자기 완결 로그인 키다(`L_dashboard_login_contract.md`). litellm 은 로그인마다 DB 에 가상 키(`team_id="litellm-dashboard"`, 예산 1 USD)를 하나씩 만들고 지우지 않는다. 그래서 세션 키에 1 USD 예산이 없고 `/key/list` 에 나올 일이 없다. 로그아웃은 그 사용자의 대시보드 세션을 **모두** 끊는다(사용자 행의 `ui_sessions_revoked_at` 보다 먼저 발급된 세션을 거부한다. litellm 은 그 세션 하나만). 데스크탑 로그인 키는 로그아웃과 상관없다
 - 대시보드 세션도 7일간 유효하다(litellm `LITELLM_UI_SESSION_DURATION` 기본 24시간)
 - 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 SSO 만 넣은 빌드에서도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 비밀번호를 넣은 빌드에서만 된다
+- 감사 로그(`/audit`, `/audit/{id}`)는 litellm 에서 유료 기능이라 비어 있지만 우리는 무료로 기록한다. 키·팀·사용자의 생성·수정·삭제·차단·해제·재발급(팀원 변경은 팀 수정)을 응답이 성공일 때만 남긴다. `updated_values` 는 요청 본문(키 원문·비밀번호 제외)이고 `before_value` 는 아직 비어 있다(litellm 은 바뀌기 전 행을 싣는다). 대상은 키 해시·팀 id·사용자 id 다. 모델·설정 변경과 일괄 수정(`/user/bulk_update`)은 아직 기록하지 않는다. 조회는 `proxy_admin`·`proxy_admin_viewer` 만 된다
 - 키 재발급(`/key/{key}/regenerate`)의 `grace_period`(옛 키를 정한 시간 동안 더 받기)는 아직 받지 않는다. 재발급하면 옛 키는 바로 401 이다(뒤 단계)
 - 팀원별 예산(`max_budget_in_team`, 팀원 예산 일괄 수정)은 아직 없다. 팀원 사용액은 늘 0 이고, 값을 정하려는 요청은 결과 행에 실패로 남긴다(뒤 단계)
 - 모델 추가 폼의 제공자는 우리가 중계하는 Ollama·Ollama Chat·Hosted vLLM 만 보인다. 업스트림 API 키(`api_key` 등)는 저장하지 않는다

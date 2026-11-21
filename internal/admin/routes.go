@@ -23,6 +23,7 @@ type Handlers struct {
 	usage       *limits.UsageQuery
 	settings    *core.Settings
 	rows        rows
+	audit       *auditLog
 	now         func() time.Time
 	logger      *slog.Logger
 }
@@ -43,7 +44,7 @@ type Deps struct {
 
 func NewHandlers(d Deps) *Handlers {
 	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, deployments: d.Deployments, usage: d.Usage,
-		settings: d.Settings, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, now: d.Now, logger: d.Logger}
+		settings: d.Settings, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
 }
 
 // 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.
@@ -53,6 +54,7 @@ var (
 	adminOnly     = core.Roles(core.RoleProxyAdmin)
 	keyManagement = core.Roles(core.RoleInternalUser)
 	keyAliases    = core.Roles(core.RoleProxyAdminViewer, core.RoleInternalUser)
+	auditViewer   = core.Roles(core.RoleProxyAdminViewer)
 	handlerDecide = core.Authenticated()
 	spendTracking = core.Roles(core.RoleInternalUser, core.RoleInternalUserViewer)
 )
@@ -63,14 +65,14 @@ func (h *Handlers) Routes() []core.Route {
 		return core.Route{Method: method, Path: path, Access: access, Handler: handler}
 	}
 	return append(h.stubRoutes(),
-		route(http.MethodPost, "/team/new", adminOnly, h.createTeam),
-		route(http.MethodPost, "/team/update", handlerDecide, h.updateTeam),
-		route(http.MethodPost, "/team/delete", adminOnly, h.deleteTeams),
-		route(http.MethodPost, "/team/block", adminOnly, h.blockTeam),
-		route(http.MethodPost, "/team/unblock", adminOnly, h.unblockTeam),
-		route(http.MethodPost, "/team/member_add", handlerDecide, h.addMember),
-		route(http.MethodPost, "/team/member_delete", handlerDecide, h.deleteMember),
-		route(http.MethodPost, "/team/member_update", handlerDecide, h.updateMember),
+		route(http.MethodPost, "/team/new", adminOnly, h.audited("created", auditTeamTable, idsFrom("team_id"), h.createTeam)),
+		route(http.MethodPost, "/team/update", handlerDecide, h.audited("updated", auditTeamTable, idsFrom("team_id"), h.updateTeam)),
+		route(http.MethodPost, "/team/delete", adminOnly, h.audited("deleted", auditTeamTable, idsFrom("team_ids"), h.deleteTeams)),
+		route(http.MethodPost, "/team/block", adminOnly, h.audited("blocked", auditTeamTable, idsFrom("team_id"), h.blockTeam)),
+		route(http.MethodPost, "/team/unblock", adminOnly, h.audited("unblocked", auditTeamTable, idsFrom("team_id"), h.unblockTeam)),
+		route(http.MethodPost, "/team/member_add", handlerDecide, h.audited("updated", auditTeamTable, idsFrom("team_id"), h.addMember)),
+		route(http.MethodPost, "/team/member_delete", handlerDecide, h.audited("updated", auditTeamTable, idsFrom("team_id"), h.deleteMember)),
+		route(http.MethodPost, "/team/member_update", handlerDecide, h.audited("updated", auditTeamTable, idsFrom("team_id"), h.updateMember)),
 		route(http.MethodGet, "/team/info", handlerDecide, h.teamInfo),
 		route(http.MethodGet, "/team/list", handlerDecide, h.listTeamsV1),
 		route(http.MethodGet, "/v2/team/list", handlerDecide, h.listTeamsV2),
@@ -82,9 +84,9 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/team/{team_id}/member/{user_id}/reset_spend", handlerDecide, h.resetTeamMemberSpend),
 		route(http.MethodPost, "/team/{team_id}/member/{user_id}/reset_budget", handlerDecide, h.resetTeamMemberBudget),
 		route(http.MethodPost, "/management/v1/teams/{team_id}/members/bulk_update", handlerDecide, h.bulkUpdateMemberBudgets),
-		route(http.MethodPost, "/user/new", adminOnly, h.createUser),
-		route(http.MethodPost, "/user/update", adminOnly, h.updateUser),
-		route(http.MethodPost, "/user/delete", adminOnly, h.deleteUsers),
+		route(http.MethodPost, "/user/new", adminOnly, h.audited("created", auditUserTable, idsFrom("user_id"), h.createUser)),
+		route(http.MethodPost, "/user/update", adminOnly, h.audited("updated", auditUserTable, idsFrom("user_id"), h.updateUser)),
+		route(http.MethodPost, "/user/delete", adminOnly, h.audited("deleted", auditUserTable, idsFrom("user_ids"), h.deleteUsers)),
 		route(http.MethodGet, "/user/info", handlerDecide, h.userInfo),
 		route(http.MethodGet, "/v2/user/info", handlerDecide, h.userInfoV2),
 		route(http.MethodGet, "/user/list", handlerDecide, h.listUsers),
@@ -93,19 +95,21 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/user/bulk_update", adminOnly, h.bulkUpdateUsers),
 		route(http.MethodPost, "/team/bulk_member_add", adminOnly, h.bulkAddTeamMembers),
 		route(http.MethodPost, "/invitation/new", handlerDecide, h.createInvitation),
-		route(http.MethodPost, "/key/generate", keyManagement, h.generateKey),
-		route(http.MethodPost, "/key/update", keyManagement, h.updateKey),
-		route(http.MethodPost, "/key/delete", keyManagement, h.deleteKeys),
+		route(http.MethodPost, "/key/generate", keyManagement, h.audited("created", auditKeyTable, keyTargets, h.generateKey)),
+		route(http.MethodPost, "/key/update", keyManagement, h.audited("updated", auditKeyTable, keyTargets, h.updateKey)),
+		route(http.MethodPost, "/key/delete", keyManagement, h.audited("deleted", auditKeyTable, keyTargets, h.deleteKeys)),
 		route(http.MethodGet, "/key/info", handlerDecide, h.keyInfo),
 		route(http.MethodGet, "/key/list", handlerDecide, h.listKeys),
 		route(http.MethodGet, "/key/aliases", keyAliases, h.keyAliases),
-		route(http.MethodPost, "/key/block", keyManagement, h.blockKey),
-		route(http.MethodPost, "/key/unblock", keyManagement, h.unblockKey),
+		route(http.MethodPost, "/key/block", keyManagement, h.audited("blocked", auditKeyTable, keyTargets, h.blockKey)),
+		route(http.MethodPost, "/key/unblock", keyManagement, h.audited("unblocked", auditKeyTable, keyTargets, h.unblockKey)),
 		// 키는 sk-… 나 sha256 hex 라 / 가 없다
 		route(http.MethodPost, "/key/{key}/reset_spend", keyManagement, h.resetKeySpend),
-		route(http.MethodPost, "/key/{key}/regenerate", keyManagement, h.regenerateKey),
-		route(http.MethodPost, "/key/regenerate", keyManagement, h.regenerateKey),
-		route(http.MethodPost, "/key/service-account/generate", keyManagement, h.generateServiceAccountKey),
+		route(http.MethodPost, "/key/{key}/regenerate", keyManagement, h.audited("rotated", auditKeyTable, keyTargets, h.regenerateKey)),
+		route(http.MethodPost, "/key/regenerate", keyManagement, h.audited("rotated", auditKeyTable, keyTargets, h.regenerateKey)),
+		route(http.MethodPost, "/key/service-account/generate", keyManagement, h.audited("created", auditKeyTable, keyTargets, h.generateServiceAccountKey)),
+		route(http.MethodGet, "/audit", auditViewer, h.listAudit),
+		route(http.MethodGet, "/audit/{id}", auditViewer, h.getAudit),
 		route(http.MethodPost, "/model/new", adminOnly, h.createModel),
 		route(http.MethodPost, "/model/delete", adminOnly, h.deleteModel),
 		route(http.MethodPatch, "/model/{model_id}/update", adminOnly, h.updateModel),
