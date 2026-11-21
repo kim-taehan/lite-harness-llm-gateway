@@ -1,5 +1,5 @@
 // Package admin 은 litellm 대시보드가 부르는 관리 API 다. 경로·요청·응답 모양을 litellm 과 같게 맞추고,
-// 여러 모듈(auth 신원 + limits 한도)의 값을 합친 응답을 여기서 조립한다(설계 3장). 자기 테이블은 audit_log(뒤 단계) 하나다.
+// 여러 모듈(auth 신원 + limits 한도)의 값을 합친 응답을 여기서 조립한다(설계 3장). 자기 테이블은 아직 없다(audit_log 를 넣으면 하나가 된다).
 package admin
 
 import (

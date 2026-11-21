@@ -1,5 +1,5 @@
 // Package limits 는 한도와 사용량을 맡는다: 키·팀·사용자의 예산·RPM·TPM·동시성 설정(limit_policy),
-// 그리고 (뒤 단계) 요청 검사와 사용량 기록.
+// 요청 검사(Gate)와 사용량 기록·조회.
 package limits
 
 import (
@@ -49,7 +49,7 @@ type InvalidError struct{ Message string }
 
 func (e *InvalidError) Error() string { return e.Message }
 
-// Policies 는 한도 설정의 저장·조회다. 지금은 저장만 하고, 요청을 막는 검사는 M3 에서 붙인다
+// Policies 는 한도 설정의 저장·조회다. 요청을 막는 검사는 Gate 가 한다
 type Policies struct {
 	db  *core.DB
 	now func() time.Time
@@ -80,6 +80,32 @@ func (p *Policies) Find(ctx context.Context, scope Scope, ids []string) (map[str
 			return nil, err
 		}
 		result[id] = pol
+	}
+	return result, rows.Err()
+}
+
+// FindSubject 는 대상 종류마다 id 하나씩의 한도를 쿼리 한 번으로 읽는다(요청마다 도는 Gate 용). 한도를 정하지 않은 종류는 결과에 없다
+func (p *Policies) FindSubject(ctx context.Context, ids map[Scope]string) (map[Scope]Policy, error) {
+	scopes, targets := make([]string, 0, len(ids)), make([]string, 0, len(ids))
+	for scope, id := range ids {
+		scopes, targets = append(scopes, string(scope)), append(targets, id)
+	}
+	rows, err := p.db.Q(ctx).Query(ctx, `
+		SELECT l.scope, l.max_budget, l.soft_budget, l.spend, l.tpm_limit, l.rpm_limit, l.max_parallel_requests, l.budget_duration, l.budget_reset_at
+		FROM limit_policy l JOIN unnest($1::text[], $2::text[]) AS want(scope, target_id) USING (scope, target_id)`, scopes, targets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[Scope]Policy{}
+	for rows.Next() {
+		var scope Scope
+		var pol Policy
+		if err := rows.Scan(&scope, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.RPMLimit,
+			&pol.MaxParallelRequests, &pol.BudgetDuration, &pol.BudgetResetAt); err != nil {
+			return nil, err
+		}
+		result[scope] = pol
 	}
 	return result, rows.Err()
 }

@@ -68,13 +68,9 @@ const slotLease = 10 * time.Minute
 // Admit 은 통과하면 Permit, 막으면 litellm 모양 오류(core.ProxyError)다
 func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 	ids := s.ids()
-	policies := map[Scope]Policy{}
-	for scope, id := range ids {
-		found, err := g.policies.Find(ctx, scope, []string{id})
-		if err != nil {
-			return nil, err
-		}
-		policies[scope] = found[id]
+	policies, err := g.policies.FindSubject(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
 	for _, scope := range []Scope{ScopeKey, ScopeTeam, ScopeUser} {
 		if p, ok := policies[scope]; ok && p.MaxBudget != nil && p.Spend >= *p.MaxBudget {

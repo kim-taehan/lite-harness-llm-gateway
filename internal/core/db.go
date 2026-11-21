@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -34,9 +33,6 @@ func (d *DB) Q(ctx context.Context) Querier {
 	}
 	return d.pool
 }
-
-// ErrRollback 을 fn 이 돌려주면 오류 없이 되돌린다. 예상되는 실패(검증 실패 등)로 쓰기를 취소할 때 쓴다
-var ErrRollback = errors.New("rollback")
 
 // InTx 는 fn 을 한 트랜잭션에서 실행한다. 이미 트랜잭션 안이면 그 트랜잭션에 참여한다.
 // fn 이 오류를 돌려주면 되돌리고 그 오류를 그대로 돌려준다

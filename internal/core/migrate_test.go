@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -50,14 +51,15 @@ func TestMigrate_RefusesChangedAppliedFile(t *testing.T) {
 func TestInTx_RollsBackOnError(t *testing.T) {
 	db, pool := dbtest.Open(t)
 	ctx := t.Context()
+	failure := errors.New("검증 실패")
 
 	err := db.InTx(ctx, func(ctx context.Context) error {
 		if _, err := db.Q(ctx).Exec(ctx, "INSERT INTO team (team_id) VALUES ('t1')"); err != nil {
 			return err
 		}
-		return core.ErrRollback
+		return failure
 	})
-	if err != core.ErrRollback {
+	if err != failure {
 		t.Fatalf("err = %v", err)
 	}
 	var n int
