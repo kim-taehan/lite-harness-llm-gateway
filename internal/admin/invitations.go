@@ -1,10 +1,8 @@
 package admin
 
 import (
-	"context"
 	"errors"
 	"net/http"
-	"slices"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
@@ -26,7 +24,7 @@ func (h *Handlers) createInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, p := r.Context(), principal(r.Context())
 	if !p.IsAdmin() {
-		allowed, err := h.canInvite(ctx, p, *req.UserID)
+		allowed, err := h.sharesAdminTeam(ctx, p.UserID, *req.UserID)
 		if err != nil {
 			h.internalError(w, r, err)
 			return
@@ -51,17 +49,4 @@ func (h *Handlers) createInvitation(w http.ResponseWriter, r *http.Request) {
 			"expires_at": inv.ExpiresAt.UTC(), "created_at": inv.CreatedAt.UTC(), "created_by": inv.CreatedBy,
 			"updated_at": inv.UpdatedAt.UTC(), "updated_by": inv.UpdatedBy})
 	}
-}
-
-// canInvite 는 호출자가 대상 사용자가 속한 팀의 admin 인지다
-func (h *Handlers) canInvite(ctx context.Context, p auth.Principal, target string) (bool, error) {
-	_, adminTeams, err := h.teamsOf(ctx, p.UserID)
-	if err != nil || len(adminTeams) == 0 {
-		return false, err
-	}
-	targetTeams, err := h.users.TeamIDs(ctx, []string{target})
-	if err != nil {
-		return false, err
-	}
-	return slices.ContainsFunc(targetTeams[target], func(t string) bool { return slices.Contains(adminTeams, t) }), nil
 }

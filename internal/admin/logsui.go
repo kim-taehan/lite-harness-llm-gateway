@@ -33,18 +33,14 @@ func (h *Handlers) logScope(ctx context.Context, p auth.Principal) (*limits.LogS
 	if p.CanViewAll() {
 		return nil, nil
 	}
-	mine, err := h.users.TeamIDs(ctx, []string{p.UserID})
+	memberships, err := h.teams.MembershipsOf(ctx, p.UserID)
 	if err != nil {
 		return nil, err
 	}
 	viewable := []string{}
-	for _, t := range mine[p.UserID] {
-		allowed, err := h.teamMemberMay(ctx, p, t, "/spend/logs")
-		if err != nil {
-			return nil, err
-		}
-		if allowed {
-			viewable = append(viewable, t)
+	for _, m := range memberships {
+		if mayCall(m, "/spend/logs") {
+			viewable = append(viewable, m.TeamID)
 		}
 	}
 	return &limits.LogScope{UserID: p.UserID, TeamIDs: viewable}, nil

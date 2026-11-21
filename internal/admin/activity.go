@@ -88,26 +88,30 @@ func (h *Handlers) activityScope(w http.ResponseWriter, r *http.Request, entity 
 	teamIDs := splitIDs(q.Get("team_ids"))
 	f.ExcludeTeamIDs = splitIDs(q.Get("exclude_team_ids"))
 	if !p.CanViewAll() {
-		mine, err := h.users.TeamIDs(ctx, []string{p.UserID})
+		memberships, err := h.teams.MembershipsOf(ctx, p.UserID)
 		if err != nil {
 			h.internalError(w, r, err)
 			return nil, false
 		}
+		byTeam := map[string]auth.Membership{}
+		for _, m := range memberships {
+			byTeam[m.TeamID] = m
+		}
 		if teamIDs == nil {
-			teamIDs = append([]string{}, mine[p.UserID]...)
+			// 팀이 없으면 빈 목록(아무것도 안 맞음)이어야 한다. nil 은 "거르지 않음"이라 전체가 보인다
+			teamIDs = []string{}
+			for _, m := range memberships {
+				teamIDs = append(teamIDs, m.TeamID)
+			}
 		}
 		fullView := true
 		for _, t := range teamIDs {
-			if !slices.Contains(mine[p.UserID], t) {
+			m, member := byTeam[t]
+			if !member {
 				detailError(404, "User does not belong to Team= "+t+". Call `/user/info` to see user's teams").Write(w)
 				return nil, false
 			}
-			allowed, err := h.teamMemberMay(ctx, p, t, "/team/daily/activity")
-			if err != nil {
-				h.internalError(w, r, err)
-				return nil, false
-			}
-			fullView = fullView && allowed
+			fullView = fullView && mayCall(m, "/team/daily/activity")
 		}
 		if !fullView {
 			// 팀 전체를 볼 권한이 없으면 자기 키 사용량만 본다(litellm 과 같다)

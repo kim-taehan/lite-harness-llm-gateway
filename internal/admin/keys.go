@@ -18,41 +18,10 @@ import (
 // litellm 가상 키 관리 API(docs/litellm-inventory/J_key_contract.md 3장).
 // regenerate 의 유예 기간(grace_period, 옛 키를 잠시 더 받기)은 별도 표가 필요해 뒤 단계로 미룬다(설계 9장)
 
-// 팀 일반 멤버(role=user)가 기본으로 부를 수 있는 키 라우트(litellm TMP:18-23)
-var defaultTeamMemberKeyRoutes = []string{"/key/info", "/key/health"}
-
-// memberKeyRoutes 는 팀 일반 멤버가 부를 수 있는 키 라우트다. 팀 관리 화면(/team/permissions_update)에서 바꾼다
-func memberKeyRoutes(t auth.Team) []string {
-	if t.MemberPermissions != nil {
-		return t.MemberPermissions
-	}
-	return defaultTeamMemberKeyRoutes
-}
-
-func teamMemberPermissionError(route string, team auth.Team) core.ProxyError {
+func teamMemberPermissionError(route string, m auth.Membership) core.ProxyError {
 	return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: route,
 		Message: fmt.Sprintf("Team member does not have permissions for endpoint: %s. You only have access to the following endpoints: %s for team %s. "+
-			"To create keys for this team, ask a team admin to grant you access.", route, pyList(memberKeyRoutes(team)), team.TeamID)}
-}
-
-// teamMemberMay 는 litellm does_team_member_have_permissions_for_endpoint 다: proxy_admin 과 팀 admin 은 모든 팀 키 라우트,
-// 일반 멤버는 팀 권한 목록에 그 라우트가 있을 때만
-func (h *Handlers) teamMemberMay(ctx context.Context, p auth.Principal, teamID, route string) (bool, error) {
-	if p.IsAdmin() {
-		return true, nil
-	}
-	role, member, err := h.teamRole(ctx, teamID, p.UserID)
-	if err != nil || !member {
-		return false, err
-	}
-	if role == auth.TeamRoleAdmin {
-		return true, nil
-	}
-	team, err := h.teams.Find(ctx, teamID)
-	if err != nil {
-		return false, err
-	}
-	return slices.Contains(memberKeyRoutes(team), route), nil
+			"To create keys for this team, ask a team admin to grant you access.", route, pyList(memberKeyRoutes(m.MemberPermissions)), m.TeamID)}
 }
 
 func pyList(items []string) string {
@@ -175,6 +144,12 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 	}
 }
 
+// keyCheckFailed 는 권한 검사 중 DB 오류다. 원인은 로그에만 남기고 응답에는 내부 내용을 싣지 않는다
+func (h *Handlers) keyCheckFailed(err error) core.ProxyError {
+	h.logger.Error("키 권한 검사 실패", "err", err)
+	return plainProxyError(500, "Internal Server Error")
+}
+
 // checkKeyGeneration 은 비관리자의 키 생성 권한이다(J 3.1). userID 를 기본값(호출자)으로 채운다
 func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req keyFields, teamID *string, userID **string, route string) (core.ProxyError, bool) {
 	if len(req.AllowedRoutes) > 0 || (req.KeyType != nil && *req.KeyType == "management") {
@@ -190,25 +165,28 @@ func (h *Handlers) checkKeyGeneration(ctx context.Context, p auth.Principal, req
 		}
 		return core.ProxyError{}, false
 	}
-	team, err := h.teams.Find(ctx, *teamID)
-	if errors.Is(err, auth.ErrTeamNotFound) {
-		return plainProxyError(400, "Team not found for team_id="+*teamID+". Non-admin users cannot create keys for non-existent teams."), true
-	}
+	m, member, err := h.membership(ctx, *teamID, p.UserID)
 	if err != nil {
-		return plainProxyError(500, "Internal Server Error"), true
-	}
-	role, member, err := h.teamRole(ctx, *teamID, p.UserID)
-	if err != nil {
-		return plainProxyError(500, "Internal Server Error"), true
+		return h.keyCheckFailed(err), true
 	}
 	if !member {
+		// 팀이 없는 것과 팀원이 아닌 것은 문구가 다르다
+		if _, err := h.teams.Find(ctx, *teamID); errors.Is(err, auth.ErrTeamNotFound) {
+			return plainProxyError(400, "Team not found for team_id="+*teamID+". Non-admin users cannot create keys for non-existent teams."), true
+		} else if err != nil {
+			return h.keyCheckFailed(err), true
+		}
 		return plainProxyError(400, "User="+p.UserID+" not assigned to team="+*teamID), true
 	}
-	if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), route) {
-		return teamMemberPermissionError(route, team), true
+	if !mayCall(m, route) {
+		return teamMemberPermissionError(route, m), true
 	}
 	if **userID != p.UserID {
-		if _, isMember, _ := h.teamRole(ctx, *teamID, **userID); !isMember {
+		_, isMember, err := h.membership(ctx, *teamID, **userID)
+		if err != nil {
+			return h.keyCheckFailed(err), true
+		}
+		if !isMember {
 			return plainProxyError(400, "User="+**userID+" not assigned to team="+*teamID), true
 		}
 	}
@@ -328,20 +306,16 @@ func (h *Handlers) checkKeyUpdate(ctx context.Context, p auth.Principal, key aut
 	}
 	adminDenied := authStyle(403, pyDict("error", fmt.Sprintf("Only proxy admins, team admins, or org admins can call /key/update. user_role=%s, user_id=%s", p.Role, p.UserID)))
 	if key.TeamID != nil {
-		role, member, err := h.teamRole(ctx, *key.TeamID, p.UserID)
+		m, member, err := h.membership(ctx, *key.TeamID, p.UserID)
 		if err != nil {
-			return plainProxyError(500, "Internal Server Error"), true
+			return h.keyCheckFailed(err), true
 		}
 		if !member {
 			return core.ProxyError{Status: 401, Type: "team_member_permission_error", Param: "/key/update",
 				Message: fmt.Sprintf("User %s does not belong to team %s. Team-scoped key management endpoints can only be used for keys in your own team.", p.UserID, *key.TeamID)}, true
 		}
-		team, err := h.teams.Find(ctx, *key.TeamID)
-		if err != nil {
-			return plainProxyError(500, "Internal Server Error"), true
-		}
-		if role != auth.TeamRoleAdmin && !slices.Contains(memberKeyRoutes(team), "/key/update") {
-			return teamMemberPermissionError("/key/update", team), true
+		if !mayCall(m, "/key/update") {
+			return teamMemberPermissionError("/key/update", m), true
 		}
 		return core.ProxyError{}, false
 	}
@@ -668,7 +642,7 @@ func (h *Handlers) restrictKeyList(ctx context.Context, p auth.Principal, r *htt
 	}
 	memberTeams, adminTeams, err := h.teamsOf(ctx, p.UserID)
 	if err != nil {
-		return plainProxyError(500, "Internal Server Error"), true
+		return h.keyCheckFailed(err), true
 	}
 	if q.TeamID != nil && !slices.Contains(memberTeams, *q.TeamID) {
 		return core.ProxyError{Status: 403, Type: "internal_server_error", Param: "None", Message: "You are not authorized to check this team's keys"}, true

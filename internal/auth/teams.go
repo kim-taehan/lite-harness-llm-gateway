@@ -119,6 +119,41 @@ func (t *Teams) Members(ctx context.Context, teamIDs []string) (map[string][]Tea
 	return result, nil
 }
 
+// Membership 은 사용자 한 명의 한 팀 소속이다. 권한 판정에 필요한 것(역할, 팀의 멤버 권한 목록)을 한 번에 담는다
+type Membership struct {
+	TeamID string
+	Role   TeamRole
+	// MemberPermissions 는 그 팀 일반 멤버가 부를 수 있는 키 라우트다. nil 이면 litellm 기본을 쓴다
+	MemberPermissions []string
+}
+
+// MembershipIn 은 사용자가 그 팀의 멤버인지와 소속 정보다. 팀 전체 명단을 읽지 않는다
+func (t *Teams) MembershipIn(ctx context.Context, teamID, userID string) (Membership, bool, error) {
+	m := Membership{TeamID: teamID}
+	err := t.db.Q(ctx).QueryRow(ctx, `
+		SELECT m.role, t.member_permissions FROM team_member m JOIN team t USING (team_id)
+		WHERE m.team_id = $1 AND m.user_id = $2`, teamID, userID).Scan(&m.Role, &m.MemberPermissions)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Membership{}, false, nil
+	}
+	return m, err == nil, err
+}
+
+// MembershipsOf 는 사용자가 속한 모든 팀의 소속 정보다(가입 순서). 여러 팀을 판정할 때 쿼리 하나로 끝낸다
+func (t *Teams) MembershipsOf(ctx context.Context, userID string) ([]Membership, error) {
+	rows, err := t.db.Q(ctx).Query(ctx, `
+		SELECT m.team_id, m.role, t.member_permissions FROM team_member m JOIN team t USING (team_id)
+		WHERE m.user_id = $1 ORDER BY m.created_at, m.team_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Membership, error) {
+		var m Membership
+		err := row.Scan(&m.TeamID, &m.Role, &m.MemberPermissions)
+		return m, err
+	})
+}
+
 // Update 는 보낸 필드만 바꾼다. 없으면 ErrTeamNotFound
 func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Team, error) {
 	sets := []string{"updated_at = now()"}

@@ -82,7 +82,7 @@ func (h *Handlers) teamPermissionsList(w http.ResponseWriter, r *http.Request) {
 		}
 		team = found
 	}
-	core.WriteJSON(w, http.StatusOK, row{"team_id": team.TeamID, "team_member_permissions": memberKeyRoutes(team),
+	core.WriteJSON(w, http.StatusOK, row{"team_id": team.TeamID, "team_member_permissions": memberKeyRoutes(team.MemberPermissions),
 		"all_available_permissions": allTeamMemberKeyRoutes})
 }
 

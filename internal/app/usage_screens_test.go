@@ -98,6 +98,12 @@ func TestUsageScreens_AggregatedKeysUsersExportAndLogs(t *testing.T) {
 		t.Errorf("팀 멤버의 팀 사용량 = %v", own["metadata"])
 	}
 
+	// 팀이 하나도 없는 사용자는 모든 팀 사용량이 아니라 아무것도 보지 않는다(필터가 풀리면 안 된다)
+	lee := map[string]string{"Authorization": "Bearer " + leeKey["key"].(string)}
+	if none := jsonOf(t, b.do("GET", "/team/daily/activity/aggregated?"+dates, nil, lee)); none["metadata"].(map[string]any)["total_api_requests"] != 0.0 {
+		t.Errorf("팀 없는 사용자가 다른 팀 사용량을 본다: %v", none["metadata"])
+	}
+
 	keys := jsonOf(t, b.do("GET", "/user/daily/activity/aggregated/keys?"+dates+"&offset=0&limit=50", nil, master))
 	if keys["total_api_keys"] != 2.0 || keys["api_keys"].([]any)[0].(map[string]any)["metrics"].(map[string]any)["api_requests"] == nil {
 		t.Errorf("keys = %v", keys)
