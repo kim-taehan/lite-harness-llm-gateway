@@ -62,11 +62,22 @@ var (
 	apiEmbeddings = upstreamAPI{path: "embeddings"}
 )
 
+// relayRequest 는 중계할 요청 하나다. body["model"] 은 업스트림 모델 이름으로 바뀌어 있고, requested 는 클라이언트가 부른 이름이다
+type relayRequest struct {
+	api        upstreamAPI
+	deployment Deployment
+	body       map[string]any
+	requested  string
+	stream     bool
+	permit     *limits.Permit
+}
+
 // relay 는 업스트림에 보내고 응답을 그대로 흘려 준다. 클라이언트가 끊으면 r.Context() 가 취소되어 업스트림 요청도 끊긴다(설계 4.2).
 // 끝나면(끊겨도) 사용량을 기록한다
-func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI, d Deployment, body map[string]any, requested string, stream bool, permit *limits.Permit) {
+func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, req relayRequest) {
+	d, body, api, permit := req.deployment, req.body, req.api, req.permit
 	p, _ := auth.PrincipalFrom(r.Context())
-	x := &exchange{requestID: core.NewUUID(), started: h.now(), principal: p, deployment: d, requested: requested, status: "success", httpStatus: 200, permit: permit}
+	x := &exchange{requestID: core.NewUUID(), started: h.now(), principal: p, deployment: d, requested: req.requested, status: "success", httpStatus: 200, permit: permit}
 	// litellm 과 같은 이름의 요청 ID 헤더(설계 11.3)
 	w.Header().Set("x-litellm-call-id", x.requestID)
 	for name, value := range permit.Headers() {
@@ -74,7 +85,7 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI
 	}
 	defer func() { h.record(r, x) }()
 
-	clientWantsUsage := requestUsageChunk(body, api, stream)
+	clientWantsUsage := requestUsageChunk(body, api, req.stream)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		x.fail(500, "internal_error")
@@ -90,12 +101,12 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, api upstreamAPI
 		h.logger.Warn("업스트림 연결 실패", "deployment", d.ID, "err", err)
 		x.fail(503, "upstream_unavailable")
 		core.ProxyError{Status: 503, Type: "server_error", Param: nil,
-			Message: "Upstream unavailable for model=" + requested + ". The model server did not respond."}.Write(w)
+			Message: "Upstream unavailable for model=" + req.requested + ". The model server did not respond."}.Write(w)
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 || !stream || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	if resp.StatusCode >= 400 || !req.stream || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		h.relayWhole(w, resp, x)
 		return
 	}

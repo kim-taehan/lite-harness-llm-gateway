@@ -43,6 +43,13 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 		return
 	}
+	top, days, totalsByDate := insightTables(rows, c, metric)
+	writeJSON(w, row{"start_date": start.Format(time.DateOnly), "end_date": end.Format(time.DateOnly), "top_models": top,
+		"daily": nonNilRows(days), "daily_totals": totalsByDate})
+}
+
+// insightTables 는 사용량 행을 metric 상위 모델, 그 모델들의 일별 값, 날짜별 전체 합으로 모은다
+func insightTables(rows []limits.ActivityRow, c activityContext, metric string) (top, days, totalsByDate []row) {
 	totals := map[insightKey]*limits.Metrics{}
 	daily := map[insightKey]map[string]*limits.Metrics{}
 	byDate := map[string]*limits.Metrics{}
@@ -71,8 +78,7 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 	slices.SortStableFunc(keys, func(a, b insightKey) int { return cmp.Compare(rank(totals[b]), rank(totals[a])) })
 	keys = keys[:min(insightsTopModels, len(keys))]
 
-	top := make([]row, 0, len(keys))
-	var days []row
+	top = make([]row, 0, len(keys))
 	for _, k := range keys {
 		top = append(top, insightRow(k, *totals[k]))
 		for date, m := range daily[k] {
@@ -87,14 +93,13 @@ func (h *Handlers) modelInsights(w http.ResponseWriter, r *http.Request) {
 		dates = append(dates, d)
 	}
 	slices.Sort(dates)
-	totalsByDate := make([]row, 0, len(dates))
+	totalsByDate = make([]row, 0, len(dates))
 	for _, d := range dates {
 		m := byDate[d]
 		totalsByDate = append(totalsByDate, row{"date": d, "spend": m.Spend, "prompt_tokens": m.PromptTokens,
 			"completion_tokens": m.CompletionTokens, "requests": m.Requests()})
 	}
-	writeJSON(w, row{"start_date": start.Format(time.DateOnly), "end_date": end.Format(time.DateOnly), "top_models": top,
-		"daily": nonNilRows(days), "daily_totals": totalsByDate})
+	return top, days, totalsByDate
 }
 
 func insightRow(k insightKey, m limits.Metrics) row {

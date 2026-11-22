@@ -25,22 +25,20 @@ func roleError(field string, value core.Role) *FieldError {
 		Msg: "Input should be 'proxy_admin', 'proxy_admin_viewer', 'internal_user' or 'internal_user_viewer'", Input: string(value)}
 }
 
-func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		UserID    *string        `json:"user_id"`
-		UserEmail *string        `json:"user_email"`
-		UserAlias *string        `json:"user_alias"`
-		UserRole  *core.Role     `json:"user_role"`
-		Models    []string       `json:"models"`
-		Metadata  map[string]any `json:"metadata"`
-		TeamID    *string        `json:"team_id"`
-		Password  *string        `json:"password"`
-		limitFields
-	}
-	raw, ok := requestBody(w, r, &req)
-	if !ok {
-		return
-	}
+// newUserRequest 는 /user/new 본문이다
+type newUserRequest struct {
+	UserID    *string        `json:"user_id"`
+	UserEmail *string        `json:"user_email"`
+	UserAlias *string        `json:"user_alias"`
+	UserRole  *core.Role     `json:"user_role"`
+	Models    []string       `json:"models"`
+	Metadata  map[string]any `json:"metadata"`
+	TeamID    *string        `json:"team_id"`
+	Password  *string        `json:"password"`
+	limitFields
+}
+
+func (req newUserRequest) validate(raw map[string]any) validationError {
 	var errs validationError
 	if req.UserRole != nil {
 		if e := roleError("user_role", *req.UserRole); e != nil {
@@ -51,7 +49,16 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
 		// litellm 은 비밀번호를 /user/new 로 받지 않는다(UR:36-44)
 		errs = append(errs, FieldError{Type: "value_error", Loc: []any{"body"}, Msg: "Value error, Setting password via /user/new is not allowed. Use /invitation/new instead.", Input: raw})
 	}
-	if len(errs) > 0 {
+	return errs
+}
+
+func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
+	var req newUserRequest
+	raw, ok := requestBody(w, r, &req)
+	if !ok {
+		return
+	}
+	if errs := req.validate(raw); len(errs) > 0 {
 		errs.write(w)
 		return
 	}
@@ -72,18 +79,24 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
 		policy, err = h.limits.Apply(ctx, limits.ScopeUser, user.UserID, req.patch())
 		return err
 	})
+	if err != nil {
+		h.createUserFailed(w, r, err, req)
+		return
+	}
+	response := userRow(user, teamIDs, policy)
+	// NewUserResponse 는 키 발급 응답 모양을 겸한다. 키 발급은 M2 라 auto_create_key 와 상관없이 빈 문자열이다
+	// (대시보드는 auto_create_key=false 를 보내므로 litellm 에서도 빈 문자열이다)
+	response["key"] = ""
+	response["key_name"] = nil
+	response["expires"] = nil
+	response["team_id"] = req.TeamID
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h *Handlers) createUserFailed(w http.ResponseWriter, r *http.Request, err error, req newUserRequest) {
 	var invalid *limits.InvalidError
 	var taken *auth.EmailTakenError
 	switch {
-	case err == nil:
-		response := userRow(user, teamIDs, policy)
-		// NewUserResponse 는 키 발급 응답 모양을 겸한다. 키 발급은 M2 라 auto_create_key 와 상관없이 빈 문자열이다
-		// (대시보드는 auto_create_key=false 를 보내므로 litellm 에서도 빈 문자열이다)
-		response["key"] = ""
-		response["key_name"] = nil
-		response["expires"] = nil
-		response["team_id"] = req.TeamID
-		core.WriteJSON(w, http.StatusOK, response)
 	case errors.As(err, &invalid):
 		proxyError(400, invalid.Message).Write(w)
 	case errors.Is(err, auth.ErrUserIDTaken):

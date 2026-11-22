@@ -317,15 +317,7 @@ func (l *Login) poll(w http.ResponseWriter, r *http.Request) {
 	if !l.flowExists(w, loginID) {
 		return
 	}
-	secret := r.Header.Get("x-litellm-cli-poll-secret")
-	var session *cliSession
-	secretOK, ready := false, false
-	l.flows.with(loginID, func(f *cliFlow) bool {
-		secretOK = subtle.ConstantTimeCompare([]byte(sha256Hex(secret)), []byte(f.pollSecretHash)) == 1
-		ready = f.session != nil && f.codeVerified
-		session = f.session
-		return false
-	})
+	session, secretOK, ready := l.pollState(loginID, r.Header.Get("x-litellm-cli-poll-secret"))
 	switch {
 	case !secretOK:
 		detail(w, http.StatusForbidden, "Invalid CLI polling secret")
@@ -338,16 +330,8 @@ func (l *Login) poll(w http.ResponseWriter, r *http.Request) {
 	for i, t := range session.Teams {
 		teamIDs[i] = t.TeamID
 	}
-	teamID := r.URL.Query().Get("team_id")
-	switch {
-	case teamID == "" && len(session.Teams) >= 2:
-		core.WriteJSON(w, http.StatusOK, map[string]any{"status": "ready", "user_id": session.UserID, "teams": teamIDs,
-			"team_details": session.Teams, "requires_team_selection": true})
-		return
-	case teamID == "" && len(session.Teams) == 1:
-		teamID = teamIDs[0]
-	case teamID != "" && !containsString(teamIDs, teamID):
-		detail(w, http.StatusForbidden, "User does not belong to team: "+teamID+". Available teams: "+pyStringList(teamIDs))
+	teamID, chosen := chooseLoginTeam(w, session, teamIDs, r.URL.Query().Get("team_id"))
+	if !chosen {
 		return
 	}
 	key, err := l.keys.issue(loginClaims{UserID: session.UserID, TeamID: teamID, Expires: l.now().UTC().Add(loginKeyTTL)})
@@ -362,6 +346,33 @@ func (l *Login) poll(w http.ResponseWriter, r *http.Request) {
 	}
 	core.WriteJSON(w, http.StatusOK, map[string]any{"status": "ready", "key": key, "user_id": session.UserID, "team_id": team,
 		"teams": teamIDs, "team_details": orEmptyDetails(session.Teams)})
+}
+
+// pollState 는 흐름의 비밀이 맞는지, 브라우저 인증이 끝났는지 본다
+func (l *Login) pollState(loginID, secret string) (session *cliSession, secretOK, ready bool) {
+	l.flows.with(loginID, func(f *cliFlow) bool {
+		secretOK = subtle.ConstantTimeCompare([]byte(sha256Hex(secret)), []byte(f.pollSecretHash)) == 1
+		ready = f.session != nil && f.codeVerified
+		session = f.session
+		return false
+	})
+	return session, secretOK, ready
+}
+
+// chooseLoginTeam 은 키를 묶을 팀을 정한다. 팀이 둘 이상인데 고르지 않았거나 소속이 아니면 응답을 쓰고 false 를 돌려준다
+func chooseLoginTeam(w http.ResponseWriter, session *cliSession, teamIDs []string, requested string) (string, bool) {
+	switch {
+	case requested == "" && len(session.Teams) >= 2:
+		core.WriteJSON(w, http.StatusOK, map[string]any{"status": "ready", "user_id": session.UserID, "teams": teamIDs,
+			"team_details": session.Teams, "requires_team_selection": true})
+		return "", false
+	case requested == "" && len(session.Teams) == 1:
+		return teamIDs[0], true
+	case requested != "" && !containsString(teamIDs, requested):
+		detail(w, http.StatusForbidden, "User does not belong to team: "+requested+". Available teams: "+pyStringList(teamIDs))
+		return "", false
+	}
+	return requested, true
 }
 
 // flowExists 는 litellm _get_cli_sso_flow_or_raise 의 400 세 가지다(K 5.1)

@@ -30,7 +30,6 @@ var secretParamKeys = []string{"api_key", "aws_access_key_id", "aws_secret_acces
 // applyModelSpec 은 litellm 모양 값을 배포에 덮어쓴다. 값이 null 인 나머지 키는 지운다.
 // model_info 를 먼저, litellm_params 를 나중에 적용한다(litellm 처럼 litellm_params 의 비용이 이긴다)
 func applyModelSpec(d *inference.Deployment, params, info map[string]any) validationError {
-	var errs validationError
 	extraInfo, extraParams := maps.Clone(d.ExtraInfo), maps.Clone(d.ExtraParams)
 	if extraInfo == nil {
 		extraInfo = map[string]any{}
@@ -38,9 +37,18 @@ func applyModelSpec(d *inference.Deployment, params, info map[string]any) valida
 	if extraParams == nil {
 		extraParams = map[string]any{}
 	}
-	bad := func(section, key string, value any, kind, msg string) {
-		errs = append(errs, FieldError{Type: kind, Loc: []any{"body", section, key}, Msg: msg, Input: value})
-	}
+	errs := applyModelInfo(d, info, extraInfo)
+	errs = append(errs, applyModelParams(d, params, extraParams)...)
+	d.ExtraInfo, d.ExtraParams = extraInfo, extraParams
+	return errs
+}
+
+func specError(section, key string, value any, kind, msg string) FieldError {
+	return FieldError{Type: kind, Loc: []any{"body", section, key}, Msg: msg, Input: value}
+}
+
+// applyModelInfo 는 model_info 를 배포에 덮어쓴다. 알려진 키는 필드로, 나머지는 extra 에 둔다
+func applyModelInfo(d *inference.Deployment, info, extraInfo map[string]any) (errs validationError) {
 	for k, v := range info {
 		ok := true
 		switch k {
@@ -63,9 +71,14 @@ func applyModelSpec(d *inference.Deployment, params, info map[string]any) valida
 			}
 		}
 		if !ok {
-			bad("model_info", k, v, "float_type", "Input should be a valid number")
+			errs = append(errs, specError("model_info", k, v, "float_type", "Input should be a valid number"))
 		}
 	}
+	return errs
+}
+
+// applyModelParams 는 litellm_params 를 배포에 덮어쓴다. 자격 증명 키는 저장하지 않는다
+func applyModelParams(d *inference.Deployment, params, extraParams map[string]any) (errs validationError) {
 	for k, v := range params {
 		ok := true
 		switch k {
@@ -73,7 +86,7 @@ func applyModelSpec(d *inference.Deployment, params, info map[string]any) valida
 			s, _ := v.(string)
 			provider, upstream, found := strings.Cut(s, "/")
 			if !found || provider == "" || upstream == "" {
-				bad("litellm_params", k, v, "value_error", "Value error, model must look like '<provider>/<model>' (e.g. ollama/llama3)")
+				errs = append(errs, specError("litellm_params", k, v, "value_error", "Value error, model must look like '<provider>/<model>' (e.g. ollama/llama3)"))
 				continue
 			}
 			if provider == "ollama_chat" {
@@ -99,10 +112,9 @@ func applyModelSpec(d *inference.Deployment, params, info map[string]any) valida
 			}
 		}
 		if !ok {
-			bad("litellm_params", k, v, "value_error", "Value error, invalid value")
+			errs = append(errs, specError("litellm_params", k, v, "value_error", "Value error, invalid value"))
 		}
 	}
-	d.ExtraInfo, d.ExtraParams = extraInfo, extraParams
 	return errs
 }
 

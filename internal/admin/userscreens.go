@@ -148,12 +148,7 @@ func bulkErrorText(err error) string {
 // bulkAddTeamMembers 는 POST /team/bulk_member_add 다. 선택한 사용자들 또는 전체 사용자를 팀에 넣는다.
 // litellm 처럼 실패해도 200 이고 결과 행에 success:false 를 남긴다. max_budget_in_team 이 있으면 새로 들어온 팀원의 예산으로 정한다
 func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TeamID          *string      `json:"team_id"`
-		Members         []memberJSON `json:"members"`
-		AllUsers        bool         `json:"all_users"`
-		MaxBudgetInTeam *float64     `json:"max_budget_in_team"`
-	}
+	var req bulkAddRequest
 	raw, ok := requestBody(w, r, &req)
 	if !ok {
 		return
@@ -162,32 +157,8 @@ func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 		validationError{missing(raw, "team_id")}.write(w)
 		return
 	}
-	var errs validationError
-	refs := make([]auth.MemberRef, 0, len(req.Members))
-	for i, m := range req.Members {
-		refs = append(refs, m.ref([]any{"body", "members", i}, &errs))
-	}
-	if len(errs) > 0 {
-		errs.write(w)
-		return
-	}
-	if req.AllUsers {
-		page, err := h.users.Page(r.Context(), auth.UserQuery{Page: 1, PageSize: maxBulk + 1})
-		if err != nil {
-			h.internalError(w, r, err)
-			return
-		}
-		refs = refs[:0]
-		for _, u := range page.Items {
-			refs = append(refs, auth.MemberRef{UserID: &u.UserID, Role: auth.TeamRoleUser})
-		}
-	}
-	switch {
-	case len(refs) == 0:
-		detailError(400, "At least one member is required").Write(w)
-		return
-	case len(refs) > maxBulk:
-		detailError(400, "Maximum 500 members can be added at once").Write(w)
+	refs, ok := h.bulkMemberRefs(w, r, req)
+	if !ok {
 		return
 	}
 	var failure error
@@ -212,6 +183,47 @@ func (h *Handlers) bulkAddTeamMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	core.WriteJSON(w, http.StatusOK, row{"team_id": *req.TeamID, "results": results, "total_requested": len(refs),
 		"successful_additions": succeeded, "failed_additions": len(refs) - succeeded, "updated_team": nil})
+}
+
+// bulkAddRequest 는 /team/bulk_member_add 본문이다
+type bulkAddRequest struct {
+	TeamID          *string      `json:"team_id"`
+	Members         []memberJSON `json:"members"`
+	AllUsers        bool         `json:"all_users"`
+	MaxBudgetInTeam *float64     `json:"max_budget_in_team"`
+}
+
+// bulkMemberRefs 는 넣을 팀원 목록이다(all_users 면 전체 사용자). 형식이 틀리거나 개수가 범위 밖이면 응답을 쓰고 false 를 돌려준다
+func (h *Handlers) bulkMemberRefs(w http.ResponseWriter, r *http.Request, req bulkAddRequest) ([]auth.MemberRef, bool) {
+	var errs validationError
+	refs := make([]auth.MemberRef, 0, len(req.Members))
+	for i, m := range req.Members {
+		refs = append(refs, m.ref([]any{"body", "members", i}, &errs))
+	}
+	if len(errs) > 0 {
+		errs.write(w)
+		return nil, false
+	}
+	if req.AllUsers {
+		page, err := h.users.Page(r.Context(), auth.UserQuery{Page: 1, PageSize: maxBulk + 1})
+		if err != nil {
+			h.internalError(w, r, err)
+			return nil, false
+		}
+		refs = refs[:0]
+		for _, u := range page.Items {
+			refs = append(refs, auth.MemberRef{UserID: &u.UserID, Role: auth.TeamRoleUser})
+		}
+	}
+	switch {
+	case len(refs) == 0:
+		detailError(400, "At least one member is required").Write(w)
+		return nil, false
+	case len(refs) > maxBulk:
+		detailError(400, "Maximum 500 members can be added at once").Write(w)
+		return nil, false
+	}
+	return refs, true
 }
 
 // addMembersWithBudget 는 팀원을 넣고, 예산이 있으면 새로 들어온 팀원마다 그 값으로 팀원 예산을 정한다. 한 트랜잭션이다

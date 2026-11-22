@@ -94,7 +94,7 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 	defer permit.Release()
 	body["model"] = deployment.UpstreamModel
 	stream, _ := body["stream"].(bool)
-	h.relay(w, r, api, deployment, body, model, stream, permit)
+	h.relay(w, r, relayRequest{api: api, deployment: deployment, body: body, requested: model, stream: stream, permit: permit})
 }
 
 func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, error) {

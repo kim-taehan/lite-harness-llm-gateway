@@ -70,57 +70,14 @@ func (h *Handlers) activityScope(w http.ResponseWriter, r *http.Request, entity 
 		f.KeyTokens = []string{key}
 	}
 	if entity == entityUser {
-		userID := queryString(r, "user_id")
-		switch {
-		case p.CanViewAll():
-			f.UserID = userID
-		case p.UserID == "":
-			detailError(403, "Service-account keys cannot query user analytics. Use a user-bound key, or call as a proxy admin.").Write(w)
-			return nil, false
-		case userID != nil && *userID != p.UserID:
-			detailError(403, "Non-admin users can only view their own spend data.").Write(w)
-			return nil, false
-		default:
-			f.UserID = &p.UserID
-		}
-		return nil, true
+		return nil, userActivityScope(w, p, queryString(r, "user_id"), f)
 	}
 	teamIDs := splitIDs(q.Get("team_ids"))
 	f.ExcludeTeamIDs = splitIDs(q.Get("exclude_team_ids"))
 	if !p.CanViewAll() {
-		memberships, err := h.teams.MembershipsOf(ctx, p.UserID)
-		if err != nil {
-			h.internalError(w, r, err)
+		var ok bool
+		if teamIDs, ok = h.memberTeamScope(w, r, f, teamIDs); !ok {
 			return nil, false
-		}
-		byTeam := map[string]auth.Membership{}
-		for _, m := range memberships {
-			byTeam[m.TeamID] = m
-		}
-		if teamIDs == nil {
-			// 팀이 없으면 빈 목록(아무것도 안 맞음)이어야 한다. nil 은 "거르지 않음"이라 전체가 보인다
-			teamIDs = []string{}
-			for _, m := range memberships {
-				teamIDs = append(teamIDs, m.TeamID)
-			}
-		}
-		fullView := true
-		for _, t := range teamIDs {
-			m, member := byTeam[t]
-			if !member {
-				detailError(404, "User does not belong to Team= "+t+". Call `/user/info` to see user's teams").Write(w)
-				return nil, false
-			}
-			fullView = fullView && mayCall(m, "/team/daily/activity")
-		}
-		if !fullView {
-			// 팀 전체를 볼 권한이 없으면 자기 키 사용량만 본다(litellm 과 같다)
-			own, err := h.ownKeyTokens(ctx, p.UserID)
-			if err != nil {
-				h.internalError(w, r, err)
-				return nil, false
-			}
-			f.KeyTokens = intersectKeys(f.KeyTokens, own)
 		}
 	}
 	f.TeamIDs = teamIDs
@@ -130,6 +87,63 @@ func (h *Handlers) activityScope(w http.ResponseWriter, r *http.Request, entity 
 		return nil, false
 	}
 	return aliases, true
+}
+
+// userActivityScope 는 사용자 분석의 조회 범위다. 관리자가 아니면 자기 것만 본다
+func userActivityScope(w http.ResponseWriter, p auth.Principal, userID *string, f *limits.ActivityFilter) bool {
+	switch {
+	case p.CanViewAll():
+		f.UserID = userID
+	case p.UserID == "":
+		detailError(403, "Service-account keys cannot query user analytics. Use a user-bound key, or call as a proxy admin.").Write(w)
+		return false
+	case userID != nil && *userID != p.UserID:
+		detailError(403, "Non-admin users can only view their own spend data.").Write(w)
+		return false
+	default:
+		f.UserID = &p.UserID
+	}
+	return true
+}
+
+// memberTeamScope 는 관리자가 아닌 사용자의 팀 범위다. 고르지 않았으면 자기 팀 전부이고, 소속이 아닌 팀이 있으면 404 를 쓴다.
+// 팀 전체를 볼 권한이 없는 팀이 하나라도 있으면 자기 키 사용량만 본다(litellm 과 같다)
+func (h *Handlers) memberTeamScope(w http.ResponseWriter, r *http.Request, f *limits.ActivityFilter, teamIDs []string) ([]string, bool) {
+	ctx, p := r.Context(), principal(r.Context())
+	memberships, err := h.teams.MembershipsOf(ctx, p.UserID)
+	if err != nil {
+		h.internalError(w, r, err)
+		return nil, false
+	}
+	byTeam := map[string]auth.Membership{}
+	for _, m := range memberships {
+		byTeam[m.TeamID] = m
+	}
+	if teamIDs == nil {
+		// 팀이 없으면 빈 목록(아무것도 안 맞음)이어야 한다. nil 은 "거르지 않음"이라 전체가 보인다
+		teamIDs = []string{}
+		for _, m := range memberships {
+			teamIDs = append(teamIDs, m.TeamID)
+		}
+	}
+	fullView := true
+	for _, t := range teamIDs {
+		m, member := byTeam[t]
+		if !member {
+			detailError(404, "User does not belong to Team= "+t+". Call `/user/info` to see user's teams").Write(w)
+			return nil, false
+		}
+		fullView = fullView && mayCall(m, "/team/daily/activity")
+	}
+	if !fullView {
+		own, err := h.ownKeyTokens(ctx, p.UserID)
+		if err != nil {
+			h.internalError(w, r, err)
+			return nil, false
+		}
+		f.KeyTokens = intersectKeys(f.KeyTokens, own)
+	}
+	return teamIDs, true
 }
 
 func intersectKeys(requested, allowed []string) []string {
@@ -325,22 +339,62 @@ func topKeys(rows []limits.ActivityRow, limit int) map[string]bool {
 
 // aggregatedResponse 는 SpendAnalyticsPaginatedResponse 다(N 3.3). 날짜 내림차순, 0 채우기 없음
 func aggregatedResponse(rows []limits.ActivityRow, c activityContext, entity string, aliases map[string]*string, keyLimit int) row {
-	type day struct {
-		total                                       limits.Metrics
-		models, groups, providers, apiKeys, teamsBy entries
+	tally := tallyDays(rows, c, entity)
+	top := topKeys(rows, keyLimit)
+	teamMetadata := func(id string) row {
+		if alias, ok := aliases[id]; ok {
+			return row{"team_alias": alias}
+		}
+		return row{}
 	}
-	days := map[string]*day{}
-	var total limits.Metrics
-	allKeys := map[string]bool{}
-	teamKeys := map[string]map[string]bool{}
+	dates := make([]string, 0, len(tally.days))
+	for date := range tally.days {
+		dates = append(dates, date)
+	}
+	slices.Sort(dates)
+	slices.Reverse(dates)
+	results := make([]row, 0, len(dates))
+	for _, date := range dates {
+		results = append(results, tally.days[date].render(date, c, top, teamMetadata))
+	}
+	var entityKeys any
+	if entity == entityTeam {
+		counts := row{}
+		for team, keys := range tally.teamKeys {
+			counts[team] = len(keys)
+		}
+		entityKeys = counts
+	}
+	metadata := totalsRow(tally.total)
+	metadata["page"], metadata["total_pages"], metadata["has_more"] = 1, 1, false
+	metadata["api_key_limit"], metadata["total_api_keys"], metadata["entity_total_api_keys"] = keyLimit, len(tally.allKeys), entityKeys
+	return row{"results": results, "metadata": metadata}
+}
+
+// activityDay 는 하루치 합계와 항목별 분해다
+type activityDay struct {
+	total                                       limits.Metrics
+	models, groups, providers, apiKeys, teamsBy entries
+}
+
+// activityTally 는 기간 전체의 날짜별 분해와, 메타데이터에 쓰는 전체 합·키 목록이다
+type activityTally struct {
+	days     map[string]*activityDay
+	total    limits.Metrics
+	allKeys  map[string]bool
+	teamKeys map[string]map[string]bool
+}
+
+func tallyDays(rows []limits.ActivityRow, c activityContext, entity string) activityTally {
+	t := activityTally{days: map[string]*activityDay{}, allKeys: map[string]bool{}, teamKeys: map[string]map[string]bool{}}
 	for _, a := range rows {
-		d := days[a.Date]
+		d := t.days[a.Date]
 		if d == nil {
-			d = &day{models: entries{}, groups: entries{}, providers: entries{}, apiKeys: entries{}, teamsBy: entries{}}
-			days[a.Date] = d
+			d = &activityDay{models: entries{}, groups: entries{}, providers: entries{}, apiKeys: entries{}, teamsBy: entries{}}
+			t.days[a.Date] = d
 		}
 		d.total.Add(a.Metrics)
-		total.Add(a.Metrics)
+		t.total.Add(a.Metrics)
 		d.models.at(c.upstreamModel(a)).add(a)
 		d.groups.at(a.Model).add(a)
 		d.providers.at(c.provider(a)).add(a)
@@ -353,53 +407,28 @@ func aggregatedResponse(rows []limits.ActivityRow, c activityContext, entity str
 		}
 		if a.KeyToken != nil {
 			d.apiKeys.at(*a.KeyToken).add(a)
-			allKeys[*a.KeyToken] = true
-			if teamKeys[team] == nil {
-				teamKeys[team] = map[string]bool{}
+			t.allKeys[*a.KeyToken] = true
+			if t.teamKeys[team] == nil {
+				t.teamKeys[team] = map[string]bool{}
 			}
-			teamKeys[team][*a.KeyToken] = true
+			t.teamKeys[team][*a.KeyToken] = true
 		}
 	}
-	top := topKeys(rows, keyLimit)
-	teamMetadata := func(id string) row {
-		if alias, ok := aliases[id]; ok {
-			return row{"team_alias": alias}
+	return t
+}
+
+func (d *activityDay) render(date string, c activityContext, top map[string]bool, teamMetadata func(string) row) row {
+	apiKeys := row{}
+	for k, e := range d.apiKeys {
+		if top[k] {
+			apiKeys[k] = row{"metrics": metricsRow(e.metrics), "metadata": c.keys[k]}
 		}
-		return row{}
 	}
-	dates := make([]string, 0, len(days))
-	for date := range days {
-		dates = append(dates, date)
-	}
-	slices.Sort(dates)
-	slices.Reverse(dates)
-	results := make([]row, 0, len(dates))
-	for _, date := range dates {
-		d := days[date]
-		apiKeys := row{}
-		for k, e := range d.apiKeys {
-			if top[k] {
-				apiKeys[k] = row{"metrics": metricsRow(e.metrics), "metadata": c.keys[k]}
-			}
-		}
-		results = append(results, row{"date": date, "metrics": metricsRow(d.total), "breakdown": row{
-			"models": d.models.render(c, top, emptyMetadata), "model_groups": d.groups.render(c, top, emptyMetadata),
-			"providers": d.providers.render(c, top, emptyMetadata), "endpoints": row{}, "mcp_servers": row{},
-			"api_keys": apiKeys, "entities": d.teamsBy.render(c, top, teamMetadata),
-		}})
-	}
-	var entityKeys any
-	if entity == entityTeam {
-		counts := row{}
-		for team, keys := range teamKeys {
-			counts[team] = len(keys)
-		}
-		entityKeys = counts
-	}
-	metadata := totalsRow(total)
-	metadata["page"], metadata["total_pages"], metadata["has_more"] = 1, 1, false
-	metadata["api_key_limit"], metadata["total_api_keys"], metadata["entity_total_api_keys"] = keyLimit, len(allKeys), entityKeys
-	return row{"results": results, "metadata": metadata}
+	return row{"date": date, "metrics": metricsRow(d.total), "breakdown": row{
+		"models": d.models.render(c, top, emptyMetadata), "model_groups": d.groups.render(c, top, emptyMetadata),
+		"providers": d.providers.render(c, top, emptyMetadata), "endpoints": row{}, "mcp_servers": row{},
+		"api_keys": apiKeys, "entities": d.teamsBy.render(c, top, teamMetadata),
+	}}
 }
 
 // totalsRow 는 DailySpendMetadata 의 total_* 칸이다. 화면이 null 을 견디지 못하므로 모든 칸을 숫자로 낸다(N 3.5)
