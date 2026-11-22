@@ -3,7 +3,6 @@ package admin
 import (
 	"net/http"
 
-	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 )
 
@@ -28,7 +27,7 @@ func (h *Handlers) makeModelGroupsPublic(w http.ResponseWriter, r *http.Request)
 		h.internalError(w, r, err)
 		return
 	}
-	p, _ := auth.PrincipalFrom(r.Context())
+	p := principal(r.Context())
 	core.WriteJSON(w, http.StatusOK, row{"message": "Successfully updated public model groups", "public_model_groups": req.ModelGroups, "updated_by": p.UserID})
 }
 
@@ -48,7 +47,7 @@ func (h *Handlers) updateUsefulLinks(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 		return
 	}
-	p, _ := auth.PrincipalFrom(r.Context())
+	p := principal(r.Context())
 	core.WriteJSON(w, http.StatusOK, row{"message": "Successfully updated useful links", "useful_links": req.UsefulLinks, "updated_by": p.UserID})
 }
 

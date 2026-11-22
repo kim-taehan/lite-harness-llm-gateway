@@ -476,22 +476,13 @@ func (h *Handlers) activity(entity, view string) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		var errs validationError
-		keyLimit := queryInt(r, "api_key_limit", 100, 1, 1000, &errs)
-		offset := queryInt(r, "offset", 0, 0, 0, &errs)
-		limitDefault := map[string]int{"keys": 50, "users": 50, "search": 100, "model_top_keys": 5}[view]
-		limit := queryInt(r, "limit", limitDefault, 1, 100, &errs)
-		q := r.URL.Query()
-		if view == "search" && q.Get("search") == "" {
-			errs = append(errs, FieldError{Type: "missing", Loc: []any{"query", "search"}, Msg: "Field required"})
-		}
-		if view == "model_top_keys" && q.Get("model_group") == "" {
-			errs = append(errs, FieldError{Type: "missing", Loc: []any{"query", "model_group"}, Msg: "Field required"})
-		}
+		params, errs := activityParams(r, view)
 		if len(errs) > 0 {
 			errs.write(w)
 			return
 		}
+		keyLimit, offset, limit := params.keyLimit, params.offset, params.limit
+		q := r.URL.Query()
 		f := limits.ActivityFilter{Start: start, End: end}
 		aliases, ok := h.activityScope(w, r, entity, &f)
 		if !ok {
@@ -535,6 +526,25 @@ func (h *Handlers) activity(entity, view string) http.HandlerFunc {
 			h.writeUserActivity(w, r, rows, offset, limit)
 		}
 	}
+}
+
+// activityQuery 는 활동 화면 쿼리 파라미터다
+type activityQuery struct{ keyLimit, offset, limit int }
+
+// activityParams 는 쿼리 파라미터를 읽고 검사한다. view 마다 limit 기본값과 필수 파라미터가 다르다
+func activityParams(r *http.Request, view string) (activityQuery, validationError) {
+	var errs validationError
+	params := activityQuery{keyLimit: queryInt(r, "api_key_limit", 100, 1, 1000, &errs), offset: queryInt(r, "offset", 0, 0, 0, &errs)}
+	limitDefault := map[string]int{"keys": 50, "users": 50, "search": 100, "model_top_keys": 5}[view]
+	params.limit = queryInt(r, "limit", limitDefault, 1, 100, &errs)
+	q := r.URL.Query()
+	if view == "search" && q.Get("search") == "" {
+		errs = append(errs, FieldError{Type: "missing", Loc: []any{"query", "search"}, Msg: "Field required"})
+	}
+	if view == "model_top_keys" && q.Get("model_group") == "" {
+		errs = append(errs, FieldError{Type: "missing", Loc: []any{"query", "model_group"}, Msg: "Field required"})
+	}
+	return params, errs
 }
 
 // userEmails 는 키 소유자 이메일 검색용이다(키 메타데이터에 이미 들어 있다)

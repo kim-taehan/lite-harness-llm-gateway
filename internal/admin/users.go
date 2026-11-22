@@ -316,9 +316,9 @@ func (h *Handlers) userInfo(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) adminUserInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	principal, _ := auth.PrincipalFrom(ctx)
+	caller := principal(ctx)
 	var userInfo any
-	if user, err := h.users.Find(ctx, principal.UserID); err == nil {
+	if user, err := h.users.Find(ctx, caller.UserID); err == nil {
 		userRows, err := h.rows.userRows(ctx, []auth.User{user})
 		if err != nil {
 			h.internalError(w, r, err)
@@ -339,7 +339,7 @@ func (h *Handlers) adminUserInfo(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, row{"user_id": principal.UserID, "user_info": userInfo, "keys": []any{}, "teams": teamRows})
+	core.WriteJSON(w, http.StatusOK, row{"user_id": caller.UserID, "user_info": userInfo, "keys": []any{}, "teams": teamRows})
 }
 
 // userInfoV2 는 사용자 상세 화면의 본체다. 평면 객체이고 teams 는 id 배열이다

@@ -74,7 +74,7 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		errs.write(w)
 		return
 	}
-	principal, _ := auth.PrincipalFrom(r.Context())
+	caller := principal(r.Context())
 	input := auth.NewTeam{TeamID: req.TeamID, TeamAlias: req.TeamAlias, Models: req.Models, Metadata: req.Metadata,
 		Blocked: req.Blocked != nil && *req.Blocked, Members: refs}
 
@@ -82,7 +82,7 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 	var team auth.Team
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
 		var err error
-		if team, err = h.teams.Create(ctx, input, principal.UserID); err != nil {
+		if team, err = h.teams.Create(ctx, input, caller.UserID); err != nil {
 			return err
 		}
 		_, err = h.limits.Apply(ctx, limits.ScopeTeam, team.TeamID, req.patch())
@@ -172,14 +172,14 @@ func (h *Handlers) deleteTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := unique(req.TeamIDs)
-	principal, _ := auth.PrincipalFrom(r.Context())
+	caller := principal(r.Context())
 	// 팀과 그 팀·팀원의 한도를 함께 지운다(팀 키는 auth 가 사본으로 옮긴다)
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
 		memberTargets, err := h.memberTargetsOfTeams(ctx, ids)
 		if err != nil {
 			return err
 		}
-		if err := h.teams.Delete(ctx, ids, principal.UserID); err != nil {
+		if err := h.teams.Delete(ctx, ids, caller.UserID); err != nil {
 			return err
 		}
 		if err := h.limits.Delete(ctx, limits.ScopeTeamMember, memberTargets); err != nil {
@@ -401,31 +401,39 @@ func (h *Handlers) memberTargetsOfTeams(ctx context.Context, teamIDs []string) (
 }
 
 // updateMember 는 litellm 처럼 저장 결과가 아니라 요청 값을 되돌려 준다. 팀원 한도는 limits 에 저장한다
-func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TeamID             *string        `json:"team_id"`
-		UserID             *string        `json:"user_id"`
-		UserEmail          *string        `json:"user_email"`
-		Role               *string        `json:"role"`
-		AllowedModels      []string       `json:"allowed_models"`
-		TempBudgetIncrease *float64       `json:"temp_budget_increase"`
-		TempBudgetExpiry   *string        `json:"temp_budget_expiry"`
-		ModelMaxBudget     map[string]any `json:"model_max_budget"`
-		memberLimitFields
+// memberUpdateRequest 는 /team/member_update 본문이다
+type memberUpdateRequest struct {
+	TeamID             *string        `json:"team_id"`
+	UserID             *string        `json:"user_id"`
+	UserEmail          *string        `json:"user_email"`
+	Role               *string        `json:"role"`
+	AllowedModels      []string       `json:"allowed_models"`
+	TempBudgetIncrease *float64       `json:"temp_budget_increase"`
+	TempBudgetExpiry   *string        `json:"temp_budget_expiry"`
+	ModelMaxBudget     map[string]any `json:"model_max_budget"`
+	memberLimitFields
+}
+
+// parse 는 바꿀 역할(보내지 않았으면 nil)과 형식 오류를 낸다
+func (req memberUpdateRequest) parse(raw map[string]any) (*auth.TeamRole, validationError) {
+	errs := memberTargetErrors(raw, req.TeamID, req.UserID, req.UserEmail)
+	if req.Role == nil {
+		return nil, errs
 	}
+	role := auth.TeamRole(*req.Role)
+	if !role.Valid() {
+		return nil, append(errs, FieldError{Type: "literal_error", Loc: []any{"body", "role"}, Msg: "Input should be 'admin' or 'user'", Input: *req.Role})
+	}
+	return &role, errs
+}
+
+func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
+	var req memberUpdateRequest
 	raw, ok := requestBody(w, r, &req)
 	if !ok {
 		return
 	}
-	errs := memberTargetErrors(raw, req.TeamID, req.UserID, req.UserEmail)
-	var role *auth.TeamRole
-	if req.Role != nil {
-		if rr := auth.TeamRole(*req.Role); rr.Valid() {
-			role = &rr
-		} else {
-			errs = append(errs, FieldError{Type: "literal_error", Loc: []any{"body", "role"}, Msg: "Input should be 'admin' or 'user'", Input: *req.Role})
-		}
-	}
+	role, errs := req.parse(raw)
 	if len(errs) > 0 {
 		errs.write(w)
 		return
@@ -447,13 +455,7 @@ func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 	var invalid *limits.InvalidError
 	switch {
 	case err == nil:
-		core.WriteJSON(w, http.StatusOK, row{
-			"user_id": userID, "user_email": req.UserEmail, "team_id": *req.TeamID,
-			"max_budget_in_team": req.MaxBudgetInTeam.Value, "tpm_limit": req.TPMLimit.Value, "rpm_limit": req.RPMLimit.Value,
-			"budget_duration": req.BudgetDuration.Value, "allowed_models": req.AllowedModels,
-			"temp_budget_increase": req.TempBudgetIncrease, "temp_budget_expiry": req.TempBudgetExpiry,
-			"model_max_budget": req.ModelMaxBudget,
-		})
+		core.WriteJSON(w, http.StatusOK, req.response(userID))
 	case errors.As(err, &invalid):
 		detailError(400, invalid.Message).Write(w)
 	case errors.Is(err, auth.ErrTeamNotFound):
@@ -463,6 +465,16 @@ func (h *Handlers) updateMember(w http.ResponseWriter, r *http.Request) {
 			derefOr(req.UserID, "None"), derefOr(req.UserEmail, "None"))).Write(w)
 	default:
 		h.internalError(w, r, err)
+	}
+}
+
+func (req memberUpdateRequest) response(userID string) row {
+	return row{
+		"user_id": userID, "user_email": req.UserEmail, "team_id": *req.TeamID,
+		"max_budget_in_team": req.MaxBudgetInTeam.Value, "tpm_limit": req.TPMLimit.Value, "rpm_limit": req.RPMLimit.Value,
+		"budget_duration": req.BudgetDuration.Value, "allowed_models": req.AllowedModels,
+		"temp_budget_increase": req.TempBudgetIncrease, "temp_budget_expiry": req.TempBudgetExpiry,
+		"model_max_budget": req.ModelMaxBudget,
 	}
 }
 

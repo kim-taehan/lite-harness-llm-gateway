@@ -97,11 +97,23 @@ func newIdentity(db *core.DB) identity {
 
 // newLogin 은 빌드에 들어간 로그인 방식으로 로그인을 만든다. SSO 가 들어갔으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
-	return auth.NewLogin(ctx, cfg.Login, cfg.MasterKey, cfg.SSO, id.users, id.teams, &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, time.Now, logger)
+	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
+		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Now: time.Now, Logger: logger})
 }
 
-func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, login *auth.Login, usage *limits.UsageRecorder, logger *slog.Logger) modules {
-	cache, users, teams := id.cache, id.users, id.teams
+// parts 는 조립에 필요한, 이미 만들어 둔 부품이다
+type parts struct {
+	lifecycle *core.Lifecycle
+	db        *core.DB
+	id        identity
+	login     *auth.Login
+	usage     *limits.UsageRecorder
+	logger    *slog.Logger
+}
+
+func assemble(cfg Config, p parts) modules {
+	db, logger, usage := p.db, p.logger, p.usage
+	cache, users, teams := p.id.cache, p.id.users, p.id.teams
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
 	deployments := inference.NewDeployments(db)
@@ -110,8 +122,8 @@ func assemble(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, l
 		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
-			core.HealthRoutes(lifecycle, db),
-			login.Routes(),
+			core.HealthRoutes(p.lifecycle, db),
+			p.login.Routes(),
 			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Policies: policies, Deployments: deployments,
 				Usage: limits.NewUsageQuery(db), Settings: settings, Now: time.Now, Logger: logger}).Routes(),
@@ -139,8 +151,8 @@ func noProxyTransport() *http.Transport {
 var usageOptions = limits.UsageOptions{BatchSize: 100, FlushInterval: time.Second, QueueCapacity: 10_000}
 
 // buildHandler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
-func buildHandler(cfg Config, lifecycle *core.Lifecycle, db *core.DB, id identity, login *auth.Login, usage *limits.UsageRecorder, logger *slog.Logger) http.Handler {
-	m := assemble(cfg, lifecycle, db, id, login, usage, logger)
+func buildHandler(cfg Config, p parts) http.Handler {
+	m := assemble(cfg, p)
 	mux := http.NewServeMux()
 	for _, route := range m.routes {
 		mux.Handle(route.Pattern(), m.authenticator.Guard(route))
@@ -193,7 +205,7 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	lifecycle := &core.Lifecycle{}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           buildHandler(cfg, lifecycle, db, id, login, usage, logger),
+		Handler:           buildHandler(cfg, parts{lifecycle: lifecycle, db: db, id: id, login: login, usage: usage, logger: logger}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout 은 두지 않는다. LLM 스트림은 수 분 이어질 수 있다
 	}

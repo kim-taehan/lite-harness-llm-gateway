@@ -386,7 +386,7 @@ func (h *Handlers) spendLogFacet(endUsers bool) http.HandlerFunc {
 				h.internalError(w, r, err)
 				return
 			}
-			if ids, hasMore, err = h.usage.LogUsers(r.Context(), start, end, queryString(r, "q"), scope, (page-1)*size, size); err != nil {
+			if ids, hasMore, err = h.usage.LogUsers(r.Context(), limits.UserLogQuery{Start: start, End: end, Search: queryString(r, "q"), Scope: scope, Offset: (page - 1) * size, Limit: size}); err != nil {
 				h.internalError(w, r, err)
 				return
 			}

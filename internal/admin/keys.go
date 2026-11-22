@@ -91,16 +91,7 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 		return
 	}
 
-	var plain string
-	var key auth.Key
-	err = h.db.InTx(ctx, func(ctx context.Context) error {
-		var err error
-		if plain, key, err = h.keys.Generate(ctx, input); err != nil {
-			return err
-		}
-		_, err = h.limits.Apply(ctx, limits.ScopeKey, key.Token, req.patch())
-		return err
-	})
+	plain, key, err := h.createKeyWithLimits(ctx, input, req.patch())
 	var invalid *limits.InvalidError
 	var badKey *auth.InvalidCustomKeyError
 	switch {
@@ -125,6 +116,21 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// createKeyWithLimits 는 키를 만들고 그 키의 한도를 정한다. 한 트랜잭션이라 한도 값이 틀리면 키도 만들지 않는다
+func (h *Handlers) createKeyWithLimits(ctx context.Context, input auth.NewKey, limitPatch limits.Patch) (string, auth.Key, error) {
+	var plain string
+	var key auth.Key
+	err := h.db.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		if plain, key, err = h.keys.Generate(ctx, input); err != nil {
+			return err
+		}
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, key.Token, limitPatch)
+		return err
+	})
+	return plain, key, err
 }
 
 // newKeyInput 은 /key/generate 본문을 저장소 입력으로 바꾼다. 서비스 계정 키는 사용자가 없고 metadata.service_account_id 를 채운다.
@@ -215,23 +221,11 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 		validationError{{Type: "value_error", Loc: []any{"body"}, Msg: "Value error, Either 'key' or 'key_alias' must be provided", Input: raw}}.write(w)
 		return
 	}
-	// /key/update 는 litellm 에서 auth_error·"None" 으로 감싼다(KM:4069-4088)
 	ctx := r.Context()
 	p := principal(ctx)
-	key, err := h.keyTarget(ctx, req.Key, req.KeyAlias.Value)
-	if errors.Is(err, auth.ErrKeyNotFound) {
-		keyNotFound(req.Key, req.KeyAlias.Value).Write(w)
+	key, ok := h.keyToUpdate(w, r, req.Key, req.KeyAlias.Value, req.keyFields)
+	if !ok {
 		return
-	}
-	if err != nil {
-		h.internalError(w, r, err)
-		return
-	}
-	if !p.IsAdmin() {
-		if denial, denied := h.checkKeyUpdate(ctx, p, key, req.keyFields); denied {
-			denial.Write(w)
-			return
-		}
 	}
 	patch, err := h.keyPatch(req.keyFields, req.Key == nil, p.UserID)
 	if err != nil {
@@ -267,6 +261,29 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// keyToUpdate 는 수정할 키를 찾고 비관리자의 수정 권한을 본다. /key/update 는 litellm 에서 auth_error·"None" 으로 감싼다(KM:4069-4088).
+// 안 되면 응답을 쓰고 false 를 돌려준다
+func (h *Handlers) keyToUpdate(w http.ResponseWriter, r *http.Request, key, alias *string, fields keyFields) (auth.Key, bool) {
+	ctx := r.Context()
+	p := principal(ctx)
+	found, err := h.keyTarget(ctx, key, alias)
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		keyNotFound(key, alias).Write(w)
+		return auth.Key{}, false
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return auth.Key{}, false
+	}
+	if !p.IsAdmin() {
+		if denial, denied := h.checkKeyUpdate(ctx, p, found, fields); denied {
+			denial.Write(w)
+			return auth.Key{}, false
+		}
+	}
+	return found, true
 }
 
 func keyNotFound(key, alias *string) core.ProxyError {
@@ -457,22 +474,8 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	p := principal(ctx)
-	key, err := h.keys.Find(ctx, auth.TokenOf(input))
-	if errors.Is(err, auth.ErrKeyNotFound) {
-		proxyError(404, "Key "+input+" not found.").Write(w)
-		return
-	}
-	if err != nil {
-		h.internalError(w, r, err)
-		return
-	}
-	allowed, err := h.canModifyKey(ctx, p, key, "/key/regenerate")
-	if err != nil {
-		h.internalError(w, r, err)
-		return
-	}
-	if !allowed {
-		proxyError(403, "You are not authorized to regenerate this key").Write(w)
+	key, ok := h.keyToRegenerate(w, r, input)
+	if !ok {
 		return
 	}
 	patch := auth.KeyPatch{KeyAlias: req.KeyAlias, UpdatedBy: p.UserID}
@@ -484,19 +487,13 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.Expires = core.To(expires)
 	}
-	plain, regenerated, err := h.rotateKey(ctx, key.Token, req.NewKey, p.UserID, h.graceDeadline(req.GracePeriod), patch, req.patch())
+	plain, regenerated, err := h.rotateKey(ctx, keyRotation{oldToken: key.Token, newKey: req.NewKey, by: p.UserID, graceUntil: h.graceDeadline(req.GracePeriod),
+		patch: patch, limitPatch: req.patch()})
 	var invalid *limits.InvalidError
 	var badKey *auth.InvalidCustomKeyError
 	switch {
 	case err == nil:
-		kr, err := h.rows.keyRowOf(ctx, regenerated)
-		if err != nil {
-			h.internalError(w, r, err)
-			return
-		}
-		// litellm: token 은 빼고(null) token_id 에 새 해시, key 에 새 원문(이 응답에서만)
-		kr["key"], kr["token_id"], kr["token"] = plain, regenerated.Token, nil
-		core.WriteJSON(w, http.StatusOK, kr)
+		h.writeRegenerated(w, r, plain, regenerated)
 	case errors.As(err, &badKey):
 		proxyError(400, badKey.Message).Write(w)
 	case errors.Is(err, auth.ErrKeyAliasTaken):
@@ -506,6 +503,41 @@ func (h *Handlers) regenerateKey(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.internalError(w, r, err)
 	}
+}
+
+// keyToRegenerate 는 재발급할 키를 찾고 부른 사람이 바꿀 수 있는지 본다. 아니면 응답을 쓰고 false 를 돌려준다
+func (h *Handlers) keyToRegenerate(w http.ResponseWriter, r *http.Request, input string) (auth.Key, bool) {
+	ctx := r.Context()
+	key, err := h.keys.Find(ctx, auth.TokenOf(input))
+	if errors.Is(err, auth.ErrKeyNotFound) {
+		proxyError(404, "Key "+input+" not found.").Write(w)
+		return auth.Key{}, false
+	}
+	if err != nil {
+		h.internalError(w, r, err)
+		return auth.Key{}, false
+	}
+	allowed, err := h.canModifyKey(ctx, principal(ctx), key, "/key/regenerate")
+	if err != nil {
+		h.internalError(w, r, err)
+		return auth.Key{}, false
+	}
+	if !allowed {
+		proxyError(403, "You are not authorized to regenerate this key").Write(w)
+		return auth.Key{}, false
+	}
+	return key, true
+}
+
+func (h *Handlers) writeRegenerated(w http.ResponseWriter, r *http.Request, plain string, regenerated auth.Key) {
+	kr, err := h.rows.keyRowOf(r.Context(), regenerated)
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	// litellm: token 은 빼고(null) token_id 에 새 해시, key 에 새 원문(이 응답에서만)
+	kr["key"], kr["token_id"], kr["token"] = plain, regenerated.Token, nil
+	core.WriteJSON(w, http.StatusOK, kr)
 }
 
 // graceDeadline 은 grace_period("24h", "2d" 등)가 끝나는 때다. litellm 처럼 비었거나 형식이 틀리거나 0 이하면 유예 없이 바로 폐기한다
@@ -522,24 +554,34 @@ func (h *Handlers) graceDeadline(period *string) *time.Time {
 }
 
 // rotateKey 는 새 해시로 키를 바꾸고(옛 해시는 graceUntil 까지 남긴다), 그 키의 한도를 새 해시로 옮기고, 바꾸는 값을 적용한다. 한 트랜잭션이다
-func (h *Handlers) rotateKey(ctx context.Context, oldToken string, newKey *string, by string, graceUntil *time.Time, patch auth.KeyPatch, limitPatch limits.Patch) (string, auth.Key, error) {
+func (h *Handlers) rotateKey(ctx context.Context, rot keyRotation) (string, auth.Key, error) {
 	var plain string
 	var rotated auth.Key
 	err := h.db.InTx(ctx, func(ctx context.Context) error {
 		var err error
-		if plain, rotated, err = h.keys.Regenerate(ctx, oldToken, newKey, by, graceUntil); err != nil {
+		if plain, rotated, err = h.keys.Regenerate(ctx, rot.oldToken, rot.newKey, rot.by, rot.graceUntil); err != nil {
 			return err
 		}
-		if err := h.limits.Retarget(ctx, limits.ScopeKey, oldToken, rotated.Token); err != nil {
+		if err := h.limits.Retarget(ctx, limits.ScopeKey, rot.oldToken, rotated.Token); err != nil {
 			return err
 		}
-		if rotated, err = h.keys.Update(ctx, rotated.Token, patch); err != nil {
+		if rotated, err = h.keys.Update(ctx, rotated.Token, rot.patch); err != nil {
 			return err
 		}
-		_, err = h.limits.Apply(ctx, limits.ScopeKey, rotated.Token, limitPatch)
+		_, err = h.limits.Apply(ctx, limits.ScopeKey, rotated.Token, rot.limitPatch)
 		return err
 	})
 	return plain, rotated, err
+}
+
+// keyRotation 은 키 재발급 한 번에 필요한 값이다. newKey 가 nil 이면 새로 만들고, graceUntil 이 nil 이면 옛 키를 바로 폐기한다
+type keyRotation struct {
+	oldToken   string
+	newKey     *string
+	by         string
+	graceUntil *time.Time
+	patch      auth.KeyPatch
+	limitPatch limits.Patch
 }
 
 func (h *Handlers) blockKey(w http.ResponseWriter, r *http.Request)   { h.setKeyBlocked(w, r, true) }

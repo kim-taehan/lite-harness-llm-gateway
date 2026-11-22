@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 	"llm-gateway/internal/inference"
 )
@@ -253,7 +252,7 @@ func (h *Handlers) visibleDeployments(r *http.Request) ([]inference.Deployment, 
 	if err != nil {
 		return nil, err
 	}
-	p, _ := auth.PrincipalFrom(r.Context())
+	p := principal(r.Context())
 	if p.IsAdmin() || p.Role == core.RoleProxyAdminViewer {
 		return all, nil
 	}

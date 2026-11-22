@@ -29,7 +29,7 @@ func TestLogUsers_SearchTreatsWildcardsAsText(t *testing.T) {
 	q := newLogQuery(t, map[string]string{"r1": "a_b", "r2": "axb", "r3": "100%"})
 	start, end := fixedNow.Add(-time.Hour), fixedNow.Add(time.Hour)
 	for search, want := range map[string][]string{"a_b": {"a_b"}, "%": {"100%"}, "b": {"a_b", "axb"}} {
-		got, _, err := q.LogUsers(t.Context(), start, end, &search, nil, 0, 10)
+		got, _, err := q.LogUsers(t.Context(), UserLogQuery{Start: start, End: end, Search: &search, Limit: 10})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -63,16 +63,27 @@ type Login struct {
 	logger    *slog.Logger
 }
 
+// LoginDeps 는 NewLogin 이 받는 값이다. Client 는 SSO 설정을 읽을 때만 쓴다
+type LoginDeps struct {
+	Methods LoginMethods
+	Master  MasterKey
+	OIDC    OIDCConfig
+	Users   *Users
+	Teams   *Teams
+	Client  *http.Client
+	Now     func() time.Time
+	Logger  *slog.Logger
+}
+
 // NewLogin 은 SSO 가 들어간 빌드면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
-func NewLogin(ctx context.Context, methods LoginMethods, master MasterKey, oidc OIDCConfig, users *Users, teams *Teams,
-	client *http.Client, now func() time.Time, logger *slog.Logger) (*Login, error) {
-	l := &Login{methods: methods, flows: newCLIFlows(now), gate: passwordGate{users: users, attempts: newLoginAttempts(now)}, keys: newLoginKeys(master), master: master, users: users, teams: teams,
-		publicURL: strings.TrimRight(oidc.PublicURL, "/"), now: now, logger: logger}
-	if methods.SSO {
-		if oidc.Issuer == "" || oidc.ClientID == "" || oidc.PublicURL == "" {
+func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
+	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, users: d.Users, teams: d.Teams,
+		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), now: d.Now, logger: d.Logger}
+	if d.Methods.SSO {
+		if d.OIDC.Issuer == "" || d.OIDC.ClientID == "" || d.OIDC.PublicURL == "" {
 			return nil, errors.New("SSO 가 들어간 빌드다. GATEWAY_SSO_ISSUER, GATEWAY_SSO_CLIENT_ID, GATEWAY_PUBLIC_URL 이 필요하다")
 		}
-		discovered, err := discoverOIDC(ctx, oidc, client)
+		discovered, err := discoverOIDC(ctx, d.OIDC, d.Client)
 		if err != nil {
 			return nil, err
 		}

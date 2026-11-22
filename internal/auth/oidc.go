@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,21 @@ type OIDCConfig struct {
 	ClientID     string // GATEWAY_SSO_CLIENT_ID
 	ClientSecret string // GATEWAY_SSO_CLIENT_SECRET (공개 클라이언트면 비운다)
 	PublicURL    string // GATEWAY_PUBLIC_URL, 브라우저가 보는 게이트웨이 주소(redirect_uri 의 앞부분, litellm PROXY_BASE_URL)
+}
+
+// LogValue 는 로그에 클라이언트 비밀이 나가지 않게 가린다
+func (c OIDCConfig) LogValue() slog.Value {
+	secret := ""
+	if c.ClientSecret != "" {
+		secret = "****"
+	}
+	return slog.GroupValue(slog.String("issuer", c.Issuer), slog.String("client_id", c.ClientID),
+		slog.String("client_secret", secret), slog.String("public_url", c.PublicURL))
+}
+
+// String 은 %v 로 찍어도 클라이언트 비밀이 나가지 않게 한다
+func (c OIDCConfig) String() string {
+	return fmt.Sprintf("OIDCConfig{issuer=%s client_id=%s client_secret=****}", c.Issuer, c.ClientID)
 }
 
 // oidcClient 는 authorization code + PKCE(S256) 흐름이다(K 2.2·2.3, litellm generic SSO 와 같다)

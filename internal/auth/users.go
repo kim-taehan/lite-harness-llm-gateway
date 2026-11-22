@@ -52,7 +52,7 @@ func (u *Users) Create(ctx context.Context, input NewUser) (User, []string, erro
 			}
 		}
 		var err error
-		created, err = u.insert(ctx, userID, input.UserEmail, input.UserAlias, input.UserRole, input.Models, input.Metadata)
+		created, err = u.insert(ctx, userID, input)
 		if err != nil || input.TeamID == nil {
 			return err
 		}
@@ -215,7 +215,7 @@ func (u *Users) resolveMember(ctx context.Context, ref MemberRef) (User, error) 
 	if ref.UserID == nil {
 		user, err := u.FindByEmail(ctx, deref(ref.UserEmail))
 		if errors.Is(err, ErrUserNotFound) {
-			return u.insert(ctx, core.NewUUID(), ref.UserEmail, nil, &internalUser, nil, nil)
+			return u.insert(ctx, core.NewUUID(), NewUser{UserEmail: ref.UserEmail, UserRole: &internalUser})
 		}
 		return user, err
 	}
@@ -230,18 +230,20 @@ func (u *Users) resolveMember(ctx context.Context, ref MemberRef) (User, error) 
 	}
 	user, err := u.Find(ctx, *ref.UserID)
 	if errors.Is(err, ErrUserNotFound) {
-		return u.insert(ctx, *ref.UserID, ref.UserEmail, nil, &internalUser, nil, nil)
+		return u.insert(ctx, *ref.UserID, NewUser{UserEmail: ref.UserEmail, UserRole: &internalUser})
 	}
 	return user, err
 }
 
-func (u *Users) insert(ctx context.Context, userID string, email, alias *string, role *core.Role, models []string, metadata map[string]any) (User, error) {
+// insert 는 사용자 행을 넣는다. 아이디는 부르는 쪽이 정한 값(생성 포함)이라 in.UserID 대신 쓴다
+func (u *Users) insert(ctx context.Context, userID string, in NewUser) (User, error) {
+	models := in.Models
 	if models == nil {
 		models = []string{}
 	}
 	return u.one(ctx, `
 		INSERT INTO app_user (user_id, user_email, user_alias, user_role, models, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+userColumns, userID, email, alias, role, models, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+userColumns, userID, in.UserEmail, in.UserAlias, in.UserRole, models, in.Metadata)
 }
 
 func (u *Users) one(ctx context.Context, sql string, args ...any) (User, error) {

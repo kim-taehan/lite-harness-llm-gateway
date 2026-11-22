@@ -49,7 +49,7 @@ func testGateway(t *testing.T) (http.Handler, *core.Lifecycle, *pgxpool.Pool) {
 	lifecycle := &core.Lifecycle{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	id := newIdentity(db)
-	return buildHandler(cfg, lifecycle, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger), lifecycle, pool
+	return buildHandler(cfg, parts{lifecycle: lifecycle, db: db, id: id, login: testLogin(t, cfg, id), usage: startUsage(t, db, logger), logger: logger}), lifecycle, pool
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
@@ -109,7 +109,7 @@ func TestEveryRouteDeclaresAccess(t *testing.T) {
 	cfg, _ := LoadConfig(testEnv)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	id := newIdentity(db)
-	for _, r := range assemble(cfg, &core.Lifecycle{}, db, id, testLogin(t, cfg, id), startUsage(t, db, logger), logger).routes {
+	for _, r := range assemble(cfg, parts{lifecycle: &core.Lifecycle{}, db: db, id: id, login: testLogin(t, cfg, id), usage: startUsage(t, db, logger), logger: logger}).routes {
 		if r.Handler == nil || r.Method == "" || r.Path == "" {
 			t.Errorf("빈 라우트: %+v", r)
 		}

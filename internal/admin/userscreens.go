@@ -53,42 +53,12 @@ func (h *Handlers) filterUsers(w http.ResponseWriter, r *http.Request) {
 // bulkUpdateUsers 는 선택한 사용자들(users) 또는 전체(all_users + user_updates)를 같은 값으로 고친다.
 // 사용자마다 따로 처리하고, 개별 실패는 결과에 남기며 전체는 200 이다(litellm 과 같다)
 func (h *Handlers) bulkUpdateUsers(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Users       []userUpdate `json:"users"`
-		AllUsers    bool         `json:"all_users"`
-		UserUpdates *userUpdate  `json:"user_updates"`
-	}
+	var req bulkUpdateRequest
 	if _, ok := requestBody(w, r, &req); !ok {
 		return
 	}
-	targets := req.Users
-	switch {
-	case req.AllUsers && req.UserUpdates != nil:
-		if req.UserUpdates.Password != nil {
-			detailError(400, "Setting one password for all users is not supported. Set passwords per user via /user/update.").Write(w)
-			return
-		}
-		page, err := h.users.Page(r.Context(), auth.UserQuery{Page: 1, PageSize: maxBulk + 1})
-		if err != nil {
-			h.internalError(w, r, err)
-			return
-		}
-		targets = make([]userUpdate, 0, len(page.Items))
-		for _, u := range page.Items {
-			t := *req.UserUpdates
-			t.UserID, t.UserEmail = &u.UserID, core.Change[string]{}
-			targets = append(targets, t)
-		}
-	case len(req.Users) == 0:
-		detailError(400, "Must specify either 'users' for individual updates or 'all_users=True' with 'user_updates' for bulk updates").Write(w)
-		return
-	}
-	switch {
-	case len(targets) == 0:
-		detailError(400, "No users found to update").Write(w)
-		return
-	case len(targets) > maxBulk:
-		detailError(400, "Maximum 500 users can be updated at once").Write(w)
+	targets, ok := h.bulkUserTargets(w, r, req)
+	if !ok {
 		return
 	}
 	results := make([]row, 0, len(targets))
@@ -117,6 +87,48 @@ func (h *Handlers) bulkUpdateUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	core.WriteJSON(w, http.StatusOK, row{"results": results, "total_requested": len(targets),
 		"successful_updates": succeeded, "failed_updates": len(targets) - succeeded})
+}
+
+// bulkUpdateRequest 는 /user/bulk_update 본문이다. users 로 한 명씩 정하거나, all_users 와 user_updates 로 전체에 같은 값을 정한다
+type bulkUpdateRequest struct {
+	Users       []userUpdate `json:"users"`
+	AllUsers    bool         `json:"all_users"`
+	UserUpdates *userUpdate  `json:"user_updates"`
+}
+
+// bulkUserTargets 는 고칠 사용자 목록이다. 요청이 틀렸거나 개수가 범위 밖이면 응답을 쓰고 false 를 돌려준다
+func (h *Handlers) bulkUserTargets(w http.ResponseWriter, r *http.Request, req bulkUpdateRequest) ([]userUpdate, bool) {
+	targets := req.Users
+	switch {
+	case req.AllUsers && req.UserUpdates != nil:
+		if req.UserUpdates.Password != nil {
+			detailError(400, "Setting one password for all users is not supported. Set passwords per user via /user/update.").Write(w)
+			return nil, false
+		}
+		page, err := h.users.Page(r.Context(), auth.UserQuery{Page: 1, PageSize: maxBulk + 1})
+		if err != nil {
+			h.internalError(w, r, err)
+			return nil, false
+		}
+		targets = make([]userUpdate, 0, len(page.Items))
+		for _, u := range page.Items {
+			t := *req.UserUpdates
+			t.UserID, t.UserEmail = &u.UserID, core.Change[string]{}
+			targets = append(targets, t)
+		}
+	case len(req.Users) == 0:
+		detailError(400, "Must specify either 'users' for individual updates or 'all_users=True' with 'user_updates' for bulk updates").Write(w)
+		return nil, false
+	}
+	switch {
+	case len(targets) == 0:
+		detailError(400, "No users found to update").Write(w)
+		return nil, false
+	case len(targets) > maxBulk:
+		detailError(400, "Maximum 500 users can be updated at once").Write(w)
+		return nil, false
+	}
+	return targets, true
 }
 
 // bulkErrorText 는 일괄 작업 결과의 error 문자열이다. 예상한 실패만 내용을 싣고 나머지는 숨긴다

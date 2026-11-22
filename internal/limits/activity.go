@@ -194,18 +194,27 @@ func logWhere(lq LogQuery) *core.ListQuery {
 	return &w
 }
 
+// UserLogQuery 는 로그 화면 사용자 필터의 조회 조건이다. Search 는 사용자 id 에 들어 있는 글자다
+type UserLogQuery struct {
+	Start, End    time.Time
+	Search        *string
+	Scope         *LogScope
+	Offset, Limit int
+}
+
 // LogUsers 는 기간 안 요청의 사용자 id 다(로그 화면 사용자 필터). litellm 처럼 최근 MaxLogTotal 행 안에서 고르고 오름차순으로 쪽을 나눈다
-func (q *UsageQuery) LogUsers(ctx context.Context, start, end time.Time, search *string, scope *LogScope, offset, limit int) ([]string, bool, error) {
-	w := logWhere(LogQuery{Start: &start, End: &end, Scope: scope})
+func (q *UsageQuery) LogUsers(ctx context.Context, uq UserLogQuery) ([]string, bool, error) {
+	limit := uq.Limit
+	w := logWhere(LogQuery{Start: &uq.Start, End: &uq.End, Scope: uq.Scope})
 	w.Where("user_id IS NOT NULL AND user_id <> ''")
 	outer := ""
-	if search != nil {
-		outer = "WHERE user_id ILIKE " + w.Arg(core.LikeContains(*search))
+	if uq.Search != nil {
+		outer = "WHERE user_id ILIKE " + w.Arg(core.LikeContains(*uq.Search))
 	}
 	rows, err := q.db.Q(ctx).Query(ctx, `
 		SELECT DISTINCT user_id FROM (SELECT user_id FROM request_log `+w.Clause()+`
 		                              ORDER BY created_at DESC LIMIT `+strconv.Itoa(MaxLogTotal)+`) recent `+outer+`
-		ORDER BY user_id`+w.LimitOffset(limit+1, offset), w.Args...)
+		ORDER BY user_id`+w.LimitOffset(limit+1, uq.Offset), w.Args...)
 	if err != nil {
 		return nil, false, err
 	}
