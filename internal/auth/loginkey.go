@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,7 +12,7 @@ import (
 )
 
 // 로그인 키(SSO·비밀번호 로그인으로 데스크탑이 받는 키). litellm 처럼 DB 에 저장하지 않는 자기 완결 암호문이다(K 4장):
-// "litellm_login_" + base64url(nonce || AES-256-GCM(JSON) || tag). 암호 키는 sha256(마스터 키).
+// "litellm_login_" + base64url(nonce || AES-256-GCM(JSON) || tag). 암호 키는 마스터 키에서 용도별로 파생한다(masterkey.go).
 // 요청마다 사용자·팀 행을 다시 읽어 역할·팀·차단을 반영하므로 발급 뒤 바뀐 권한도 바로 적용된다
 const (
 	loginKeyPrefix = "litellm_login_"
@@ -41,8 +40,7 @@ type loginKeys struct {
 }
 
 func newLoginKeys(master MasterKey) *loginKeys {
-	sum := sha256.Sum256(master.value)
-	block, err := aes.NewCipher(sum[:])
+	block, err := aes.NewCipher(master.derive(purposeLoginKeyAES))
 	if err != nil {
 		panic(err) // 32바이트 키라 일어나지 않는다
 	}

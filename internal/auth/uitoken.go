@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// signUIToken 은 대시보드 token 쿠키의 JWT 다(L 3.6). litellm 처럼 HS256, 서명 키는 마스터 키다.
+// signUIToken 은 대시보드 token 쿠키의 JWT 다(L 3.6). litellm 처럼 HS256, 서명 키는 마스터 키에서 파생한 용도별 키다.
 // 대시보드는 서명을 검증하지 않고 클레임만 읽는다. 서버도 이 JWT 를 다시 읽지 않는다(API 는 안의 key 클레임으로 인증한다)
 func signUIToken(master MasterKey, claims map[string]any) (string, error) {
 	payload, err := json.Marshal(claims)
@@ -23,7 +23,7 @@ func signUIToken(master MasterKey, claims map[string]any) (string, error) {
 }
 
 func signature(master MasterKey, unsigned string) []byte {
-	mac := hmac.New(sha256.New, master.value)
+	mac := hmac.New(sha256.New, master.derive(purposeUITokenHMAC))
 	mac.Write([]byte(unsigned))
 	return mac.Sum(nil)
 }

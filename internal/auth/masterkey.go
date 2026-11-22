@@ -2,6 +2,8 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"log/slog"
@@ -25,6 +27,19 @@ func NewMasterKey(value string) (MasterKey, error) {
 // Matches 는 비교 시간이 일치한 글자 수에 따라 달라지지 않게 비교한다(litellm 도 secrets.compare_digest)
 func (k MasterKey) Matches(candidate string) bool {
 	return subtle.ConstantTimeCompare(k.value, []byte(candidate)) == 1
+}
+
+// 용도별 파생 키 이름. 한 용도의 키가 새도 다른 용도로 쓸 수 없게 용도마다 따로 파생한다
+const (
+	purposeLoginKeyAES = "gateway/login-key/aes-256-gcm"
+	purposeUITokenHMAC = "gateway/ui-token/hmac-sha256"
+)
+
+// derive 는 마스터 키에서 용도별 32바이트 키를 만든다(HMAC-SHA256(마스터, 용도)). 마스터 키를 암호·서명에 직접 쓰지 않는다
+func (k MasterKey) derive(purpose string) []byte {
+	mac := hmac.New(sha256.New, k.value)
+	mac.Write([]byte(purpose))
+	return mac.Sum(nil)
 }
 
 func (k MasterKey) String() string { return "MasterKey(****)" }
