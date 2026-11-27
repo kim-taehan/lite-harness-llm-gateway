@@ -65,15 +65,16 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 		return
 	}
 	p, _ := auth.PrincipalFrom(r.Context())
-	if denial, denied := modelDenied(p, model); denied {
-		denial.Write(w)
-		return
-	}
-	deployment, found, err := h.choose(r, model)
+	active, err := h.deployments.Active(r.Context())
 	if err != nil {
 		h.internalError(w, r, err)
 		return
 	}
+	if denial, denied := modelDenied(p, AccessGroupsOf(active), model); denied {
+		denial.Write(w)
+		return
+	}
+	deployment, found := choose(active, model)
 	if !found {
 		// litellm 문구(proxy_server.py)
 		core.ProxyError{Status: 400, Type: "invalid_request_error", Param: "model",
@@ -97,11 +98,7 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 	h.relay(w, r, relayRequest{api: api, deployment: deployment, body: body, requested: model, stream: stream, permit: permit})
 }
 
-func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, error) {
-	all, err := h.deployments.Active(r.Context())
-	if err != nil {
-		return Deployment{}, false, err
-	}
+func choose(all []Deployment, model string) (Deployment, bool) {
 	var candidates []Deployment
 	for _, d := range all {
 		if d.ModelName == model {
@@ -109,9 +106,9 @@ func (h *Handlers) choose(r *http.Request, model string) (Deployment, bool, erro
 		}
 	}
 	if len(candidates) == 0 {
-		return Deployment{}, false, nil
+		return Deployment{}, false
 	}
-	return pick(candidates), true, nil
+	return pick(candidates), true
 }
 
 func readJSONObject(w http.ResponseWriter, r *http.Request) (map[string]any, error) {
@@ -133,6 +130,20 @@ func (h *Handlers) models(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.internalError(w, r, err)
 		return
+	}
+	// 대시보드는 include_model_access_groups=True 를 늘 보내 그룹 이름도 드롭다운에 받는다. 그룹의 모델을 하나라도 쓸 수 있으면 보인다
+	if r.URL.Query().Get("include_model_access_groups") == "True" {
+		active, err := h.deployments.Active(r.Context())
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		for group, members := range AccessGroupsOf(active) {
+			if slices.ContainsFunc(members, func(m string) bool { return slices.Contains(names, m) }) && !slices.Contains(names, group) {
+				names = append(names, group)
+			}
+		}
+		slices.Sort(names)
 	}
 	data := make([]map[string]any, 0, len(names))
 	for _, n := range names {
@@ -203,7 +214,7 @@ func (h *Handlers) groups(r *http.Request) ([]string, map[string][]Deployment, e
 		byName[d.ModelName] = append(byName[d.ModelName], d)
 	}
 	p, _ := auth.PrincipalFrom(r.Context())
-	return visible(p, names), byName, nil
+	return visible(p, AccessGroupsOf(all), names), byName, nil
 }
 
 func (h *Handlers) internalError(w http.ResponseWriter, r *http.Request, err error) {

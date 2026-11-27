@@ -181,7 +181,6 @@ func stubs() []stub {
 		stubReply(http.StatusNotImplemented, "POST /reload/model_cost_map", `{"status":"error","message":"Model cost map reload is not supported by this gateway"}`),
 		stubReply(http.StatusNotImplemented, "POST /schedule/model_cost_map_reload", `{"status":"error","message":"Model cost map reload is not supported by this gateway"}`),
 		stubReply(http.StatusNotImplemented, "DELETE /schedule/model_cost_map_reload", `{"status":"error","message":"Model cost map reload is not supported by this gateway"}`),
-		stubOK("GET /access_group/list", `{"access_groups":[]}`),
 		stubUnsupported("Access group budgets", "PUT /access_group/{access_group}/budget"),
 		stubUnsupported("Access group budgets", "DELETE /access_group/{access_group}/budget"),
 

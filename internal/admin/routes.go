@@ -153,6 +153,8 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/ui_settings", adminOnly, h.updateSettings(uiSettingsForm)),
 		route(http.MethodGet, "/get/ui_theme_settings", core.Public(), h.getSettings(uiThemeForm)),
 		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
+		route(http.MethodGet, "/access_group/list", adminOnly, h.listAccessGroups),
+		route(http.MethodGet, "/access_group/{access_group}/info", adminOnly, h.accessGroupInfo),
 		route(http.MethodGet, "/get/allowed_ips", adminOnly, h.getAllowedIPs),
 		route(http.MethodPost, "/add/allowed_ip", adminOnly, h.audited("updated", auditConfigTable, configTarget, h.addAllowedIP)),
 		route(http.MethodPost, "/delete/allowed_ip", adminOnly, h.audited("deleted", auditConfigTable, configTarget, h.deleteAllowedIP)),

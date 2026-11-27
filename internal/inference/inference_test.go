@@ -75,7 +75,7 @@ func TestModelDenied_KeyThenTeamWithWildcards(t *testing.T) {
 		{"팀 모델은 팀 키에만 적용", auth.Principal{TeamModels: []string{"m2"}}, "m1", ""},
 	}
 	for _, c := range cases {
-		denial, denied := modelDenied(c.principal, c.model)
+		denial, denied := modelDenied(c.principal, nil, c.model)
 		if (c.denied != "") != denied || (denied && denial.Type != c.denied) {
 			t.Errorf("%s: 거절=%v(%s), 기대 %q", c.name, denied, denial.Type, c.denied)
 		}

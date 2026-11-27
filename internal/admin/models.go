@@ -277,7 +277,8 @@ func (h *Handlers) visibleDeployments(r *http.Request) ([]inference.Deployment, 
 	if p.IsAdmin() || p.Role == core.RoleProxyAdminViewer {
 		return all, nil
 	}
-	return slices.DeleteFunc(all, func(d inference.Deployment) bool { return !inference.ModelVisible(p, d.ModelName) }), nil
+	groups := inference.AccessGroupsOf(all)
+	return slices.DeleteFunc(all, func(d inference.Deployment) bool { return !inference.ModelVisible(p, groups, d.ModelName) }), nil
 }
 
 // modelInfoV2 는 대시보드 모델 표의 공급원이다(GET /v2/model/info). 거르기·정렬·쪽 나누기를 litellm 쿼리 그대로 받는다
