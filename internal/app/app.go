@@ -140,6 +140,7 @@ type modules struct {
 
 // identity 는 auth 의 저장소들이다. 로그인(SSO 설정 읽기에 ctx 가 필요하다)과 나머지 조립이 함께 쓴다
 type identity struct {
+	db    *core.DB // 로그인 사건을 감사 기록에 남기는 데 쓴다
 	cache *auth.KeyCache
 	users *auth.Users
 	teams *auth.Teams
@@ -148,13 +149,13 @@ type identity struct {
 func newIdentity(db *core.DB) identity {
 	cache := auth.NewKeyCache(keyCacheTTL, time.Now)
 	users := auth.NewUsers(db, cache)
-	return identity{cache: cache, users: users, teams: auth.NewTeams(db, users, cache)}
+	return identity{db: db, cache: cache, users: users, teams: auth.NewTeams(db, users, cache)}
 }
 
 // newLogin 은 설정한 로그인 방식으로 로그인을 만든다. SSO 를 골랐으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
 	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
-		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Now: time.Now, Logger: logger})
+		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Events: admin.NewAuthAudit(id.db, time.Now, logger), Now: time.Now, Logger: logger})
 }
 
 // parts 는 조립에 필요한, 이미 만들어 둔 부품이다

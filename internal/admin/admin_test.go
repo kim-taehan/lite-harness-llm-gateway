@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -70,6 +71,22 @@ func TestTeamAdminEditDenial(t *testing.T) {
 		if (c.denied == "") != (got == "") || (c.denied != "" && !strings.Contains(got, c.denied)) {
 			t.Errorf("%s: %q (기대 %q)", c.name, got, c.denied)
 		}
+	}
+}
+
+// 감사 기록에는 비밀 값을 담는 필드를 어떤 깊이에서도 남기지 않고, max_tokens 처럼 이름만 비슷한 값은 남긴다
+func TestScrubbed_RemovesSecretFieldsAtAnyDepthAndKeepsTheRest(t *testing.T) {
+	got := scrubbed(map[string]any{
+		"model_name": "m1", "max_tokens": 100.0, "key": "sk-x", "metadata": map[string]any{"owner": "kim", "client_secret": "s"},
+		"litellm_params": map[string]any{"api_key": "sk-up", "aws_secret_access_key": "a", "vertex_api_key": "v", "api_base": "http://x",
+			"nested": []any{map[string]any{"password": "p", "name": "keep"}}},
+	})
+	want := map[string]any{
+		"model_name": "m1", "max_tokens": 100.0, "metadata": map[string]any{"owner": "kim"},
+		"litellm_params": map[string]any{"api_base": "http://x", "nested": []any{map[string]any{"name": "keep"}}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("scrubbed = %v\n기대   = %v", got, want)
 	}
 }
 

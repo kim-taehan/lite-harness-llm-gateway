@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,8 +29,26 @@ const (
 	auditUserTable = "LiteLLM_UserTable"
 )
 
-// auditSecretFields 는 기록에서 뺄 요청 필드다(키 원문·비밀번호)
-var auditSecretFields = []string{"key", "new_key", "password", "api_key", "secret"}
+// 감사 테이블 이름. litellm 에 있는 이름은 그대로 쓰고(대시보드 감사 화면의 필터 값), 설정 성격의 변경은 auditConfigTable 에 모은다
+const (
+	auditModelTable        = "LiteLLM_ProxyModelTable"
+	auditOrganizationTable = "LiteLLM_OrganizationTable"
+	auditOrgMemberTable    = "LiteLLM_OrganizationMembership"
+	auditProjectTable      = "LiteLLM_ProjectTable"
+	auditTagTable          = "LiteLLM_TagTable"
+	auditCustomerTable     = "LiteLLM_EndUserTable"
+	auditInvitationTable   = "LiteLLM_InvitationLink"
+	auditMembershipTable   = "LiteLLM_TeamMembership"
+)
+
+// auditSecretFields 는 기록에서 뺄 요청 필드 이름이다(키 원문·비밀번호·토큰). 중첩된 객체 안(litellm_params.api_key 등)에서도 뺀다
+var auditSecretFields = []string{"key", "new_key", "password", "api_key", "secret", "token", "access_token", "refresh_token", "id_token", "authorization"}
+
+// isAuditSecret 은 이름이 비밀 값을 담는 필드인지다. 목록에 있거나 이름에 secret·password 가 들어 있거나 _api_key 로 끝난다(aws_secret_access_key 등)
+func isAuditSecret(name string) bool {
+	lower := strings.ToLower(name)
+	return slices.Contains(auditSecretFields, lower) || strings.Contains(lower, "secret") || strings.Contains(lower, "password") || strings.HasSuffix(lower, "_api_key")
+}
 
 // auditTargets 는 한 번의 요청이 바꾼 대상 id 들이다. req·resp 는 요청·응답 본문(JSON 객체)이다
 type auditTargets func(r *http.Request, req, resp map[string]any) []string
@@ -77,17 +97,77 @@ func (c *capturedResponse) Write(b []byte) (int, error) {
 	return c.ResponseWriter.Write(b)
 }
 
+// scrubbed 는 비밀 값을 담는 필드를 모든 깊이에서 뺀 사본이다
 func scrubbed(req map[string]any) map[string]any {
 	if req == nil {
 		return nil
 	}
-	clean := map[string]any{}
-	for name, value := range req {
-		if !slices.Contains(auditSecretFields, name) {
-			clean[name] = value
+	return scrubValue(req).(map[string]any)
+}
+
+func scrubValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		clean := make(map[string]any, len(v))
+		for name, item := range v {
+			if !isAuditSecret(name) {
+				clean[name] = scrubValue(item)
+			}
+		}
+		return clean
+	case []any:
+		clean := make([]any, len(v))
+		for i, item := range v {
+			clean[i] = scrubValue(item)
+		}
+		return clean
+	}
+	return value
+}
+
+// fixedID 는 늘 같은 id 다(설정처럼 대상이 하나뿐인 변경)
+func fixedID(id string) auditTargets {
+	return func(*http.Request, map[string]any, map[string]any) []string { return []string{id} }
+}
+
+// pathID 는 경로 값 하나가 id 다. 여럿이면 ":" 로 이어 붙인다(팀원은 "팀:사용자", 한도 대상 id 와 같다)
+func pathID(names ...string) auditTargets {
+	return func(r *http.Request, _, _ map[string]any) []string {
+		parts := make([]string, len(names))
+		for i, name := range names {
+			parts[i] = r.PathValue(name)
+		}
+		return []string{strings.Join(parts, ":")}
+	}
+}
+
+// nestedID 는 요청 다음 응답의 객체(object) 안 field 가 id 다. 모델 생성 응답의 model_info.id 처럼 중첩된 id 를 찾는다.
+// 없으면 fallback 필드(요청)로 돌아간다
+func nestedID(object, field, fallback string) auditTargets {
+	return func(_ *http.Request, req, resp map[string]any) []string {
+		if inner, ok := resp[object].(map[string]any); ok {
+			if ids := auditStrings(inner[field]); len(ids) > 0 {
+				return ids
+			}
+		}
+		return auditStrings(req[fallback])
+	}
+}
+
+// bulkUserTargets 는 사용자 일괄 수정의 대상이다. 전체 사용자를 대상으로 한 요청은 "all_users" 한 줄이다
+func bulkUserTargets(_ *http.Request, req, _ map[string]any) []string {
+	if all, _ := req["all_users"].(bool); all {
+		return []string{"all_users"}
+	}
+	var ids []string
+	if users, ok := req["users"].([]any); ok {
+		for _, u := range users {
+			if m, ok := u.(map[string]any); ok {
+				ids = append(ids, auditStrings(m["user_id"])...)
+			}
 		}
 	}
-	return clean
+	return ids
 }
 
 // idsFrom 은 요청 다음 응답에서 첫 번째로 값이 있는 필드(문자열 또는 문자열 목록)의 id 들이다
@@ -144,6 +224,29 @@ type auditLog struct {
 }
 
 func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, objectID string, values map[string]any) error {
+	return a.recordAs(ctx, cmp.Or(p.UserID, "default_user_id"), p.KeyToken, action, table, objectID, values)
+}
+
+// authAudit 는 로그인·비밀번호 사건(auth.Event)을 감사 기록에 남긴다. 관리 API 를 거치지 않는 사건이라 핸들러 감싸기로는 못 잡는다.
+// 행위자는 사건의 UserID 이고, 로그인에 실패해 사용자를 모르면 시도한 아이디다. 기록이 실패해도 로그인은 막지 않는다
+type authAudit struct {
+	log    *auditLog
+	logger *slog.Logger
+}
+
+// NewAuthAudit 는 auth 의 사건을 감사 기록(audit_log)에 남기는 EventSink 다. 조립 지점이 로그인에 넣는다
+func NewAuthAudit(db *core.DB, now func() time.Time, logger *slog.Logger) auth.EventSink {
+	return authAudit{log: &auditLog{db: db, now: now}, logger: logger}
+}
+
+func (a authAudit) Record(ctx context.Context, e auth.Event) {
+	// 사용자 테이블의 사건으로 적는다. 대상 id 는 행위자와 같다
+	if err := a.log.recordAs(ctx, cmp.Or(e.UserID, "anonymous"), "", e.Action, auditUserTable, e.UserID, e.Values); err != nil {
+		a.logger.Error("감사 기록 실패", "action", e.Action, "user", e.UserID, "err", err)
+	}
+}
+
+func (a *auditLog) recordAs(ctx context.Context, changedBy, keyToken, action, table, objectID string, values map[string]any) error {
 	var encoded any
 	if values != nil {
 		data, err := json.Marshal(values)
@@ -155,7 +258,7 @@ func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, 
 	_, err := a.db.Q(ctx).Exec(ctx, `
 		INSERT INTO audit_log (id, updated_at, changed_by, changed_by_api_key, action, table_name, object_id, updated_values)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-		core.NewUUID(), a.now().UTC(), cmp.Or(p.UserID, "default_user_id"), p.KeyToken, action, table, objectID, encoded)
+		core.NewUUID(), a.now().UTC(), changedBy, keyToken, action, table, objectID, encoded)
 	return err
 }
 

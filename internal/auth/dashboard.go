@@ -81,6 +81,8 @@ func (l *Login) signInUI(w http.ResponseWriter, r *http.Request, username, passw
 			Headers: map[string]string{"Retry-After": "900"}}.Write(w)
 		return "", false
 	case errors.Is(err, ErrBadCredentials):
+		// 시도 제한에 걸린 요청(위 분기)은 남기지 않는다. 공격자가 감사 기록을 불리지 못하게 제한이 걸리기 전까지만 남는다
+		l.record(r, "login_failed", username, map[string]any{"method": uiMethodPassword, "reason": "bad_credentials"})
 		core.ProxyError{Status: http.StatusUnauthorized, Type: "auth_error", Param: "invalid_credentials", Message: invalidUICredentials}.Write(w)
 		return "", false
 	case err != nil:
@@ -101,6 +103,7 @@ func (l *Login) startUISession(w http.ResponseWriter, r *http.Request, user User
 	}
 	// HttpOnly 가 아니다. 대시보드가 document.cookie 로 읽는다(L 3.7)
 	http.SetCookie(w, &http.Cookie{Name: "token", Value: token, Path: "/", SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+	l.record(r, "login_success", user.UserID, map[string]any{"method": method})
 	return token, true
 }
 
@@ -203,5 +206,6 @@ func (l *Login) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "token", Value: "", Path: "/", MaxAge: -1})
+	l.record(r, "logout", p.UserID, map[string]any{"method": p.UIMethod})
 	core.WriteJSON(w, http.StatusOK, map[string]any{"message": "Session revoked."})
 }

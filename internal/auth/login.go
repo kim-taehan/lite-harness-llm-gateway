@@ -59,6 +59,7 @@ type Login struct {
 	teams     *Teams
 	publicURL string
 	proxies   TrustedProxies // 시도 제한이 쓰는 클라이언트 주소를 정할 때 X-Forwarded-For 를 믿는 앞단
+	events    EventSink      // 로그인·비밀번호 사건을 받아 적는 곳. nil 이면 기록하지 않는다
 	now       func() time.Time
 	logger    *slog.Logger
 }
@@ -72,14 +73,16 @@ type LoginDeps struct {
 	Teams   *Teams
 	Client  *http.Client
 	Proxies TrustedProxies
-	Now     func() time.Time
-	Logger  *slog.Logger
+	// Events 는 로그인·비밀번호 사건을 받아 적는 곳이다(선택)
+	Events EventSink
+	Now    func() time.Time
+	Logger *slog.Logger
 }
 
 // NewLogin 은 로그인 방식에 sso 를 골랐으면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
 	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, users: d.Users, teams: d.Teams,
-		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), proxies: d.Proxies, now: d.Now, logger: d.Logger}
+		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), proxies: d.Proxies, events: d.Events, now: d.Now, logger: d.Logger}
 	if d.Methods.SSO {
 		if d.OIDC.Issuer == "" || d.OIDC.ClientID == "" || d.OIDC.PublicURL == "" {
 			return nil, errors.New("로그인 방식에 sso 가 있다(GATEWAY_LOGIN_METHODS). GATEWAY_SSO_ISSUER, GATEWAY_SSO_CLIENT_ID, GATEWAY_PUBLIC_URL 이 필요하다. " +
@@ -244,6 +247,7 @@ func (l *Login) passwordSignIn(w http.ResponseWriter, r *http.Request) {
 		writePage(w, http.StatusTooManyRequests, "signin", signinPage)
 		return
 	case errors.Is(err, ErrBadCredentials):
+		l.record(r, "login_failed", username, map[string]any{"method": "cli_password", "reason": "bad_credentials"})
 		signinPage.Error = "이메일(아이디) 또는 비밀번호가 맞지 않습니다."
 		writePage(w, http.StatusUnauthorized, "signin", signinPage)
 		return
@@ -272,6 +276,7 @@ func (l *Login) finishSignIn(w http.ResponseWriter, r *http.Request, loginID str
 		flowNotFound(w)
 		return
 	}
+	l.record(r, "login_success", user.UserID, map[string]any{"method": "cli"})
 	writePage(w, http.StatusOK, "complete", page{Title: "LiteLLM CLI Login", Action: l.publicURL + "/sso/cli/complete/" + loginID, Token: token})
 }
 

@@ -127,6 +127,7 @@ func (l *Login) claimOnboarding(w http.ResponseWriter, r *http.Request) {
 		l.internalError(w, err)
 		return
 	}
+	l.record(r, "onboarding_claimed", user.UserID, map[string]any{"method": "invitation"})
 	// 비밀번호를 정하며 끊은 세션(폐기 시각)보다 뒤에 발급하므로 이 새 세션은 살아 있다
 	token, ok := l.startUISession(w, r, user, uiMethodPassword)
 	if !ok {
@@ -178,6 +179,7 @@ func (l *Login) changePassword(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		l.internalError(w, err)
 	default:
+		l.record(r, "password_changed", p.UserID, map[string]any{"method": "self_service"})
 		core.WriteJSON(w, http.StatusOK, map[string]any{"user_id": p.UserID, "message": "Password updated successfully."})
 	}
 }
