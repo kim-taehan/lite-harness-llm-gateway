@@ -22,7 +22,7 @@ Python litellm 프록시를 내리고, 폐쇄망용 LLM 게이트웨이를 Go �
 |---|---|
 | 서버 | Go 표준 `net/http`(1.22+ 패턴 라우팅). 웹 프레임워크는 쓰지 않는다 |
 | 런타임 | Go(`go.mod` 의 `toolchain go1.26.11` 로 고정). `CGO_ENABLED=0` 단일 실행 파일, 재현 가능한 빌드(`build.sh check`). 배포 서버 `deploy-server` 와 같은 관례 |
-| 의존성 | 표준 라이브러리 우선. 하나 더할 때마다 여기에 이유를 적는다. 지금: `github.com/jackc/pgx/v5`(PostgreSQL 드라이버·커넥션 풀. 표준 `database/sql` 만으로는 드라이버가 없다). `github.com/prometheus/client_golang`(`/metrics` 의 Prometheus 텍스트 형식·히스토그램·Go 런타임 지표를 직접 만들지 않으려고. 지표 이름·라벨 규약을 표준 그대로 따른다). 계획: Redis 를 켤 때 Redis 클라이언트 |
+| 의존성 | 표준 라이브러리 우선. 하나 더할 때마다 여기에 이유를 적는다. 지금: `github.com/jackc/pgx/v5`(PostgreSQL 드라이버·커넥션 풀. 표준 `database/sql` 만으로는 드라이버가 없다). `github.com/prometheus/client_golang`(`/metrics` 의 Prometheus 텍스트 형식·히스토그램·Go 런타임 지표를 직접 만들지 않으려고. 지표 이름·라벨 규약을 표준 그대로 따른다). `github.com/redis/go-redis/v9`(Redis 카운터의 Lua 스크립트·연결 관리. RESP 프로토콜과 재연결·타임아웃을 직접 구현하면 위험이 커서 검증된 클라이언트를 쓴다. 사용자 결정 2026-11-27). 시험 전용: `github.com/alicebob/miniredis/v2`(Docker·Redis 없이 Lua 스크립트까지 시험하려고. 실행 파일에는 들어가지 않는다) |
 | DB 접근 | `pgx`(`pgxpool`). 블로킹 모양으로 쓰지만 Go 런타임이 소켓 I/O 를 논블로킹으로 처리한다. 모든 쿼리에 요청 `ctx` 를 넘겨 클라이언트가 끊으면 쿼리도 취소된다. 쓰기는 배치 goroutine 하나가 맡는다 |
 | 사용량 기록 | 요청 후 채널에 넣고 끝낸다. 100건 또는 1초마다 묶어 `request_log` INSERT, `limit_policy.spend` 합산 UPDATE |
 | 예산 확인 | DB 값 + 카운터 누적분(메모리 또는 Redis). 배치 주기만큼 늦게 막혀도 허용 |
@@ -249,7 +249,7 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
   - 비밀번호는 litellm 처럼 초대 링크(`/invitation/new` → 온보딩)에서 사용자가 정하거나, 관리자가 `/user/update` 로 정한다
   - 저장: 표준 라이브러리 PBKDF2-SHA256(소금·반복 횟수 포함 문자열). 로그인 시도 제한. 외부 유출 비밀번호 검사(pwnedpasswords)는 하지 않는다(폐쇄망)
   - 로그인 페이지 흐름의 세부(SSO 를 켰을 때 litellm 의 `/sso/key/generate` 동작과의 관계)는 `docs/litellm-inventory/K_sso_cli_contract.md` 를 보고 정한다
-  - **어떤 로그인 방식을 둘지는 빌드 시점에 정한다(사용자 결정 2026-11-21).** `LOGIN=sso,password ./build.sh`(기본 둘 다), `LOGIN=password`, `LOGIN=sso`. `-ldflags -X` 로 바이너리에 고정하고 실행 중에는 바꿀 수 없다. 꺼진 방식은 라우트를 등록하지 않는다(404, 로그인 페이지에도 없음). 값이 틀리면 빌드가 실패하고, 기동 로그에 빌드된 로그인 방식을 남긴다. Keycloak 주소·client id 같은 연결 정보는 고객사 환경마다 달라 환경 변수로 받는다
+  - **어떤 로그인 방식을 둘지는 운영 설정으로 고른다(사용자 결정 2026-11-27. 2026-11-21 의 "빌드 시점에 고정"을 바꿨다).** 환경 변수 `GATEWAY_LOGIN_METHODS` 가 `password`(litellm 자체 로그인: 아이디·비밀번호), `sso`(Keycloak), `sso,password`(둘 다) 중 하나다. 비어 있으면 비밀번호는 늘 켜고 SSO 는 `GATEWAY_SSO_ISSUER` 가 있을 때만 켠다(이전 기본 빌드와 같은 결과). 프로세스를 띄울 때 정해지고 관리 API 로는 바꿀 수 없다. 고르지 않은 방식은 라우트를 등록하지 않는다(404, 로그인 페이지에도 없음). 값이 틀리거나 `sso` 를 골랐는데 Keycloak 설정(`GATEWAY_SSO_ISSUER`·`GATEWAY_SSO_CLIENT_ID`)이 없으면 기동하지 않고, 기동 로그에 로그인 방식을 남긴다. 빌드는 하나라 고객사마다 따로 빌드하지 않는다. 대신 환경 변수 실수로 비밀번호 로그인이 켜질 수 있으므로 SSO 만 쓰는 곳은 `sso` 를 명시한다. Keycloak 주소·client id 같은 연결 정보는 고객사 환경마다 달라 환경 변수로 받는다
 - **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. 조직·고객 계층(`org_admin`, `customer`)은 만들지 않는다
 - **라우트 권한은 허용 목록**(역할별로 허용 경로를 적는다). litellm 의 viewer 쓰기 차단은 차단 목록이라 새 API 를 빠뜨리면 뚫린다
 - 세션 쿠키는 litellm 과 같이 `token` 쿠키로 둔다. 대시보드가 `document.cookie` 로 읽으므로 HttpOnly 로 할 수 없다(조사 B). SameSite=Lax
@@ -359,7 +359,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - SSO 로 처음 들어온 사용자의 별칭은 litellm 기본(Keycloak `sub` UUID, K 2.4) 대신 `name`(없으면 `preferred_username`) 클레임을 쓴다. 데스크탑이 별칭을 이름으로 보이기 때문이다
 - 대시보드 세션 키도 데스크탑과 같은 자기 완결 로그인 키다(`L_dashboard_login_contract.md`). litellm 은 로그인마다 DB 에 가상 키(`team_id="litellm-dashboard"`, 예산 1 USD)를 하나씩 만들고 지우지 않는다. 그래서 세션 키에 1 USD 예산이 없고 `/key/list` 에 나올 일이 없다. 로그아웃은 그 사용자의 대시보드 세션을 **모두** 끊는다(사용자 행의 `ui_sessions_revoked_at` 보다 먼저 발급된 세션을 거부한다. litellm 은 그 세션 하나만). 데스크탑 로그인 키는 로그아웃과 상관없다
 - 대시보드 세션도 7일간 유효하다(litellm `LITELLM_UI_SESSION_DURATION` 기본 24시간)
-- 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 SSO 만 넣은 빌드에서도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 비밀번호를 넣은 빌드에서만 된다
+- 대시보드 관리자 로그인(`admin` + 마스터 키, litellm `UI_USERNAME`·`UI_PASSWORD` 기본)은 `GATEWAY_LOGIN_METHODS=sso` 만 골라도 된다. 대시보드를 처음 여는 길이기 때문이다. DB 사용자의 비밀번호 로그인은 로그인 방식에 `password` 가 있을 때만 된다
 - 감사 로그(`/audit`, `/audit/{id}`)는 litellm 에서 유료 기능이라 비어 있지만 우리는 무료로 기록한다. 키·팀·사용자의 생성·수정·삭제·차단·해제·재발급(팀원 변경은 팀 수정)을 응답이 성공일 때만 남긴다. `updated_values` 는 요청 본문(키 원문·비밀번호 제외)이고 `before_value` 는 아직 비어 있다(litellm 은 바뀌기 전 행을 싣는다). 대상은 키 해시·팀 id·사용자 id 다. 모델·설정 변경과 일괄 수정(`/user/bulk_update`)은 아직 기록하지 않는다. 조회는 `proxy_admin`·`proxy_admin_viewer` 만 된다
 - 키 재발급(`/key/{key}/regenerate`)의 `grace_period`(`24h`·`2d` 등)를 받는다. 그 기간 동안 옛 키도 새 키로 인증된다(`deprecated_api_key` 표, 유예 중 키는 캐시하지 않아 끝나는 때 바로 막힌다). 비었거나 형식이 틀리거나 0 이하면 litellm 처럼 무시하고 바로 폐기한다. 환경 변수 기본값(`LITELLM_KEY_ROTATION_GRACE_PERIOD`)은 받지 않는다. 유예 중 다시 재발급하면 옛 해시는 가장 새 키를 가리키게 옮겨 가 약속한 기간을 지킨다(litellm 은 이때 끊긴다)
 - 숫자 필드에 온 숫자 문자열(`"4.25"`)은 litellm(pydantic)처럼 숫자로 받는다. 대시보드의 숫자 입력이 문자열로 보내기 때문이다(`core.Change` 로 읽는 수정 필드). 숫자로 읽을 수 없는 문자열은 422 `int_type`·`float_type` 이고, 오류 위치(`loc`)는 JSON 키만, `input` 은 보낸 값이다
@@ -383,7 +383,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 부팅 설정의 `proxy_base_url` 은 늘 null 이다. 그러면 대시보드는 `LITELLM_BACKEND_URL`(호스트 분리) 또는 자기 출처(한 호스트)로 API 를 부른다(11장 운영 구성)
 - 로그인 키의 암호 키(AES-256-GCM)와 대시보드 JWT 의 서명 키(HMAC-SHA256)는 마스터 키에서 용도별로 파생한다(`HMAC(마스터, 용도)`). litellm 은 마스터 키를 직접 쓴다. 파생 방식을 바꾼 배포에서는 이전에 발급한 로그인 키·대시보드 세션·초대 링크가 무효가 되어 다시 로그인해야 한다
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
-- 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
+- 데스크탑 로그인 화면은 로그인 방식에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
 - 팀 admin 은 자기 팀 사용자에게 초대 링크를 만들 수 있지만, 대상이 관리자 역할(`proxy_admin`, `proxy_admin_viewer`)이면 거부한다. 초대 링크로 비밀번호를 새로 정하면 그 계정으로 로그인하게 되어, 허용하면 팀 admin 이 관리자 계정을 가로챌 수 있다(실제로 재현했다). litellm 은 대상의 역할을 보지 않는다
 - `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)
 - 팀원은 `team_member` 한 곳에만 둔다. litellm 은 팀의 `members_with_roles` 와 사용자의 `teams` 두 곳에 따로 저장해 v1·v2 목록이 어긋날 수 있다. 응답 모양은 litellm 과 같게 두 필드 모두 `team_member` 에서 만든다
@@ -406,9 +406,10 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_TRUSTED_PROXIES` | 없음 | `X-Forwarded-For` 를 믿을 앞단(리버스 프록시)의 IP·CIDR(쉼표). 앞단 뒤에서는 모든 요청의 출발지가 앞단 주소라 이 값 없이는 로그인 시도 제한이 사용자 구분 없이 전체에 걸린다. 직접 연결한 상대가 이 목록에 있을 때만 헤더를 읽고, 오른쪽부터 신뢰 대역을 건너뛴 첫 주소를 쓴다. 비면 헤더를 쓰지 않는다(litellm 의 `use_x_forwarded_for` 와 같은 뜻) |
 | `GATEWAY_DATABASE_URL` | 없음(필수, M1 DB 부터) | PostgreSQL 연결 문자열 |
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 없으면 기동 거부. 환경 변수·시크릿으로만 |
-| `GATEWAY_COUNTER_STORE` | `memory` | `memory` 또는 `redis` |
-| `GATEWAY_REDIS_URL` | 없음 | `counter-store=redis` 일 때 필수 |
-| `GATEWAY_LIMITS_FAIL_CLOSED` | `false` | Redis 장애 시 요청 거부 여부(litellm `fail_closed_rate_limit_enforcement`) |
+| `GATEWAY_LOGIN_METHODS` | 비면 `password`, `GATEWAY_SSO_ISSUER` 가 있으면 `sso,password` | `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. 틀린 값이면 기동 거부. 6장 |
+| `GATEWAY_COUNTER_STORE` | `memory` | `memory`(인스턴스 1개) 또는 `redis`(여러 대). 틀린 값이면 기동 거부 |
+| `GATEWAY_REDIS_URL` | 없음 | `counter-store=redis` 일 때 필수(`redis://[:비밀번호@]호스트:6379/0`, TLS 는 `rediss://`). 기동 때 연결을 확인하고 닿지 않으면 기동하지 않는다. 운영 중 장애는 메모리 카운터로 이어서 처리한다(연속 3번 실패하면 5초간 Redis 를 건너뜀) |
+| `GATEWAY_LIMITS_FAIL_CLOSED` | `false` | Redis 장애 시 요청 거부 여부(litellm `fail_closed_rate_limit_enforcement`). **아직 구현하지 않았다**(지금은 늘 메모리로 이어서 처리) |
 | `GATEWAY_USAGE_BATCH_SIZE` / `_FLUSH_INTERVAL` / `_QUEUE_CAPACITY` | `100` / `1s` / `10000` | 사용량 배치 |
 | `GATEWAY_KEY_CACHE_TTL` | `30s` | 키 캐시 |
 | `GATEWAY_UPSTREAM_CONNECT_TIMEOUT` / `_READ_TIMEOUT` | `5s` / `300s` | 업스트림 |

@@ -27,19 +27,23 @@ import (
 	"llm-gateway/internal/limits"
 )
 
-// loginMethods 는 빌드 때 build.sh 가 -ldflags 로 넣는다. 로그인 방식은 빌드 시점에 정하고 실행 중에는 바꿀 수 없다(설계 6장).
-// 버전은 여러 모듈의 응답에 들어가므로 core.Version 에 넣는다
-var loginMethods = "sso,password"
+// 카운터 저장소 종류(GATEWAY_COUNTER_STORE)
+const (
+	counterStoreMemory = "memory"
+	counterStoreRedis  = "redis"
+)
 
 // Config 는 환경 변수에서 읽는 설정이다(설계 11.1)
 type Config struct {
-	Listen       string         // GATEWAY_LISTEN, 기본 :4000 (litellm 기본 포트)
-	MasterKey    auth.MasterKey // GATEWAY_MASTER_KEY, 필수
-	DatabaseURL  string         // GATEWAY_DATABASE_URL, 필수
-	DrainTimeout time.Duration  // 정상 종료 때 진행 중인 요청을 기다리는 시간
-	Login        auth.LoginMethods
-	SSO          auth.OIDCConfig // SSO 가 들어간 빌드에서만 쓴다
-	CORS         CORSConfig      // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
+	Listen       string            // GATEWAY_LISTEN, 기본 :4000 (litellm 기본 포트)
+	MasterKey    auth.MasterKey    // GATEWAY_MASTER_KEY, 필수
+	DatabaseURL  string            // GATEWAY_DATABASE_URL, 필수
+	DrainTimeout time.Duration     // 정상 종료 때 진행 중인 요청을 기다리는 시간
+	Login        auth.LoginMethods // GATEWAY_LOGIN_METHODS
+	SSO          auth.OIDCConfig   // 로그인 방식에 sso 가 있을 때만 쓴다
+	CORS         CORSConfig        // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
+	CounterStore string            // GATEWAY_COUNTER_STORE: memory(기본, 인스턴스 1개) 또는 redis(여러 대)
+	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
 	// GATEWAY_TRUSTED_PROXIES: X-Forwarded-For 를 믿을 앞단 주소. 비면 쓰지 않는다
 	TrustedProxies auth.TrustedProxies
 }
@@ -60,9 +64,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if listen == "" {
 		listen = ":4000"
 	}
-	methods, err := auth.ParseLoginMethods(loginMethods)
+	methods, err := loadLoginMethods(getenv)
 	if err != nil {
-		return Config{}, fmt.Errorf("빌드에 새긴 로그인 방식이 틀렸다: %w", err)
+		return Config{}, err
+	}
+	counterStore, redisURL, err := loadCounterStore(getenv)
+	if err != nil {
+		return Config{}, err
 	}
 	sso := auth.OIDCConfig{Issuer: getenv("GATEWAY_SSO_ISSUER"), ClientID: getenv("GATEWAY_SSO_CLIENT_ID"),
 		ClientSecret: getenv("GATEWAY_SSO_CLIENT_SECRET"), PublicURL: getenv("GATEWAY_PUBLIC_URL")}
@@ -77,7 +85,38 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
-		CORS: loadCORS(getenv), TrustedProxies: proxies}, nil
+		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL}, nil
+}
+
+// loadLoginMethods 는 GATEWAY_LOGIN_METHODS(password, sso, sso,password)를 읽는다. password 는 litellm 자체 로그인(아이디·비밀번호),
+// sso 는 Keycloak 이다. 비어 있으면 비밀번호는 늘 켜고 SSO 는 GATEWAY_SSO_ISSUER 가 있을 때만 켠다.
+// 환경 변수로 받으므로 프로세스를 띄울 때 정해지고, 관리 API 로는 바꿀 수 없다(설계 6장)
+func loadLoginMethods(getenv func(string) string) (auth.LoginMethods, error) {
+	value := strings.TrimSpace(getenv("GATEWAY_LOGIN_METHODS"))
+	if value == "" {
+		return auth.LoginMethods{Password: true, SSO: getenv("GATEWAY_SSO_ISSUER") != ""}, nil
+	}
+	methods, err := auth.ParseLoginMethods(value)
+	if err != nil {
+		return auth.LoginMethods{}, fmt.Errorf("GATEWAY_LOGIN_METHODS: %w", err)
+	}
+	return methods, nil
+}
+
+// loadCounterStore 는 GATEWAY_COUNTER_STORE(memory, redis)와 redis 일 때의 GATEWAY_REDIS_URL 을 읽는다.
+// Redis 없이 여러 대를 띄우면 한도가 대수만큼 늘어나므로 여러 대일 때는 redis 로 둔다(설계 7장)
+func loadCounterStore(getenv func(string) string) (store, redisURL string, err error) {
+	switch store = strings.TrimSpace(getenv("GATEWAY_COUNTER_STORE")); store {
+	case "", counterStoreMemory:
+		return counterStoreMemory, "", nil
+	case counterStoreRedis:
+		if redisURL = getenv("GATEWAY_REDIS_URL"); redisURL == "" {
+			return "", "", errors.New("GATEWAY_COUNTER_STORE=redis 인데 GATEWAY_REDIS_URL 이 없다")
+		}
+		return counterStoreRedis, redisURL, nil
+	default:
+		return "", "", fmt.Errorf("GATEWAY_COUNTER_STORE %q 를 모른다(memory, redis 만 된다)", store)
+	}
 }
 
 // keyCacheTTL 은 litellm 기본(60초)과 같다. 다른 인스턴스에서 바꾼 키는 이 시간 안에 반영된다(설계 3.2)
@@ -102,7 +141,7 @@ func newIdentity(db *core.DB) identity {
 	return identity{cache: cache, users: users, teams: auth.NewTeams(db, users, cache)}
 }
 
-// newLogin 은 빌드에 들어간 로그인 방식으로 로그인을 만든다. SSO 가 들어갔으면 Keycloak 설정을 읽는다
+// newLogin 은 설정한 로그인 방식으로 로그인을 만든다. SSO 를 골랐으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
 	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
 		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Now: time.Now, Logger: logger})
@@ -115,7 +154,24 @@ type parts struct {
 	id        identity
 	login     *auth.Login
 	usage     *limits.UsageRecorder
+	counters  limits.CounterStore // nil 이면 메모리 카운터(인스턴스 1개)
 	logger    *slog.Logger
+}
+
+// openCounters 는 설정대로 카운터 저장소를 연다. 돌려주는 close 는 종료 때 부른다
+func openCounters(ctx context.Context, cfg Config, logger *slog.Logger) (limits.CounterStore, func(), error) {
+	if cfg.CounterStore != counterStoreRedis {
+		return limits.NewMemoryCounters(time.Now), func() {}, nil
+	}
+	redisCounters, err := limits.OpenRedisCounters(ctx, cfg.RedisURL, time.Now, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	return redisCounters, func() {
+		if err := redisCounters.Close(); err != nil {
+			logger.Warn("Redis 연결 닫기 실패", "err", err)
+		}
+	}, nil
 }
 
 // assemble 의 usage 는 추론 경로가 사용량을 넘기는 곳이다. 운영에서는 지표를 세는 래퍼를 거쳐 p.usage 로 간다
@@ -124,6 +180,10 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	cache, users, teams := p.id.cache, p.id.users, p.id.teams
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
+	counters := p.counters
+	if counters == nil {
+		counters = limits.NewMemoryCounters(time.Now)
+	}
 	deployments := inference.NewDeployments(db, cfg.MasterKey.UpstreamKeyBox())
 	settings := core.NewSettings(db)
 	return modules{
@@ -132,7 +192,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 		routes: slices.Concat(
 			core.HealthRoutes(p.lifecycle, db),
 			p.login.Routes(),
-			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, limits.NewMemoryCounters(time.Now), time.Now), time.Now, logger).Routes(),
+			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Policies: policies, Deployments: deployments,
 				Usage: limits.NewUsageQuery(db), Settings: settings, Now: time.Now, Logger: logger}).Routes(),
 		),
@@ -204,6 +264,11 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	db := core.NewDB(pool)
 	// 사용량 배치 쓰기. 종료 때 서버를 먼저 멈추고 채널을 비운 다음에야 DB 를 닫는다(설계 3.3 정상 종료 3·4번)
 	usage := limits.NewUsageRecorder(db, logger, usageOptions)
+	counters, closeCounters, err := openCounters(ctx, cfg, logger)
+	if err != nil {
+		return fmt.Errorf("카운터 저장소: %w", err)
+	}
+	defer closeCounters()
 	background, stopBackground := context.WithCancel(context.WithoutCancel(ctx))
 	// 백그라운드 job 은 루트 ctx 아래에서 띄우고, 종료 때 취소한 뒤 끝나길 기다린다. 그래야 DB 를 닫기 전에 멈춘다(설계 3.3)
 	var jobs sync.WaitGroup
@@ -224,7 +289,7 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	lifecycle := &core.Lifecycle{}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           buildHandler(cfg, parts{lifecycle: lifecycle, db: db, id: id, login: login, usage: usage, logger: logger}),
+		Handler:           buildHandler(cfg, parts{lifecycle: lifecycle, db: db, id: id, login: login, usage: usage, counters: counters, logger: logger}),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout 은 두지 않는다. LLM 스트림은 수 분 이어질 수 있다
 	}

@@ -1,5 +1,6 @@
 # 게이트웨이 + PostgreSQL. 값은 같은 폴더의 .env 에서 읽는다(.env.example 을 복사해 채운다. .env 는 커밋하지 않는다).
-#   ./build.sh && docker compose up -d --build        (SSO 없이 쓰면: LOGIN=password ./build.sh)
+#   ./build.sh && docker compose up -d --build
+# 로그인 방식(GATEWAY_LOGIN_METHODS)과 Redis(GATEWAY_COUNTER_STORE)는 빌드가 아니라 .env 에서 고른다.
 # 기본은 시험용 포트(4710)로 띄워 기존 게이트웨이(4701)와 겹치지 않는다. 교체할 때 .env 의 GATEWAY_PORT 를 4701 로 바꾼다.
 # 모델 배포(Ollama 주소)·팀·키는 설정 파일이 아니라 관리 API 나 대시보드로 만든다.
 services:
@@ -35,6 +36,9 @@ services:
       # 비밀번호에 @ : / 같은 문자가 있으면 URL 인코딩해야 한다
       GATEWAY_DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@postgres:5432/gateway
       # 앞단 프록시(nginx 등) 뒤에 둘 때만 그 주소를 넣는다. 비우면 X-Forwarded-For 를 믿지 않는다
+      GATEWAY_LOGIN_METHODS: ${GATEWAY_LOGIN_METHODS:-}
+      GATEWAY_COUNTER_STORE: ${GATEWAY_COUNTER_STORE:-memory}
+      GATEWAY_REDIS_URL: ${GATEWAY_REDIS_URL:-}
       GATEWAY_TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
       GATEWAY_SSO_ISSUER: ${GATEWAY_SSO_ISSUER:-}

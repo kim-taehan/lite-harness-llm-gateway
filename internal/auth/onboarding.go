@@ -10,7 +10,7 @@ import (
 	"llm-gateway/internal/core"
 )
 
-// 초대 온보딩과 본인 비밀번호 변경(L 6.2·6.3·6.5). 비밀번호 로그인을 넣은 빌드에서만 등록한다
+// 초대 온보딩과 본인 비밀번호 변경(L 6.2·6.3·6.5). 로그인 방식에 password 가 있을 때만 등록한다
 
 // onboardingTTL 은 초대 링크를 연 뒤 비밀번호를 정할 수 있는 시간이다(litellm 과 같다)
 const onboardingTTL = 15 * time.Minute

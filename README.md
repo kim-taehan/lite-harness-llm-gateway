@@ -22,6 +22,9 @@ GATEWAY_MASTER_KEY=sk-... GATEWAY_DATABASE_URL=postgres://user:pass@db:5432/gate
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 관리자 키. 없으면 기동하지 않는다 |
 | `GATEWAY_DATABASE_URL` | 없음(필수) | PostgreSQL. 기동 때 마이그레이션을 적용한다(여러 대가 동시에 떠도 한 대만) |
 | `GATEWAY_LISTEN` | `:4000` | 수신 주소(litellm 기본 포트) |
+| `GATEWAY_LOGIN_METHODS` | 비면 `password`(`GATEWAY_SSO_ISSUER` 가 있으면 `sso,password`) | 로그인 방식: `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. `sso` 를 고르면 `GATEWAY_SSO_ISSUER`·`GATEWAY_SSO_CLIENT_ID`·`GATEWAY_SSO_CLIENT_SECRET`·`GATEWAY_PUBLIC_URL` 이 필요하다 |
+| `GATEWAY_COUNTER_STORE` | `memory` | 한도 카운터 저장소. 게이트웨이를 여러 대 띄울 때는 `redis` |
+| `GATEWAY_REDIS_URL` | 없음 | `redis` 일 때 필수. `redis://[:비밀번호@]호스트:6379/0`(TLS 는 `rediss://`). 기동 때 연결을 확인한다 |
 | `GATEWAY_TRUSTED_PROXIES` | 없음 | 앞단 프록시(nginx 등)의 IP·CIDR, 쉼표로 구분. 앞단 뒤에서 로그인 시도 제한이 사용자별로 걸리게 `X-Forwarded-For` 를 믿는다. 게이트웨이를 직접 열면 비워 둔다 |
 
 `SIGTERM` 을 받으면 liveness 를 503 으로 내리고, 진행 중인 요청을 최대 60초 기다린 뒤 끝난다.

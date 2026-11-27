@@ -14,13 +14,13 @@ import (
 	"llm-gateway/internal/core"
 )
 
-// LoginMethods 는 이 빌드에 들어간 로그인 방식이다. 빌드 시점에 정하고 실행 중에는 바꿀 수 없다(설계 6장)
+// LoginMethods 는 운영자가 고른 로그인 방식이다(GATEWAY_LOGIN_METHODS). 프로세스를 띄울 때 정하고 실행 중에는 바꿀 수 없다(설계 6장)
 type LoginMethods struct {
 	SSO      bool
 	Password bool
 }
 
-// ParseLoginMethods 는 build.sh 가 새긴 값("sso,password" 등)을 읽는다
+// ParseLoginMethods 는 GATEWAY_LOGIN_METHODS 값("sso,password" 등)을 읽는다
 func ParseLoginMethods(value string) (LoginMethods, error) {
 	var m LoginMethods
 	for _, part := range strings.Split(value, ",") {
@@ -54,7 +54,7 @@ type Login struct {
 	gate      passwordGate
 	keys      *loginKeys
 	master    MasterKey   // 대시보드 관리자 로그인과 token JWT 서명
-	oidc      *oidcClient // SSO 를 넣지 않은 빌드면 nil
+	oidc      *oidcClient // 로그인 방식에 sso 를 고르지 않았으면 nil
 	users     *Users
 	teams     *Teams
 	publicURL string
@@ -76,13 +76,14 @@ type LoginDeps struct {
 	Logger  *slog.Logger
 }
 
-// NewLogin 은 SSO 가 들어간 빌드면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
+// NewLogin 은 로그인 방식에 sso 를 골랐으면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
 	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, users: d.Users, teams: d.Teams,
 		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), proxies: d.Proxies, now: d.Now, logger: d.Logger}
 	if d.Methods.SSO {
 		if d.OIDC.Issuer == "" || d.OIDC.ClientID == "" || d.OIDC.PublicURL == "" {
-			return nil, errors.New("SSO 가 들어간 빌드다. GATEWAY_SSO_ISSUER, GATEWAY_SSO_CLIENT_ID, GATEWAY_PUBLIC_URL 이 필요하다")
+			return nil, errors.New("로그인 방식에 sso 가 있다(GATEWAY_LOGIN_METHODS). GATEWAY_SSO_ISSUER, GATEWAY_SSO_CLIENT_ID, GATEWAY_PUBLIC_URL 이 필요하다. " +
+				"SSO 를 쓰지 않으려면 GATEWAY_LOGIN_METHODS=password 로 둔다")
 		}
 		discovered, err := discoverOIDC(ctx, d.OIDC, d.Client)
 		if err != nil {
@@ -93,7 +94,7 @@ func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
 	return l, nil
 }
 
-// Routes 는 로그인 라우트다. 브라우저·데스크탑이 키 없이 부르므로 공개다. 빌드에 없는 방식의 라우트는 등록하지 않는다(404)
+// Routes 는 로그인 라우트다. 브라우저·데스크탑이 키 없이 부르므로 공개다. 고르지 않은 방식의 라우트는 등록하지 않는다(404)
 func (l *Login) Routes() []core.Route {
 	public := core.Public()
 	routes := []core.Route{

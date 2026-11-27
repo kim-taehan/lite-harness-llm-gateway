@@ -55,7 +55,7 @@ func (l *Login) loginJSON(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]any{"redirect_url": l.publicURL + "/ui?login=success", "token": token})
 }
 
-// loginForm 은 서버가 내는 HTML 로그인 폼(SSO 없는 빌드의 /sso/key/generate)이 보낸다. 대시보드는 /v2/login 을 쓴다
+// loginForm 은 서버가 내는 HTML 로그인 폼(SSO 를 쓰지 않을 때의 /sso/key/generate)이 보낸다. 대시보드는 /v2/login 을 쓴다
 func (l *Login) loginForm(w http.ResponseWriter, r *http.Request) {
 	if _, ok := l.signInUI(w, r, r.PostFormValue("username"), r.PostFormValue("password")); ok {
 		http.Redirect(w, r, l.publicURL+"/ui?login=success", http.StatusSeeOther)
@@ -63,7 +63,7 @@ func (l *Login) loginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 // signInUI 는 관리자(admin + 마스터 키) 또는 DB 사용자 비밀번호로 로그인하고 token 쿠키를 심는다.
-// DB 사용자 비밀번호는 빌드에 비밀번호 로그인이 있을 때만 된다. 관리자 로그인은 SSO 만 넣은 빌드에서도 된다(대시보드를 처음 여는 길)
+// DB 사용자 비밀번호는 로그인 방식에 password 가 있을 때만 된다. 관리자 로그인은 sso 만 골라도 된다(대시보드를 처음 여는 길)
 func (l *Login) signInUI(w http.ResponseWriter, r *http.Request, username, password string) (string, bool) {
 	ctx := r.Context()
 	user, err := l.gate.attempt(username, l.proxies.clientIP(r), func() (User, error) {
@@ -128,7 +128,7 @@ func uiClaims(user User, method, key string) map[string]any {
 }
 
 // webSignIn 은 대시보드 SSO 버튼이다(L 5.1). return_to 는 litellm 처럼 무시한다(대시보드가 보내는 절대 URL 은 원본도 버린다).
-// SSO 를 넣지 않은 빌드면 litellm 처럼 /login 으로 보내는 로그인 폼을 준다
+// SSO 를 쓰지 않으면 litellm 처럼 /login 으로 보내는 로그인 폼을 준다
 func (l *Login) webSignIn(w http.ResponseWriter, r *http.Request) {
 	if l.oidc == nil {
 		writePage(w, http.StatusOK, "signin", page{Title: "LiteLLM Login", Action: l.publicURL + "/login", Password: true})
