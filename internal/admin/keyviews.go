@@ -40,7 +40,7 @@ func keyRow(k auth.Key, p limits.Policy) row {
 		"model_max_budget":       modelBudgetsView(p.ModelBudgets),
 		"budget_id":              nil,
 		"organization_id":        nil,
-		"project_id":             nil,
+		"project_id":             k.ProjectID,
 		"key_type":               k.KeyType,
 		"created_at":             k.CreatedAt.UTC(),
 		"created_by":             k.CreatedBy,

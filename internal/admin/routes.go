@@ -21,6 +21,7 @@ type Handlers struct {
 	// customers 는 고객(end user) 저장소다. limits 모듈의 것이라 Deps 로 받지 않고 같은 DB 로 만든다
 	customers *limits.Customers
 	tags      *limits.Tags
+	projects  *auth.Projects
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
 	usage       *limits.UsageQuery
@@ -38,6 +39,7 @@ type Deps struct {
 	Teams       *auth.Teams
 	Users       *auth.Users
 	Keys        *auth.Keys
+	Projects    *auth.Projects
 	Policies    *limits.Policies
 	Deployments *inference.Deployments
 	Usage       *limits.UsageQuery
@@ -48,7 +50,7 @@ type Deps struct {
 }
 
 func NewHandlers(d Deps) *Handlers {
-	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), deployments: d.Deployments, usage: d.Usage,
+	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, deployments: d.Deployments, usage: d.Usage,
 		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
 }
 
@@ -158,6 +160,11 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
 		route(http.MethodGet, "/access_group/list", adminOnly, h.listAccessGroups),
 		route(http.MethodGet, "/access_group/{access_group}/info", adminOnly, h.accessGroupInfo),
+		route(http.MethodGet, "/project/list", handlerDecide, h.listProjects),
+		route(http.MethodGet, "/project/info", handlerDecide, h.projectInfo),
+		route(http.MethodPost, "/project/new", adminOnly, h.newProject),
+		route(http.MethodPost, "/project/update", adminOnly, h.updateProject),
+		route(http.MethodDelete, "/project/delete", adminOnly, h.deleteProjects),
 		route(http.MethodGet, "/provider/budgets", auditViewer, h.listProviderBudgets),
 		route(http.MethodPost, "/provider/budgets", adminOnly, h.setProviderBudget),
 		route(http.MethodDelete, "/provider/budgets/{provider}", adminOnly, h.deleteProviderBudget),

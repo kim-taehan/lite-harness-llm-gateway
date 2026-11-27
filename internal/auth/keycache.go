@@ -87,6 +87,9 @@ type resolvedKey struct {
 	role        core.Role // 키 소유자의 역할. 사용자 행이 없으면 빈 문자열(litellm 의 role=None)
 	teamBlocked bool
 	teamModels  []string
+	// 키가 프로젝트에 속할 때의 프로젝트 차단 여부와 허용 모델
+	projectBlocked bool
+	projectModels  []string
 }
 
 // KeyCache 는 키 검증 결과 캐시다. 키·팀·사용자를 바꾸는 쪽이 그 자리에서 지운다
@@ -105,6 +108,13 @@ func (c *KeyCache) forget(tokens ...string) { c.entries.remove(tokens...) }
 func (c *KeyCache) forgetTeam(teamIDs ...string) {
 	c.entries.removeWhere(func(r resolvedKey) bool {
 		return r.key.TeamID != nil && slices.Contains(teamIDs, *r.key.TeamID)
+	})
+}
+
+// forgetProject 는 프로젝트를 막거나 모델을 바꿀 때 그 프로젝트 키를 모두 지운다
+func (c *KeyCache) forgetProject(projectID string) {
+	c.entries.removeWhere(func(r resolvedKey) bool {
+		return r.key.ProjectID != nil && *r.key.ProjectID == projectID
 	})
 }
 

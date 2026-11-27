@@ -27,6 +27,8 @@ const (
 	ScopeTag Scope = "tag"
 	// ScopeProvider 는 프로바이더다. 대상 id 는 배포의 provider 이름이고, 요청의 한도 검사(Gate)가 아니라 배포를 고르는 단계가 본다
 	ScopeProvider Scope = "provider"
+	// ScopeProject 는 프로젝트다. 키가 프로젝트에 속하면 그 프로젝트의 한도가 요청마다 걸린다
+	ScopeProject Scope = "project"
 )
 
 // target 은 한도를 거는 대상 하나다. 요청 하나가 대상 여러 개(태그가 여럿)에 걸릴 수 있어 종류만으로는 가를 수 없다

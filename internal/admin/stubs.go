@@ -131,7 +131,6 @@ func stubs() []stub {
 		// 키·팀·사용자 폼의 드롭다운. .map·.find 로 읽는 것은 맨 배열이어야 한다
 		stubOK("GET /budget/list", `[]`),
 		stubOK("POST /budget/info", `[]`),
-		stubOK("GET /project/list", `[]`),
 		stubOK("GET /prompts/list", `{"prompts":[]}`),
 		stubOK("GET /organization/list", `[]`),
 		stubNotFound("Organizations", "GET /organization/info"),
@@ -457,9 +456,6 @@ func stubs() []stub {
 		stubNotFound("Access groups", "GET /v1/access_group/{access_group_id}"),
 		stubUnsupported("Access groups", "PUT /v1/access_group/{access_group_id}"),
 		stubUnsupported("Access groups", "DELETE /v1/access_group/{access_group_id}"),
-		stubNotFound("Projects", "GET /project/info"),
-		stubUnsupported("Projects", "POST /project/new"),
-		stubUnsupported("Projects", "POST /project/update"),
 		stubUnsupported("Request transformation", "POST /utils/transform_request"),
 
 		// lens(@litellm/lens-ui): /lens 가 빈 목록이면 하위 호출은 거의 없다. 나머지 GET 은 모양을 몰라 404 로 답한다

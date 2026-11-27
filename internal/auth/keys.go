@@ -32,6 +32,8 @@ type Key struct {
 	UpdatedBy     *string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	// ProjectID 는 키가 속한 프로젝트다(선택). 프로젝트의 팀이 키의 팀과 같아야 한다
+	ProjectID *string
 }
 
 // DeletedKey 는 지운 키의 사본이다
@@ -53,12 +55,14 @@ type NewKey struct {
 	Blocked       *bool
 	Expires       *time.Time
 	CreatedBy     string
+	ProjectID     *string
 }
 
 type KeyPatch struct {
 	KeyAlias  core.Change[string]
 	UserID    core.Change[string]
 	TeamID    core.Change[string]
+	ProjectID core.Change[string]
 	Models    core.Change[[]string]
 	Metadata  core.Change[map[string]any]
 	Blocked   core.Change[bool]
@@ -72,6 +76,7 @@ type KeyQuery struct {
 	UserID         *string
 	UserIDContains bool
 	TeamID         *string
+	ProjectID      *string
 	KeyHash        *string
 	KeyAlias       *string
 	AliasContains  bool
@@ -114,12 +119,12 @@ type Keys struct {
 
 func NewKeys(db *core.DB, cache *KeyCache) *Keys { return &Keys{db: db, cache: cache} }
 
-const keyColumns = "token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes, blocked, expires, created_by, updated_by, created_at, updated_at"
+const keyColumns = "token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes, blocked, expires, created_by, updated_by, created_at, updated_at, project_id"
 
 func scanKey(row pgx.Row) (Key, error) {
 	var k Key
 	err := row.Scan(&k.Token, &k.KeyName, &k.KeyAlias, &k.UserID, &k.TeamID, &k.Models, &k.Metadata, &k.KeyType,
-		&k.AllowedRoutes, &k.Blocked, &k.Expires, &k.CreatedBy, &k.UpdatedBy, &k.CreatedAt, &k.UpdatedAt)
+		&k.AllowedRoutes, &k.Blocked, &k.Expires, &k.CreatedBy, &k.UpdatedBy, &k.CreatedAt, &k.UpdatedAt, &k.ProjectID)
 	return k, err
 }
 
@@ -156,11 +161,11 @@ func (k *Keys) Generate(ctx context.Context, input NewKey) (string, Key, error) 
 			keyType = "default"
 		}
 		_, err := k.db.Q(ctx).Exec(ctx, `
-			INSERT INTO api_key (token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes, blocked, expires, created_by, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+			INSERT INTO api_key (token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes, blocked, expires, created_by, updated_by, project_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13)
 			ON CONFLICT (token) DO NOTHING`,
 			token, keyName(plain), input.KeyAlias, input.UserID, input.TeamID, orEmpty(input.Models), orEmptyMap(input.Metadata),
-			keyType, orEmpty(input.AllowedRoutes), input.Blocked, input.Expires, input.CreatedBy)
+			keyType, orEmpty(input.AllowedRoutes), input.Blocked, input.Expires, input.CreatedBy, input.ProjectID)
 		if err != nil {
 			return err
 		}
@@ -198,7 +203,7 @@ func (k *Keys) FindDeleted(ctx context.Context, token string) (DeletedKey, error
 	var d DeletedKey
 	err := k.db.Q(ctx).QueryRow(ctx, "SELECT "+keyColumns+", deleted_at, deleted_by FROM deleted_api_key WHERE token = $1 ORDER BY deleted_at DESC LIMIT 1", token).
 		Scan(&d.Token, &d.KeyName, &d.KeyAlias, &d.UserID, &d.TeamID, &d.Models, &d.Metadata, &d.KeyType, &d.AllowedRoutes,
-			&d.Blocked, &d.Expires, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt, &d.DeletedAt, &d.DeletedBy)
+			&d.Blocked, &d.Expires, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt, &d.ProjectID, &d.DeletedAt, &d.DeletedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DeletedKey{}, ErrKeyNotFound
 	}
@@ -224,6 +229,9 @@ func (k *Keys) Update(ctx context.Context, token string, patch KeyPatch) (Key, e
 		}
 		if patch.TeamID.Set {
 			set.Set("team_id", patch.TeamID.Value)
+		}
+		if patch.ProjectID.Set {
+			set.Set("project_id", patch.ProjectID.Value)
 		}
 		if patch.Models.Set {
 			set.Set("models", patch.Models.Or([]string{}))
@@ -277,9 +285,9 @@ func archiveAndDelete(ctx context.Context, q core.Querier, where string, deleted
 	rows, err := q.Query(ctx, `
 		WITH gone AS (DELETE FROM api_key WHERE `+where+` RETURNING *)
 		INSERT INTO deleted_api_key (id, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
-		                             blocked, expires, created_by, updated_by, created_at, updated_at, deleted_by)
+		                             blocked, expires, created_by, updated_by, created_at, updated_at, project_id, deleted_by)
 		SELECT gen_random_uuid()::text, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
-		       blocked, expires, created_by, updated_by, created_at, updated_at, `+byArg+` FROM gone
+		       blocked, expires, created_by, updated_by, created_at, updated_at, project_id, `+byArg+` FROM gone
 		RETURNING token`, params...)
 	if err != nil {
 		return nil, err
@@ -301,9 +309,9 @@ func (k *Keys) Regenerate(ctx context.Context, token string, newKey *string, by 
 	err := k.db.InTx(ctx, func(ctx context.Context) error {
 		tag, err := k.db.Q(ctx).Exec(ctx, `
 			INSERT INTO deleted_api_key (id, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
-			                             blocked, expires, created_by, updated_by, created_at, updated_at, deleted_by)
+			                             blocked, expires, created_by, updated_by, created_at, updated_at, project_id, deleted_by)
 			SELECT gen_random_uuid()::text, token, key_name, key_alias, user_id, team_id, models, metadata, key_type, allowed_routes,
-			       blocked, expires, created_by, updated_by, created_at, updated_at, $2 FROM api_key WHERE token = $1`, token, by)
+			       blocked, expires, created_by, updated_by, created_at, updated_at, project_id, $2 FROM api_key WHERE token = $1`, token, by)
 		if err != nil {
 			return err
 		}
@@ -387,7 +395,7 @@ func (k *Keys) PageDeleted(ctx context.Context, q KeyQuery) (core.Page[DeletedKe
 	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DeletedKey, error) {
 		var d DeletedKey
 		err := row.Scan(&d.Token, &d.KeyName, &d.KeyAlias, &d.UserID, &d.TeamID, &d.Models, &d.Metadata, &d.KeyType, &d.AllowedRoutes,
-			&d.Blocked, &d.Expires, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt, &d.DeletedAt, &d.DeletedBy)
+			&d.Blocked, &d.Expires, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt, &d.ProjectID, &d.DeletedAt, &d.DeletedBy)
 		return d, err
 	})
 	return core.Page[DeletedKey]{Items: items, Total: total}, err
@@ -445,6 +453,9 @@ func keyFilter(q KeyQuery) *core.ListQuery {
 	}
 	if q.TeamID != nil {
 		lq.Where("team_id = ?", *q.TeamID)
+	}
+	if q.ProjectID != nil {
+		lq.Where("project_id = ?", *q.ProjectID)
 	}
 	if q.KeyHash != nil {
 		lq.Where("token = ?", *q.KeyHash)

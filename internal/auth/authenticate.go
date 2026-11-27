@@ -24,6 +24,9 @@ type Principal struct {
 	// 허용 모델. 비어 있으면 모두 허용(litellm 과 같다). 마스터 키는 둘 다 비어 있다
 	KeyModels  []string
 	TeamModels []string
+	// 키가 프로젝트에 속하면 그 프로젝트와 허용 모델이다
+	ProjectID     string
+	ProjectModels []string
 	// 대시보드 세션 키로 들어왔을 때만 있다(litellm login_method). 로그아웃은 이것이 있어야 한다
 	UIMethod string
 	// 관리자가 정한 비밀번호로 대시보드에 들어온 세션이다. 비밀번호를 바꿀 때까지 resetAllowedRoutes 만 부른다
@@ -69,13 +72,15 @@ type Authenticator struct {
 	keys      *Keys
 	users     *Users
 	teams     *Teams
+	projects  *Projects
 	cache     *KeyCache
 	logins    *loginKeys
 	now       func() time.Time
 }
 
 func NewAuthenticator(masterKey MasterKey, keys *Keys, users *Users, teams *Teams, cache *KeyCache, now func() time.Time) *Authenticator {
-	return &Authenticator{masterKey: masterKey, keys: keys, users: users, teams: teams, cache: cache, logins: newLoginKeys(masterKey), now: now}
+	return &Authenticator{masterKey: masterKey, keys: keys, users: users, teams: teams, projects: NewProjects(keys.db, cache), cache: cache,
+		logins: newLoginKeys(masterKey), now: now}
 }
 
 // Authenticate 는 신원을 돌려준다. 거절은 litellm 과 같은 오류 본문(*core.ProxyError)이고, 그 밖의 error 는 예상 밖 실패(DB 등)다.
@@ -118,8 +123,16 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 	if resolved.teamBlocked {
 		return Principal{}, teamBlockedError(deref(k.TeamID))
 	}
+	if resolved.projectBlocked {
+		return Principal{}, projectBlockedError(deref(k.ProjectID))
+	}
 	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, KeyAlias: deref(k.KeyAlias), TeamID: deref(k.TeamID),
-		KeyModels: k.Models, TeamModels: resolved.teamModels}, nil
+		KeyModels: k.Models, TeamModels: resolved.teamModels, ProjectID: deref(k.ProjectID), ProjectModels: resolved.projectModels}, nil
+}
+
+// projectBlockedError 는 막힌 프로젝트의 키가 부른 요청의 오류다(litellm auth_checks 의 문구)
+func projectBlockedError(projectID string) core.ProxyError {
+	return core.AuthError("Project=" + projectID + " is blocked. Update via `/project/update` if you're an admin.")
 }
 
 // expiredKeyError 는 만료된 키(또는 폐기한 세션)의 litellm 오류다. 대시보드는 이 문구("Authentication Error - Expired Key")를
@@ -220,6 +233,14 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 		}
 		r.teamBlocked = err == nil && team.Blocked
 		r.teamModels = team.Models
+	}
+	if key.ProjectID != nil {
+		project, err := a.projects.Find(ctx, *key.ProjectID)
+		if err != nil && !errors.Is(err, ErrProjectNotFound) {
+			return resolvedKey{}, err
+		}
+		r.projectBlocked = err == nil && project.Blocked
+		r.projectModels = project.Models
 	}
 	if cacheable {
 		a.cache.entries.put(token, r)

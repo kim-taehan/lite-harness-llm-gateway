@@ -118,7 +118,7 @@ func (h *Handlers) listKeys(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	p := principal(ctx)
 	substring := q.Get("substring_matching") == "true"
-	query := auth.KeyQuery{TeamID: queryString(r, "team_id"), KeyHash: queryString(r, "key_hash"), KeyAlias: queryString(r, "key_alias"),
+	query := auth.KeyQuery{TeamID: queryString(r, "team_id"), ProjectID: queryString(r, "project_id"), KeyHash: queryString(r, "key_hash"), KeyAlias: queryString(r, "key_alias"),
 		AliasContains: substring, Search: queryString(r, "search"), Status: status, SortBy: sortBy, SortOrder: order,
 		Page: page, PageSize: size, Now: h.now().UTC()}
 	if p.CanViewAll() {

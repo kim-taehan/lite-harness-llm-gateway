@@ -206,7 +206,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 			core.HealthRoutes(p.lifecycle, db),
 			p.login.Routes(),
 			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), time.Now, logger).Routes(),
-			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Policies: policies, Deployments: deployments,
+			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Projects: auth.NewProjects(db, cache), Policies: policies, Deployments: deployments,
 				Usage: limits.NewUsageQuery(db), Settings: settings, IPAllow: ipAllow, Now: time.Now, Logger: logger}).Routes(),
 		),
 	}

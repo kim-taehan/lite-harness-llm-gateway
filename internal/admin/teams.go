@@ -182,7 +182,14 @@ func (h *Handlers) deleteTeams(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		projectIDs, err := h.projects.IDsOfTeams(ctx, ids) // 팀을 지우면 프로젝트도 함께 지워지므로 그 한도도 치운다
+		if err != nil {
+			return err
+		}
 		if err := h.teams.Delete(ctx, ids, caller.UserID); err != nil {
+			return err
+		}
+		if err := h.limits.Delete(ctx, limits.ScopeProject, projectIDs); err != nil {
 			return err
 		}
 		if err := h.limits.Delete(ctx, limits.ScopeTeamMember, memberTargets); err != nil {

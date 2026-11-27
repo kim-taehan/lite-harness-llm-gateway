@@ -47,6 +47,7 @@ type keyFields struct {
 	Models        core.Change[[]string]       `json:"models"`
 	UserID        core.Change[string]         `json:"user_id"`
 	TeamID        core.Change[string]         `json:"team_id"`
+	ProjectID     core.Change[string]         `json:"project_id"`
 	Metadata      core.Change[map[string]any] `json:"metadata"`
 	Blocked       core.Change[bool]           `json:"blocked"`
 	KeyType       *string                     `json:"key_type"`
@@ -75,6 +76,19 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 	p := principal(ctx)
 	teamID := nonEmpty(req.TeamID.Value) // litellm: team_id "" 는 null
 	userID := req.UserID.Value
+	// 프로젝트를 골랐으면 그 프로젝트의 팀이 키의 팀이다(팀을 안 줬으면 채우고, 다르면 거절). 팀 권한 검사는 채운 팀으로 한다
+	projectID := nonEmpty(req.ProjectID.Value)
+	if projectID != nil {
+		msg, err := h.keyProjectForGenerate(ctx, *projectID, &teamID)
+		if err != nil {
+			h.internalError(w, r, err)
+			return
+		}
+		if msg != "" {
+			proxyError(400, msg).Write(w)
+			return
+		}
+	}
 	if serviceAccount && teamID == nil {
 		detailError(400, "team_id is required for service account keys").Write(w)
 		return
@@ -90,6 +104,7 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 		plainProxyError(500, err.Error()).Write(w)
 		return
 	}
+	input.ProjectID = projectID
 
 	plain, key, err := h.createKeyWithLimits(ctx, input, req.patch())
 	var invalid *limits.InvalidError
@@ -230,6 +245,13 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	patch, err := h.keyPatch(req.keyFields, req.Key == nil, p.UserID)
 	if err != nil {
 		authStyle(400, "Authentication Error, "+err.Error()).Write(w)
+		return
+	}
+	if msg, err := h.keyProjectPatch(ctx, req.keyFields, key, &patch); err != nil {
+		h.internalError(w, r, err)
+		return
+	} else if msg != "" {
+		authStyle(400, pyDict("error", msg)).Write(w)
 		return
 	}
 

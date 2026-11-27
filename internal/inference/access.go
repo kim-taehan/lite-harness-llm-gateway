@@ -49,6 +49,9 @@ func modelDenied(p auth.Principal, groups AccessGroups, model string) (core.Prox
 	if p.TeamID != "" && !groups.allows(p.TeamModels, model) {
 		return accessDenied("team_model_access_denied", model), true
 	}
+	if p.ProjectID != "" && !groups.allows(p.ProjectModels, model) {
+		return accessDenied("project_model_access_denied", model), true
+	}
 	return core.ProxyError{}, false
 }
 

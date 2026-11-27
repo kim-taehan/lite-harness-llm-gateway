@@ -271,7 +271,7 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		x.cancel()
 	}
 	event := limits.UsageEvent{
-		RequestID: x.requestID, CreatedAt: x.started, KeyToken: x.principal.KeyToken, UserID: x.principal.UserID, TeamID: x.principal.TeamID,
+		RequestID: x.requestID, CreatedAt: x.started, KeyToken: x.principal.KeyToken, UserID: x.principal.UserID, TeamID: x.principal.TeamID, ProjectID: x.principal.ProjectID,
 		Model: x.requested, DeploymentID: x.deployment.ID, Provider: x.deployment.Provider, Status: x.status, HTTPStatus: x.httpStatus, ErrorCode: x.errorCode,
 		LatencyMS: int(h.now().Sub(x.started).Milliseconds()),
 	}
