@@ -40,7 +40,8 @@ func TestUsageScreens_AggregatedKeysUsersExportAndLogs(t *testing.T) {
 	var agg map[string]any
 	for deadline := time.Now().Add(3 * time.Second); ; {
 		agg = jsonOf(t, b.do("GET", "/user/daily/activity/aggregated?"+dates+"&timezone=-540", nil, master))
-		if len(agg["results"].([]any)) > 0 || time.Now().After(deadline) {
+		// 사용량은 비동기로 나뉘어 들어온다. 첫 행이 보이는 것이 아니라 3건이 다 모일 때까지 기다린다
+		if agg["metadata"].(map[string]any)["total_api_requests"] == 3.0 || time.Now().After(deadline) {
 			break
 		}
 		<-time.After(20 * time.Millisecond)
