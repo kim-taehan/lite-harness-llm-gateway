@@ -45,7 +45,8 @@
 | 임시 예산 증액(기한부) | 없음 | |
 | 고객(end-user) 단위 예산·한도 | **구현함(2026-11-28)** | 요청의 `user`(또는 `x-litellm-customer-id` 헤더, `metadata.user_id`)로 식별. `/customer/new·update·delete·block·unblock·info·list`(관리자 전용)로 관리하고 예산·RPM·TPM·TPD·모델별 한도는 키·팀과 같은 필드다. `user` 는 호출자가 정하는 값이라 속일 수 있다(litellm 도 같다). 차단·한도는 `user` 를 보낸 요청에만 걸린다 |
 | 태그 단위 예산·한도 | **구현함(2026-11-28)** | 요청이 붙인 태그(헤더 `x-litellm-tags`, 본문 `tags`·`metadata.tags`·`litellm_metadata.tags`, 요청당 20개까지) 중 등록한 태그에 예산·RPM·TPM·TPD·모델별 한도가 걸린다. 태그는 호출자가 정하는 값이라 속일 수 있다. 등록하지 않은 태그와 고객은 한도 행을 만들지 않는다. litellm 에서는 유료 기능인데 우리는 막지 않는다. 태그 목록 응답은 litellm 원본(배열) 대신 대시보드 타입(이름→태그 사전)을 따른다 |
-| 프로바이더·조직·프로젝트 단위 예산 | 없음 | 프로바이더는 진행 예정, 조직·프로젝트는 계층 설계 뒤에 |
+| 프로바이더 단위 예산 | **구현함(2026-11-28)** | 프로바이더(모델 배포의 provider 이름)별 예산·주기. 다 쓰면 그 프로바이더의 배포를 후보에서 빼고, 같은 모델의 다른 배포가 없으면 429. litellm 은 설정 파일에 적고 조회(`GET /provider/budgets`)만 있는데 우리는 설정 파일이 없어 쓰기 API(`POST /provider/budgets`, `DELETE /provider/budgets/{provider}`, 관리자 전용)를 더했다. 리셋은 예산 리셋 작업(1분 주기)이 하므로 리셋 시각이 지나도 최대 1분 막혀 있을 수 있다. 429 문구는 litellm 원문을 확인하지 못했다. 배포 단위 예산(`max_budget`)은 없다 |
+| 조직·프로젝트 단위 예산 | 없음 | 계층 설계 뒤에(설계 문서의 "조직·프로젝트·고객 계층은 만들지 않는다"를 바꾸는 일) |
 | 소프트 예산 알림 | **일부 구현(2026-11-27)** | Slack·이메일 알림은 없다(폐쇄망). 대신 `/metrics` 의 `gateway_soft_budget_exceeded{scope}` 가 소프트 예산 이상인 대상 수를 알려 사내 Prometheus 알람이 쓴다. 화면 경고는 없다 |
 | Redis 장애 시 요청 거부(fail-closed) 선택 | **구현함(2026-11-27)** | `GATEWAY_LIMITS_FAIL_CLOSED=true`(redis 저장소 전용). 기본은 메모리 카운터로 이어서 처리 |
 

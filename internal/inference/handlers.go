@@ -81,6 +81,18 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 			Message: r.URL.Path + ": Invalid model name passed in model=" + model + ". Call `/v1/models` to view available models for your key."}.Write(w)
 		return
 	}
+	// 예산을 다 쓴 프로바이더의 배포는 후보에서 뺀다. 남는 배포가 없으면 거절한다
+	exhausted, err := h.gate.ExhaustedProviders(r.Context())
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	if len(exhausted) > 0 {
+		if deployment, found = choose(withoutProviders(active, exhausted), model); !found {
+			providerBudgetExceeded(r.URL.Path, model, active, exhausted, h.now()).Write(w)
+			return
+		}
+	}
 	// 배포를 고른 뒤 한도를 본다. 동시성 한도가 배포 단위라 어느 배포인지 알아야 하기 때문이다(설계 4.1)
 	permit, err := h.gate.Admit(r.Context(), limits.Subject{KeyToken: p.KeyToken, KeyAlias: p.KeyAlias, TeamID: p.TeamID, UserID: p.UserID,
 		EndUserID: endUserID(r, body), Tags: requestTags(r, body), Model: model})

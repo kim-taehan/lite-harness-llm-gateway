@@ -22,6 +22,7 @@ type UsageEvent struct {
 	TeamID           string
 	EndUserID        string   // 요청이 밝힌 고객. 사용액을 고객 한도에 더하는 데만 쓰고 request_log 에는 남기지 않는다
 	Tags             []string // 요청이 붙인 태그. 마찬가지로 등록한 태그의 사용액에만 더한다
+	Provider         string   // 요청을 처리한 배포의 provider. 예산을 정한 프로바이더의 사용액에만 더한다
 	Model            string
 	DeploymentID     string
 	PromptTokens     int
@@ -136,6 +137,9 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 						modelSpend[[3]string{string(scope), id, e.Model}] += e.Cost
 					}
 				}
+				if e.Provider != "" {
+					spend[[2]string{string(ScopeProvider), e.Provider}] += e.Cost
+				}
 				for _, tag := range e.Tags {
 					spend[[2]string{string(ScopeTag), tag}] += e.Cost
 					modelSpend[[3]string{string(ScopeTag), tag, e.Model}] += e.Cost
@@ -158,6 +162,7 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 				SELECT $1::text, $2::text, $3::numeric
 				WHERE ($1::text <> 'end_user' OR EXISTS (SELECT 1 FROM customer WHERE user_id = $2::text))
 				  AND ($1::text <> 'tag' OR EXISTS (SELECT 1 FROM tag WHERE name = $2::text))
+				  AND ($1::text <> 'provider' OR EXISTS (SELECT 1 FROM limit_policy WHERE scope = 'provider' AND target_id = $2::text))
 				ON CONFLICT (scope, target_id) DO UPDATE SET spend = limit_policy.spend + EXCLUDED.spend, updated_at = now()`,
 				target[0], target[1], amount); err != nil {
 				return fmt.Errorf("spend: %w", err)
