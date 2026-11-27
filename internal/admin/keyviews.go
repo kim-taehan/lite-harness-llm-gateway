@@ -29,6 +29,7 @@ func keyRow(k auth.Key, p limits.Policy) row {
 		"metadata":               k.Metadata,
 		"blocked":                k.Blocked,
 		"tpm_limit":              p.TPMLimit,
+		"tpd_limit":              p.TPDLimit,
 		"rpm_limit":              p.RPMLimit,
 		"max_budget":             p.MaxBudget,
 		"budget_duration":        p.BudgetDuration,

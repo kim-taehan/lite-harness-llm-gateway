@@ -35,8 +35,12 @@ type Permit struct {
 	gate    *Gate
 	subject Subject
 	limited map[Scope]bool // TPM 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
+	daily   map[Scope]bool // TPD 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
 	headers map[string]string
 }
+
+// dailyWindow 는 하루 토큰 한도의 창이다. 윈도우가 에포크 기준으로 잘려 UTC 자정에 바뀐다(litellm 도 UTC 날짜 기준)
+const dailyWindow = 24 * time.Hour
 
 // report 는 litellm v3 리미터처럼 x-ratelimit-{api_key|team|user}-{limit|remaining}-{requests|tokens|max_parallel_requests} 헤더를 모은다.
 // 값은 검사 시점의 스냅샷이다(응답 뒤 토큰 정산은 반영하지 않는다)
@@ -58,11 +62,14 @@ func (p *Permit) Release() {
 	}
 }
 
-// AddTokens 는 응답 뒤 실제 토큰을 TPM 카운터에 더한다. 요청이 끊긴 뒤에도 불리므로 호출하는 쪽이 취소와 무관한 ctx 를 넘긴다
+// AddTokens 는 응답 뒤 실제 토큰을 TPM·TPD 카운터에 더한다. 요청이 끊긴 뒤에도 불리므로 호출하는 쪽이 취소와 무관한 ctx 를 넘긴다
 func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 	for scope, id := range p.subject.ids() {
 		if p.limited[scope] {
 			p.gate.counters.Add(ctx, counterKey("tpm", scope, id), int64(tokens), time.Minute)
+		}
+		if p.daily[scope] {
+			p.gate.counters.Add(ctx, counterKey("tpd", scope, id), int64(tokens), dailyWindow)
 		}
 	}
 }
@@ -92,7 +99,7 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			return nil, budgetExceeded(scope, s, p)
 		}
 	}
-	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}}
+	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}, daily: map[Scope]bool{}}
 	for _, scope := range gatedScopes {
 		p, ok := policies[scope]
 		if !ok {
@@ -107,6 +114,15 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 				return nil, g.rateLimited(scope, id, "tokens", *p.TPMLimit)
 			}
 			permit.report(scope, "tokens", *p.TPMLimit, used)
+		}
+		if p.TPDLimit != nil {
+			permit.daily[scope] = true
+			// litellm 과 같게 이미 쓴 양만 본다. 마지막 요청은 한도를 넘어서 통과할 수 있다
+			used := g.counters.Get(ctx, counterKey("tpd", scope, id), dailyWindow)
+			if used >= *p.TPDLimit {
+				permit.Release()
+				return nil, g.dailyTokensExceeded(scope, used, *p.TPDLimit)
+			}
 		}
 		if p.RPMLimit != nil {
 			used, ok := g.counters.IncrementIfBelow(ctx, counterKey("rpm", scope, id), 1, *p.RPMLimit, time.Minute)
@@ -146,6 +162,15 @@ func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.Proxy
 		Message: fmt.Sprintf("Rate limit exceeded for %s: %s. Limit type: %s. Current limit: %d, Remaining: 0. Limit resets at: %s",
 			descriptorNames[scope], id, kind, limit, reset),
 		Headers: map[string]string{"retry-after": strconv.Itoa(60), "rate_limit_type": kind, "reset_at": reset}}
+}
+
+// dailyTokensExceeded 는 litellm daily_token_limiter 의 429 다. retry-after 는 다음 UTC 자정까지 남은 초다
+func (g *Gate) dailyTokensExceeded(scope Scope, used, limit int64) core.ProxyError {
+	now := g.now().UTC()
+	retryAfter := int(now.Truncate(dailyWindow).Add(dailyWindow).Sub(now).Seconds())
+	return core.ProxyError{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Param: nil,
+		Message: fmt.Sprintf("Daily token limit reached for %s. Used %d of %d tokens today (UTC). Resets at 00:00 UTC.", descriptorNames[scope], used, limit),
+		Headers: map[string]string{"retry-after": strconv.Itoa(retryAfter), "rate_limit_type": "tokens"}}
 }
 
 // budgetExceeded 는 litellm BudgetExceededError 다. 이 포크의 기본 상태 코드는 422 다(J 5.3)

@@ -21,13 +21,14 @@ type limitFields struct {
 	MaxBudget           core.Change[float64] `json:"max_budget"`
 	SoftBudget          core.Change[float64] `json:"soft_budget"`
 	TPMLimit            core.Change[int64]   `json:"tpm_limit"`
+	TPDLimit            core.Change[int64]   `json:"tpd_limit"`
 	RPMLimit            core.Change[int64]   `json:"rpm_limit"`
 	MaxParallelRequests core.Change[int64]   `json:"max_parallel_requests"`
 	BudgetDuration      core.Change[string]  `json:"budget_duration"`
 }
 
 func (l limitFields) patch() limits.Patch {
-	return limits.Patch{MaxBudget: l.MaxBudget, SoftBudget: l.SoftBudget, TPMLimit: l.TPMLimit, RPMLimit: l.RPMLimit,
+	return limits.Patch{MaxBudget: l.MaxBudget, SoftBudget: l.SoftBudget, TPMLimit: l.TPMLimit, TPDLimit: l.TPDLimit, RPMLimit: l.RPMLimit,
 		MaxParallelRequests: l.MaxParallelRequests, BudgetDuration: l.BudgetDuration}
 }
 

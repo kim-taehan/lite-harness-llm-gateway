@@ -113,6 +113,54 @@ func TestGate_BudgetExceededIs422(t *testing.T) {
 	}
 }
 
+func TestGate_DailyTokenLimitResetsAtUTCMidnight(t *testing.T) {
+	gate, policies, now := newGate(t) // 2026-11-21 09:00:30 UTC
+	ctx := t.Context()
+	_, _ = policies.Apply(ctx, ScopeKey, "k1", Patch{TPDLimit: core.To(int64(100))})
+	s := Subject{KeyToken: "k1"}
+
+	permit, err := gate.Admit(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit.AddTokens(ctx, 60)
+	// 분이 바뀌어도(TPM 창) 하루 합은 이어진다. 아직 한도 아래라 통과하고, 이 요청이 한도를 넘긴다(litellm 과 같다)
+	*now = now.Add(5 * time.Hour)
+	permit, err = gate.Admit(ctx, s)
+	if err != nil {
+		t.Fatalf("한도 아래인데 막혔다: %v", err)
+	}
+	permit.AddTokens(ctx, 60)
+
+	_, err = gate.Admit(ctx, s)
+	r := rejection(t, err)
+	// 14:00:30 → 다음 UTC 자정까지 9시간 59분 30초
+	if r.Status != 429 || r.Headers["retry-after"] != "35970" ||
+		r.Message != "Daily token limit reached for api_key. Used 120 of 100 tokens today (UTC). Resets at 00:00 UTC." {
+		t.Errorf("%+v", r)
+	}
+
+	*now = time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	if _, err := gate.Admit(ctx, s); err != nil {
+		t.Errorf("자정이 지났는데 막혔다: %v", err)
+	}
+}
+
+func TestGate_DailyTokenLimitIsPerScope(t *testing.T) {
+	gate, policies, _ := newGate(t)
+	ctx := t.Context()
+	_, _ = policies.Apply(ctx, ScopeTeam, "t1", Patch{TPDLimit: core.To(int64(10))})
+	permit, _ := gate.Admit(ctx, Subject{KeyToken: "k1", TeamID: "t1"})
+	permit.AddTokens(ctx, 10)
+
+	if _, err := gate.Admit(ctx, Subject{KeyToken: "k2", TeamID: "t1"}); err == nil {
+		t.Error("같은 팀의 다른 키는 팀 한도를 함께 쓴다")
+	}
+	if _, err := gate.Admit(ctx, Subject{KeyToken: "k3", TeamID: "t2"}); err != nil {
+		t.Errorf("다른 팀이 막혔다: %v", err)
+	}
+}
+
 func TestGate_TPMCountsTokensAfterResponse(t *testing.T) {
 	gate, policies, _ := newGate(t)
 	ctx := t.Context()

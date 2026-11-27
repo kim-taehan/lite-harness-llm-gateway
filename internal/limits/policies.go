@@ -37,15 +37,16 @@ type Policy struct {
 	SoftBudget          *float64
 	Spend               float64
 	TPMLimit            *int64
+	TPDLimit            *int64
 	RPMLimit            *int64
 	MaxParallelRequests *int64
 	BudgetDuration      *string
 	BudgetResetAt       *time.Time
 }
 
-// HasLimits 는 정해 둔 한도(예산·TPM·RPM·병렬·기간)가 하나라도 있는지다. 사용액만 있으면 아니다
+// HasLimits 는 정해 둔 한도(예산·TPM·TPD·RPM·병렬·기간)가 하나라도 있는지다. 사용액만 있으면 아니다
 func (p Policy) HasLimits() bool {
-	return p.MaxBudget != nil || p.SoftBudget != nil || p.TPMLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil || p.BudgetDuration != nil
+	return p.MaxBudget != nil || p.SoftBudget != nil || p.TPMLimit != nil || p.TPDLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil || p.BudgetDuration != nil
 }
 
 // Patch 는 바꿀 한도 필드다. 보내지 않은 필드는 그대로 둔다
@@ -53,6 +54,7 @@ type Patch struct {
 	MaxBudget           core.Change[float64]
 	SoftBudget          core.Change[float64]
 	TPMLimit            core.Change[int64]
+	TPDLimit            core.Change[int64]
 	RPMLimit            core.Change[int64]
 	MaxParallelRequests core.Change[int64]
 	BudgetDuration      core.Change[string]
@@ -80,7 +82,7 @@ func (p *Policies) Find(ctx context.Context, scope Scope, ids []string) (map[str
 		return result, nil
 	}
 	rows, err := p.db.Q(ctx).Query(ctx, `
-		SELECT target_id, max_budget, soft_budget, spend, tpm_limit, rpm_limit, max_parallel_requests, budget_duration, budget_reset_at
+		SELECT target_id, max_budget, soft_budget, spend, tpm_limit, tpd_limit, rpm_limit, max_parallel_requests, budget_duration, budget_reset_at
 		FROM limit_policy WHERE scope = $1 AND target_id = ANY($2)`, scope, ids)
 	if err != nil {
 		return nil, err
@@ -89,7 +91,7 @@ func (p *Policies) Find(ctx context.Context, scope Scope, ids []string) (map[str
 	for rows.Next() {
 		var id string
 		var pol Policy
-		if err := rows.Scan(&id, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.RPMLimit,
+		if err := rows.Scan(&id, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.TPDLimit, &pol.RPMLimit,
 			&pol.MaxParallelRequests, &pol.BudgetDuration, &pol.BudgetResetAt); err != nil {
 			return nil, err
 		}
@@ -105,7 +107,7 @@ func (p *Policies) FindSubject(ctx context.Context, ids map[Scope]string) (map[S
 		scopes, targets = append(scopes, string(scope)), append(targets, id)
 	}
 	rows, err := p.db.Q(ctx).Query(ctx, `
-		SELECT l.scope, l.max_budget, l.soft_budget, l.spend, l.tpm_limit, l.rpm_limit, l.max_parallel_requests, l.budget_duration, l.budget_reset_at
+		SELECT l.scope, l.max_budget, l.soft_budget, l.spend, l.tpm_limit, l.tpd_limit, l.rpm_limit, l.max_parallel_requests, l.budget_duration, l.budget_reset_at
 		FROM limit_policy l JOIN unnest($1::text[], $2::text[]) AS want(scope, target_id) USING (scope, target_id)`, scopes, targets)
 	if err != nil {
 		return nil, err
@@ -115,7 +117,7 @@ func (p *Policies) FindSubject(ctx context.Context, ids map[Scope]string) (map[S
 	for rows.Next() {
 		var scope Scope
 		var pol Policy
-		if err := rows.Scan(&scope, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.RPMLimit,
+		if err := rows.Scan(&scope, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.TPDLimit, &pol.RPMLimit,
 			&pol.MaxParallelRequests, &pol.BudgetDuration, &pol.BudgetResetAt); err != nil {
 			return nil, err
 		}
@@ -139,15 +141,15 @@ func (p *Policies) Apply(ctx context.Context, scope Scope, id string, patch Patc
 		return next, nil
 	}
 	_, err = p.db.Q(ctx).Exec(ctx, `
-		INSERT INTO limit_policy (scope, target_id, max_budget, soft_budget, tpm_limit, rpm_limit, max_parallel_requests, budget_duration, budget_reset_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+		INSERT INTO limit_policy (scope, target_id, max_budget, soft_budget, tpm_limit, tpd_limit, rpm_limit, max_parallel_requests, budget_duration, budget_reset_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
 		ON CONFLICT (scope, target_id) DO UPDATE SET
 			max_budget = EXCLUDED.max_budget, soft_budget = EXCLUDED.soft_budget,
-			tpm_limit = EXCLUDED.tpm_limit, rpm_limit = EXCLUDED.rpm_limit,
+			tpm_limit = EXCLUDED.tpm_limit, tpd_limit = EXCLUDED.tpd_limit, rpm_limit = EXCLUDED.rpm_limit,
 			max_parallel_requests = EXCLUDED.max_parallel_requests,
 			budget_duration = EXCLUDED.budget_duration, budget_reset_at = EXCLUDED.budget_reset_at,
 			updated_at = now()`,
-		scope, id, next.MaxBudget, next.SoftBudget, next.TPMLimit, next.RPMLimit, next.MaxParallelRequests, next.BudgetDuration, next.BudgetResetAt)
+		scope, id, next.MaxBudget, next.SoftBudget, next.TPMLimit, next.TPDLimit, next.RPMLimit, next.MaxParallelRequests, next.BudgetDuration, next.BudgetResetAt)
 	if err != nil {
 		return Policy{}, fmt.Errorf("한도 저장: %w", err)
 	}
@@ -190,6 +192,7 @@ func (p *Policies) merge(current Policy, patch Patch) Policy {
 	next.MaxBudget = patch.MaxBudget.Apply(current.MaxBudget)
 	next.SoftBudget = patch.SoftBudget.Apply(current.SoftBudget)
 	next.TPMLimit = patch.TPMLimit.Apply(current.TPMLimit)
+	next.TPDLimit = patch.TPDLimit.Apply(current.TPDLimit)
 	next.RPMLimit = patch.RPMLimit.Apply(current.RPMLimit)
 	next.MaxParallelRequests = patch.MaxParallelRequests.Apply(current.MaxParallelRequests)
 	if patch.BudgetDuration.Set {
@@ -206,7 +209,7 @@ func (p *Policies) merge(current Policy, patch Patch) Policy {
 }
 
 func (patch Patch) changes() bool {
-	return patch.MaxBudget.Set || patch.SoftBudget.Set || patch.TPMLimit.Set || patch.RPMLimit.Set ||
+	return patch.MaxBudget.Set || patch.SoftBudget.Set || patch.TPMLimit.Set || patch.TPDLimit.Set || patch.RPMLimit.Set ||
 		patch.MaxParallelRequests.Set || patch.BudgetDuration.Set
 }
 
