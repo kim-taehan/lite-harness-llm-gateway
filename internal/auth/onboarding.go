@@ -153,7 +153,7 @@ func (l *Login) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	badRequest := func(message string) { core.DetailMessage(http.StatusBadRequest, message).Write(w) }
 	// 세션 토큰을 훔친 사람이 현재 비밀번호를 무작위로 넣어 보지 못하게 로그인과 같은 시도 제한을 건다
-	_, err := l.gate.check(r.Context(), p.UserID, req.CurrentPassword, clientIP(r))
+	_, err := l.gate.check(r.Context(), p.UserID, req.CurrentPassword, l.proxies.clientIP(r))
 	switch {
 	case errors.Is(err, ErrTooManyAttempts):
 		core.ProxyError{Status: http.StatusTooManyRequests, Type: "auth_error", Param: "None", Message: "Too many failed attempts. Try again later.",

@@ -34,6 +34,8 @@ services:
       GATEWAY_MASTER_KEY: ${GATEWAY_MASTER_KEY:?.env 에 GATEWAY_MASTER_KEY 가 필요하다}
       # 비밀번호에 @ : / 같은 문자가 있으면 URL 인코딩해야 한다
       GATEWAY_DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@postgres:5432/gateway
+      # 앞단 프록시(nginx 등) 뒤에 둘 때만 그 주소를 넣는다. 비우면 X-Forwarded-For 를 믿지 않는다
+      GATEWAY_TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
       GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
       GATEWAY_SSO_ISSUER: ${GATEWAY_SSO_ISSUER:-}
       GATEWAY_SSO_CLIENT_ID: ${GATEWAY_SSO_CLIENT_ID:-}

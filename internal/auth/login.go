@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -59,6 +58,7 @@ type Login struct {
 	users     *Users
 	teams     *Teams
 	publicURL string
+	proxies   TrustedProxies // 시도 제한이 쓰는 클라이언트 주소를 정할 때 X-Forwarded-For 를 믿는 앞단
 	now       func() time.Time
 	logger    *slog.Logger
 }
@@ -71,6 +71,7 @@ type LoginDeps struct {
 	Users   *Users
 	Teams   *Teams
 	Client  *http.Client
+	Proxies TrustedProxies
 	Now     func() time.Time
 	Logger  *slog.Logger
 }
@@ -78,7 +79,7 @@ type LoginDeps struct {
 // NewLogin 은 SSO 가 들어간 빌드면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
 	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, users: d.Users, teams: d.Teams,
-		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), now: d.Now, logger: d.Logger}
+		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), proxies: d.Proxies, now: d.Now, logger: d.Logger}
 	if d.Methods.SSO {
 		if d.OIDC.Issuer == "" || d.OIDC.ClientID == "" || d.OIDC.PublicURL == "" {
 			return nil, errors.New("SSO 가 들어간 빌드다. GATEWAY_SSO_ISSUER, GATEWAY_SSO_CLIENT_ID, GATEWAY_PUBLIC_URL 이 필요하다")
@@ -117,7 +118,7 @@ func detail(w http.ResponseWriter, status int, message string) {
 }
 
 func (l *Login) start(w http.ResponseWriter, r *http.Request) {
-	loginID, secret, code, ok := l.flows.start(sha256Hex(clientIP(r)))
+	loginID, secret, code, ok := l.flows.start(sha256Hex(l.proxies.clientIP(r)))
 	if !ok {
 		detail(w, http.StatusTooManyRequests, "Too many CLI login attempts. Try again later.")
 		return
@@ -235,7 +236,7 @@ func (l *Login) passwordSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.PostFormValue("username")
 	signinPage := page{Title: "LiteLLM CLI Login", Action: l.publicURL + "/sso/cli/password/" + loginID, Password: true}
-	user, err := l.gate.check(r.Context(), username, r.PostFormValue("password"), clientIP(r))
+	user, err := l.gate.check(r.Context(), username, r.PostFormValue("password"), l.proxies.clientIP(r))
 	switch {
 	case errors.Is(err, ErrTooManyAttempts):
 		signinPage.Error = "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요."
@@ -404,15 +405,6 @@ func (l *Login) flowExists(w http.ResponseWriter, loginID string) bool {
 func flowNotFound(w http.ResponseWriter) {
 	detail(w, http.StatusBadRequest, "CLI login session not found or expired. Run `lite login` again. If this happens immediately after starting a login, "+
 		"the proxy is likely running multiple replicas without a shared cache; configure a Redis cache so every replica can see the login session.")
-}
-
-// clientIP 는 속도 제한 키다. 프록시 뒤 XFF 는 아직 믿지 않는다(litellm 도 use_x_forwarded_for 를 켤 때만 쓴다)
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 func containsString(list []string, v string) bool {

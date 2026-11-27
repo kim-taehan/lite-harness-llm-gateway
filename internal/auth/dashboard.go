@@ -66,7 +66,7 @@ func (l *Login) loginForm(w http.ResponseWriter, r *http.Request) {
 // DB 사용자 비밀번호는 빌드에 비밀번호 로그인이 있을 때만 된다. 관리자 로그인은 SSO 만 넣은 빌드에서도 된다(대시보드를 처음 여는 길)
 func (l *Login) signInUI(w http.ResponseWriter, r *http.Request, username, password string) (string, bool) {
 	ctx := r.Context()
-	user, err := l.gate.attempt(username, clientIP(r), func() (User, error) {
+	user, err := l.gate.attempt(username, l.proxies.clientIP(r), func() (User, error) {
 		switch {
 		case username == uiAdminUsername && l.master.Matches(password):
 			return l.users.ensureProxyAdmin(ctx, uiAdminUserID)

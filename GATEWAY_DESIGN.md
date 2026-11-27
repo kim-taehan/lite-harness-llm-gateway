@@ -402,6 +402,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | 키 | 기본값 | 뜻 |
 |---|---|---|
 | `GATEWAY_LISTEN` | `:4000` | 수신 주소. litellm 기본 포트와 같다 |
+| `GATEWAY_TRUSTED_PROXIES` | 없음 | `X-Forwarded-For` 를 믿을 앞단(리버스 프록시)의 IP·CIDR(쉼표). 앞단 뒤에서는 모든 요청의 출발지가 앞단 주소라 이 값 없이는 로그인 시도 제한이 사용자 구분 없이 전체에 걸린다. 직접 연결한 상대가 이 목록에 있을 때만 헤더를 읽고, 오른쪽부터 신뢰 대역을 건너뛴 첫 주소를 쓴다. 비면 헤더를 쓰지 않는다(litellm 의 `use_x_forwarded_for` 와 같은 뜻) |
 | `GATEWAY_DATABASE_URL` | 없음(필수, M1 DB 부터) | PostgreSQL 연결 문자열 |
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 없으면 기동 거부. 환경 변수·시크릿으로만 |
 | `GATEWAY_COUNTER_STORE` | `memory` | `memory` 또는 `redis` |

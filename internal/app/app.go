@@ -40,6 +40,8 @@ type Config struct {
 	Login        auth.LoginMethods
 	SSO          auth.OIDCConfig // SSO 가 들어간 빌드에서만 쓴다
 	CORS         CORSConfig      // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
+	// GATEWAY_TRUSTED_PROXIES: X-Forwarded-For 를 믿을 앞단 주소. 비면 쓰지 않는다
+	TrustedProxies auth.TrustedProxies
 }
 
 // ErrNoDatabaseURL 은 DB 주소가 없을 때다. 신원·한도의 진실 원천이 PostgreSQL 이라 없이는 기동하지 않는다
@@ -70,8 +72,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 			sso.PublicURL = "http://localhost:" + listen[strings.LastIndex(listen, ":")+1:]
 		}
 	}
+	proxies, err := auth.ParseTrustedProxies(getenv("GATEWAY_TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
-		CORS: loadCORS(getenv)}, nil
+		CORS: loadCORS(getenv), TrustedProxies: proxies}, nil
 }
 
 // keyCacheTTL 은 litellm 기본(60초)과 같다. 다른 인스턴스에서 바꾼 키는 이 시간 안에 반영된다(설계 3.2)
@@ -99,7 +105,7 @@ func newIdentity(db *core.DB) identity {
 // newLogin 은 빌드에 들어간 로그인 방식으로 로그인을 만든다. SSO 가 들어갔으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
 	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
-		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Now: time.Now, Logger: logger})
+		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Now: time.Now, Logger: logger})
 }
 
 // parts 는 조립에 필요한, 이미 만들어 둔 부품이다
