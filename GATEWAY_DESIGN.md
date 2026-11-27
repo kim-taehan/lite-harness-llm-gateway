@@ -384,6 +384,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 - 로그인 키의 암호 키(AES-256-GCM)와 대시보드 JWT 의 서명 키(HMAC-SHA256)는 마스터 키에서 용도별로 파생한다(`HMAC(마스터, 용도)`). litellm 은 마스터 키를 직접 쓴다. 파생 방식을 바꾼 배포에서는 이전에 발급한 로그인 키·대시보드 세션·초대 링크가 무효가 되어 다시 로그인해야 한다
 - 데스크탑이 받는 로그인 키(`litellm_login_…`)는 7일간 유효하다. litellm 기본은 24시간(`CLI_JWT_EXPIRATION_HOURS`)이다. 요청마다 사용자·팀을 다시 읽으므로 차단·팀 제외는 기간과 상관없이 바로 반영된다
 - 데스크탑 로그인 화면은 빌드에 SSO 와 비밀번호가 둘 다 있으면 둘 중 고르게 한다(litellm 원본은 SSO 만, 포크는 설정으로 하나만)
+- 팀 admin 은 자기 팀 사용자에게 초대 링크를 만들 수 있지만, 대상이 관리자 역할(`proxy_admin`, `proxy_admin_viewer`)이면 거부한다. 초대 링크로 비밀번호를 새로 정하면 그 계정으로 로그인하게 되어, 허용하면 팀 admin 이 관리자 계정을 가로챌 수 있다(실제로 재현했다). litellm 은 대상의 역할을 보지 않는다
 - `/v2/team/list` 를 일반 사용자가 `user_id` 없이 부르면 호출자 id 로 채운다. litellm 은 채우는 코드가 실행되지 않아 401 을 준다(`I_team_user_screens_contract.md`)
 - 팀원은 `team_member` 한 곳에만 둔다. litellm 은 팀의 `members_with_roles` 와 사용자의 `teams` 두 곳에 따로 저장해 v1·v2 목록이 어긋날 수 있다. 응답 모양은 litellm 과 같게 두 필드 모두 `team_member` 에서 만든다
 

@@ -1,12 +1,29 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"llm-gateway/internal/auth"
 	"llm-gateway/internal/core"
 )
+
+// teamAdminMayInvite 는 팀 admin 이 이 사용자에게 초대 링크를 만들 수 있는지다: 자기 팀 사용자여야 하고 관리자 역할이 아니어야 한다.
+// 링크로 비밀번호를 새로 정하면 그 계정으로 로그인하게 되므로, 관리자 계정을 허용하면 팀 admin 이 관리자가 된다.
+// litellm 은 대상의 역할을 보지 않는다(우리가 다르게 한다. 설계 6장)
+func (h *Handlers) teamAdminMayInvite(ctx context.Context, caller, target string) (bool, error) {
+	sharesTeam, err := h.sharesAdminTeam(ctx, caller, target)
+	if err != nil || !sharesTeam {
+		return false, err
+	}
+	user, err := h.users.Find(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	role := user.EffectiveRole()
+	return role != core.RoleProxyAdmin && role != core.RoleProxyAdminViewer, nil
+}
 
 // POST /invitation/new (L 6.1). 링크 주소(/ui/onboarding?invitation_id=…)는 대시보드가 만든다.
 // proxy_admin 은 누구나, 팀 admin 은 자기 팀 사용자만 초대한다(litellm 과 같다. 조직은 없다)
@@ -24,7 +41,7 @@ func (h *Handlers) createInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, p := r.Context(), principal(r.Context())
 	if !p.IsAdmin() {
-		allowed, err := h.sharesAdminTeam(ctx, p.UserID, *req.UserID)
+		allowed, err := h.teamAdminMayInvite(ctx, p.UserID, *req.UserID)
 		if err != nil {
 			h.internalError(w, r, err)
 			return
