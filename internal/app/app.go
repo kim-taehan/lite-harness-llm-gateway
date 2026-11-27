@@ -205,6 +205,11 @@ func upstreamClient() *http.Client {
 	transport := noProxyTransport()
 	transport.DialContext = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	transport.ResponseHeaderTimeout = 300 * time.Second
+	// 유휴 연결을 충분히 보관한다. Go 기본은 호스트당 2개라 동시 요청이 그보다 많으면 응답마다 연결을 닫고 새로 맺는다.
+	// 모델 서버는 보통 한 곳이라 초당 수백 건에서 닫힌 연결이 TIME_WAIT 로 쌓여 임시 포트가 바닥나고
+	// "cannot assign requested address" 로 업스트림 호출이 503 이 된다(부하 시험 2026-11-27)
+	transport.MaxIdleConns = 2048
+	transport.MaxIdleConnsPerHost = 1024
 	return &http.Client{Transport: transport}
 }
 
