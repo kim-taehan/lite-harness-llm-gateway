@@ -413,6 +413,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_DATABASE_URL` | 없음(필수, M1 DB 부터) | PostgreSQL 연결 문자열 |
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 없으면 기동 거부. 환경 변수·시크릿으로만 |
 | `GATEWAY_ALLOWED_IPS_DISABLE` | 없음 | `true` 면 IP 허용 목록(6장)을 무시한다. 목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제이며 기동 로그에 경고를 남긴다. 목록을 고친 뒤 지우고 다시 띄운다 |
+| `GATEWAY_AUDIT_RETENTION_DAYS` | `365` | 감사 기록(`audit_log`) 보관 일수. 하루마다 지난 기록을 5000줄씩 나눠 지우고 지운 사실을 `retention_purged` 한 줄로 남긴다. `0` 은 영구 보관(기동 경고). 정수가 아니거나 음수면 기동 거부. 사용량 기록(`request_log`)은 90일 고정 |
 | `GATEWAY_LOGIN_METHODS` | 비면 `password`, `GATEWAY_SSO_ISSUER` 가 있으면 `sso,password` | `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. 틀린 값이면 기동 거부. 6장 |
 | `GATEWAY_COUNTER_STORE` | `memory` | `memory`(인스턴스 1개) 또는 `redis`(여러 대). 틀린 값이면 기동 거부 |
 | `GATEWAY_REDIS_URL` | 없음 | `counter-store=redis` 일 때 필수(`redis://[:비밀번호@]호스트:6379/0`, TLS 는 `rediss://`). 기동 때 연결을 확인하고 닿지 않으면 기동하지 않는다. 운영 중 장애는 메모리 카운터로 이어서 처리한다(연속 3번 실패하면 5초간 Redis 를 건너뜀) |

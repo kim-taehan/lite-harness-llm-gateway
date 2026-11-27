@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,6 +45,8 @@ type Config struct {
 	CORS         CORSConfig        // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
 	CounterStore string            // GATEWAY_COUNTER_STORE: memory(기본, 인스턴스 1개) 또는 redis(여러 대)
 	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
+	// GATEWAY_AUDIT_RETENTION_DAYS: 감사 기록 보관 기간. 0 이면 지우지 않는다(영구 보관). 기본 365일
+	AuditRetention time.Duration
 	// GATEWAY_LIMITS_FAIL_CLOSED=true: Redis 장애 동안 한도가 걸린 요청을 거부한다. 기본은 메모리 카운터로 이어서 처리
 	LimitsFailClosed bool
 	// GATEWAY_TRUSTED_PROXIES: X-Forwarded-For 를 믿을 앞단 주소. 비면 쓰지 않는다
@@ -80,6 +83,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if failClosed && counterStore != counterStoreRedis {
 		return Config{}, errors.New("GATEWAY_LIMITS_FAIL_CLOSED=true 는 GATEWAY_COUNTER_STORE=redis 일 때만 뜻이 있다(메모리 카운터는 장애가 없다)")
 	}
+	auditRetention, err := loadAuditRetention(getenv)
+	if err != nil {
+		return Config{}, err
+	}
 	sso := auth.OIDCConfig{Issuer: getenv("GATEWAY_SSO_ISSUER"), ClientID: getenv("GATEWAY_SSO_CLIENT_ID"),
 		ClientSecret: getenv("GATEWAY_SSO_CLIENT_SECRET"), PublicURL: getenv("GATEWAY_PUBLIC_URL")}
 	if sso.PublicURL == "" {
@@ -94,7 +101,24 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
 		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL,
-		LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
+		AuditRetention: auditRetention, LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
+}
+
+// defaultAuditRetentionDays 는 감사 기록의 기본 보관 기간이다. 사용량 기록(90일)보다 길게 둔다: 점검·사고 조사는 몇 달 뒤에 오기도 한다
+const defaultAuditRetentionDays = 365
+
+// loadAuditRetention 은 GATEWAY_AUDIT_RETENTION_DAYS 를 읽는다. 비우면 365일, 0 이면 영구 보관, 양의 정수면 그 일수다.
+// 음수나 숫자가 아닌 값은 오타일 가능성이 커서 기동을 멈춘다(조용히 기본값으로 돌리면 의도와 다른 기간으로 지워진다)
+func loadAuditRetention(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv("GATEWAY_AUDIT_RETENTION_DAYS"))
+	if raw == "" {
+		return defaultAuditRetentionDays * 24 * time.Hour, nil
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil || days < 0 {
+		return 0, fmt.Errorf("GATEWAY_AUDIT_RETENTION_DAYS %q 는 0 이상의 정수여야 한다(0 은 영구 보관)", raw)
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
 }
 
 // loadLoginMethods 는 GATEWAY_LOGIN_METHODS(password, sso, sso,password)를 읽는다. password 는 litellm 자체 로그인(아이디·비밀번호),
@@ -300,6 +324,11 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	go usage.Run(background)
 	jobs.Go(func() { limits.NewPolicies(db, time.Now).RunBudgetResets(background, logger) })
 	jobs.Go(func() { limits.NewLogRetention(db, time.Now, requestLogRetention).Run(background, logger) })
+	if cfg.AuditRetention > 0 {
+		jobs.Go(func() { admin.NewAuditRetention(db, time.Now, cfg.AuditRetention).Run(background, logger) })
+	} else {
+		logger.Warn("감사 기록을 영구 보관한다(GATEWAY_AUDIT_RETENTION_DAYS=0). 테이블이 계속 커진다")
+	}
 	defer usage.Close()
 
 	id := newIdentity(db)
