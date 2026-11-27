@@ -60,7 +60,7 @@ func TestGate_PermitCarriesRatelimitHeadersLikeLitellm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	permit.AddTokens(400)
+	permit.AddTokens(ctx, 400)
 	second, err := gate.Admit(ctx, Subject{KeyToken: "k1", TeamID: "t1"})
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestGate_TPMCountsTokensAfterResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	permit.AddTokens(100)
+	permit.AddTokens(ctx, 100)
 	permit.Release()
 	if r := rejection(t, func() error { _, err := gate.Admit(ctx, s); return err }()); !strings.Contains(r.Message, "Limit type: tokens") {
 		t.Errorf("%+v", r)

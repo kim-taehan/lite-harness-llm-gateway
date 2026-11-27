@@ -58,11 +58,11 @@ func (p *Permit) Release() {
 	}
 }
 
-// AddTokens 는 응답 뒤 실제 토큰을 TPM 카운터에 더한다
-func (p *Permit) AddTokens(tokens int) {
+// AddTokens 는 응답 뒤 실제 토큰을 TPM 카운터에 더한다. 요청이 끊긴 뒤에도 불리므로 호출하는 쪽이 취소와 무관한 ctx 를 넘긴다
+func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 	for scope, id := range p.subject.ids() {
 		if p.limited[scope] {
-			p.gate.counters.Add(counterKey("tpm", scope, id), int64(tokens), time.Minute)
+			p.gate.counters.Add(ctx, counterKey("tpm", scope, id), int64(tokens), time.Minute)
 		}
 	}
 }
@@ -101,7 +101,7 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 		id := ids[scope]
 		if p.TPMLimit != nil {
 			permit.limited[scope] = true
-			used := g.counters.Get(counterKey("tpm", scope, id), time.Minute)
+			used := g.counters.Get(ctx, counterKey("tpm", scope, id), time.Minute)
 			if used >= *p.TPMLimit {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "tokens", *p.TPMLimit)
@@ -109,7 +109,7 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			permit.report(scope, "tokens", *p.TPMLimit, used)
 		}
 		if p.RPMLimit != nil {
-			used, ok := g.counters.IncrementIfBelow(counterKey("rpm", scope, id), 1, *p.RPMLimit, time.Minute)
+			used, ok := g.counters.IncrementIfBelow(ctx, counterKey("rpm", scope, id), 1, *p.RPMLimit, time.Minute)
 			if !ok {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "requests", *p.RPMLimit)
@@ -117,7 +117,7 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			permit.report(scope, "requests", *p.RPMLimit, used)
 		}
 		if p.MaxParallelRequests != nil {
-			release, held, ok := g.counters.AcquireSlot(counterKey("conc", scope, id), *p.MaxParallelRequests, slotLease)
+			release, held, ok := g.counters.AcquireSlot(ctx, counterKey("conc", scope, id), *p.MaxParallelRequests, slotLease)
 			if !ok {
 				permit.Release()
 				return nil, g.rateLimited(scope, id, "max_parallel_requests", *p.MaxParallelRequests)

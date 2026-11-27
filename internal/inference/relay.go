@@ -286,7 +286,8 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		event.TTFTMS = &ms
 	}
 	event.Cost = cost(x.deployment, event.PromptTokens, event.CompletionTokens)
-	x.permit.AddTokens(event.PromptTokens + event.CompletionTokens)
+	// 요청이 끊긴 뒤에도 토큰은 정산해야 한다
+	x.permit.AddTokens(context.WithoutCancel(r.Context()), event.PromptTokens+event.CompletionTokens)
 	h.usage.Record(event)
 }
 
