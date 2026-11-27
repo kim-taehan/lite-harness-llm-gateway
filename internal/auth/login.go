@@ -160,7 +160,7 @@ func (l *Login) redirectToSSO(w http.ResponseWriter, r *http.Request, loginID st
 	target, verifier := l.oidc.authorizeURL(state)
 	l.flows.with(loginID, func(f *cliFlow) bool { f.pkceVerifier = verifier; return true })
 	http.SetCookie(w, &http.Cookie{Name: "litellm_oauth_state", Value: state, Path: "/", MaxAge: int(cliFlowTTL.Seconds()),
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: l.proxies.isHTTPS(r)})
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 

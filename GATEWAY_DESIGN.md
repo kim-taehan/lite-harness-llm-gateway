@@ -413,6 +413,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_DATABASE_URL` | 없음(필수, M1 DB 부터) | PostgreSQL 연결 문자열 |
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 없으면 기동 거부. 환경 변수·시크릿으로만 |
 | `GATEWAY_ALLOWED_IPS_DISABLE` | 없음 | `true` 면 IP 허용 목록(6장)을 무시한다. 목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제이며 기동 로그에 경고를 남긴다. 목록을 고친 뒤 지우고 다시 띄운다 |
+| `GATEWAY_TLS_CERT_FILE`, `GATEWAY_TLS_KEY_FILE` | 없음 | 둘 다 있으면 직접 TLS 종단(1.2 이상, HSTS `max-age=31536000`, 인증서 파일 변경을 10초 간격으로 확인해 재기동 없이 교체, 새 파일이 깨졌으면 이전 것 유지). 하나만 있으면 기동 거부. 비우면 평문(기동 경고)이고 앞단이 종단한다. 앞단 뒤에서는 신뢰 앞단의 `X-Forwarded-Proto: https` 로 쿠키 `Secure` 를 정한다. `docs/security/tls.md` |
 | `GATEWAY_AUDIT_RETENTION_DAYS` | `365` | 감사 기록(`audit_log`) 보관 일수. 하루마다 지난 기록을 5000줄씩 나눠 지우고 지운 사실을 `retention_purged` 한 줄로 남긴다. `0` 은 영구 보관(기동 경고). 정수가 아니거나 음수면 기동 거부. 사용량 기록(`request_log`)은 90일 고정 |
 | `GATEWAY_LOGIN_METHODS` | 비면 `password`, `GATEWAY_SSO_ISSUER` 가 있으면 `sso,password` | `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. 틀린 값이면 기동 거부. 6장 |
 | `GATEWAY_COUNTER_STORE` | `memory` | `memory`(인스턴스 1개) 또는 `redis`(여러 대). 틀린 값이면 기동 거부 |

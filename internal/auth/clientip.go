@@ -42,6 +42,23 @@ func (p TrustedProxies) contains(addr netip.Addr) bool {
 	return false
 }
 
+// isHTTPS 는 이 요청이 암호화된 연결로 왔는지다. 게이트웨이가 직접 종단한 연결이거나, 신뢰하는 앞단이 X-Forwarded-Proto: https 로
+// 알린 요청이다. 신뢰하지 않는 상대가 보낸 헤더는 믿지 않는다(평문 연결에 보안 쿠키를 심었다고 속이지 못하게)
+func (p TrustedProxies) isHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil || !p.contains(peer) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
 // clientIP 는 시도 제한의 키가 되는 클라이언트 주소다. 요청을 직접 보낸 상대가 신뢰하는 앞단일 때만 X-Forwarded-For 를 읽고,
 // 오른쪽(가장 가까운 앞단이 덧붙인 쪽)부터 신뢰 대역을 건너뛴 첫 주소를 쓴다. 클라이언트가 헤더 앞쪽에 끼워 넣은 값은 믿지 않기 위해서다.
 // 읽을 수 없거나 전부 신뢰 대역이면 직접 연결 주소를 쓴다

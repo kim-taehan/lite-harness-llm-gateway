@@ -45,6 +45,9 @@ type Config struct {
 	CORS         CORSConfig        // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
 	CounterStore string            // GATEWAY_COUNTER_STORE: memory(기본, 인스턴스 1개) 또는 redis(여러 대)
 	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
+	// GATEWAY_TLS_CERT_FILE·GATEWAY_TLS_KEY_FILE: 둘 다 있으면 게이트웨이가 TLS 를 직접 종단한다(TLS 1.2 이상, 파일이 바뀌면 다시 읽는다).
+	// 둘 다 비면 평문이고 앞단이 종단한다
+	TLSCertFile, TLSKeyFile string
 	// GATEWAY_AUDIT_RETENTION_DAYS: 감사 기록 보관 기간. 0 이면 지우지 않는다(영구 보관). 기본 365일
 	AuditRetention time.Duration
 	// GATEWAY_LIMITS_FAIL_CLOSED=true: Redis 장애 동안 한도가 걸린 요청을 거부한다. 기본은 메모리 카운터로 이어서 처리
@@ -87,12 +90,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	tlsCert, tlsKey, err := loadTLSFiles(getenv)
+	if err != nil {
+		return Config{}, err
+	}
 	sso := auth.OIDCConfig{Issuer: getenv("GATEWAY_SSO_ISSUER"), ClientID: getenv("GATEWAY_SSO_CLIENT_ID"),
 		ClientSecret: getenv("GATEWAY_SSO_CLIENT_SECRET"), PublicURL: getenv("GATEWAY_PUBLIC_URL")}
 	if sso.PublicURL == "" {
-		sso.PublicURL = "http://localhost" + listen
+		scheme := "http" // 직접 종단하면 브라우저가 열 주소도 https 다
+		if tlsCert != "" {
+			scheme = "https"
+		}
+		sso.PublicURL = scheme + "://localhost" + listen
 		if strings.HasPrefix(listen, "0.0.0.0:") || strings.HasPrefix(listen, "[::]:") {
-			sso.PublicURL = "http://localhost:" + listen[strings.LastIndex(listen, ":")+1:]
+			sso.PublicURL = scheme + "://localhost:" + listen[strings.LastIndex(listen, ":")+1:]
 		}
 	}
 	proxies, err := auth.ParseTrustedProxies(getenv("GATEWAY_TRUSTED_PROXIES"))
@@ -101,7 +112,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
 		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL,
-		AuditRetention: auditRetention, LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
+		TLSCertFile: tlsCert, TLSKeyFile: tlsKey, AuditRetention: auditRetention, LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
 }
 
 // defaultAuditRetentionDays 는 감사 기록의 기본 보관 기간이다. 사용량 기록(90일)보다 길게 둔다: 점검·사고 조사는 몇 달 뒤에 오기도 한다
@@ -276,7 +287,7 @@ func buildHandler(cfg Config, p parts) http.Handler {
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { core.WriteRouteNotFound(w) })
 	// 허용 목록은 지표 안쪽이라 막힌 요청(403)도 센다
-	return withCORS(cfg.CORS, metrics.instrument(m.ipAllow.Middleware(mux)))
+	return withSecurityHeaders(cfg, withCORS(cfg.CORS, metrics.instrument(m.ipAllow.Middleware(mux))))
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다
@@ -347,13 +358,28 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String())
+	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String(), "tls", cfg.TLSCertFile != "")
 	if cfg.AllowedIPsDisabled {
 		logger.Warn("IP 허용 목록이 비상 해제돼 있다(GATEWAY_ALLOWED_IPS_DISABLE). 목록을 고친 뒤 이 설정을 지우고 다시 띄운다")
 	}
 
+	serve := func() error { return server.Serve(listener) }
+	if cfg.TLSCertFile != "" {
+		certs, err := newCertReloader(cfg.TLSCertFile, cfg.TLSKeyFile, logger, time.Now)
+		if err != nil {
+			_ = listener.Close() // 기동을 멈추는 중이라 닫기 오류는 더 알릴 것이 없다
+			return err
+		}
+		if !strings.HasPrefix(cfg.SSO.PublicURL, "https://") {
+			logger.Warn("TLS 를 직접 종단하는데 GATEWAY_PUBLIC_URL 이 https 가 아니다. 로그인 뒤 이동 주소와 SSO 되돌림 주소가 평문으로 간다", "public_url", cfg.SSO.PublicURL)
+		}
+		server.TLSConfig = certs.tlsConfig()
+		serve = func() error { return server.ServeTLS(listener, "", "") }
+	} else {
+		logger.Warn("TLS 없이 평문으로 받는다. 앞단(nginx 등)에서 TLS 를 종단하지 않으면 비밀번호·키가 평문으로 오간다(GATEWAY_TLS_CERT_FILE·GATEWAY_TLS_KEY_FILE)")
+	}
 	served := make(chan error, 1)
-	go func() { served <- server.Serve(listener) }()
+	go func() { served <- serve() }()
 
 	select {
 	case err := <-served:

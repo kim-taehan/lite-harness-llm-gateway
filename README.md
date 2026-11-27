@@ -26,6 +26,7 @@ GATEWAY_MASTER_KEY=sk-... GATEWAY_DATABASE_URL=postgres://user:pass@db:5432/gate
 | `GATEWAY_COUNTER_STORE` | `memory` | 한도 카운터 저장소. 게이트웨이를 여러 대 띄울 때는 `redis` |
 | `GATEWAY_REDIS_URL` | 없음 | `redis` 일 때 필수. `redis://[:비밀번호@]호스트:6379/0`(TLS 는 `rediss://`). 기동 때 연결을 확인한다 |
 | `GATEWAY_LIMITS_FAIL_CLOSED` | 없음 | `true` 면 Redis 장애 동안 RPM·TPM·TPD·동시성 한도가 걸린 요청을 503 으로 거부한다(예산만 있거나 한도 없는 요청은 통과). 기본은 메모리 카운터로 이어서 처리한다. `redis` 저장소에서만 쓸 수 있다 |
+| `GATEWAY_TLS_CERT_FILE`, `GATEWAY_TLS_KEY_FILE` | 없음 | 둘 다 있으면 게이트웨이가 TLS 를 직접 종단한다(TLS 1.2 이상, HSTS, 파일이 바뀌면 재기동 없이 다시 읽음). 하나만 있으면 기동하지 않는다. 비우면 평문이고 앞단이 종단해야 한다. [docs/security/tls.md](docs/security/tls.md) |
 | `GATEWAY_AUDIT_RETENTION_DAYS` | `365` | 감사 기록(`audit_log`) 보관 일수. 지난 기록은 하루마다 지우고, 지운 사실은 감사 기록 한 줄(`retention_purged`)로 남는다. `0` 이면 영구 보관(테이블이 계속 커지므로 기동 로그에 경고). 정수가 아니거나 음수면 기동하지 않는다. 사용량 기록은 90일 고정이다 |
 | `GATEWAY_ALLOWED_IPS_DISABLE` | 없음 | `true` 면 대시보드에서 정한 IP 허용 목록을 무시한다(목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제. 기동 로그에 경고) |
 | `GATEWAY_TRUSTED_PROXIES` | 없음 | 앞단 프록시(nginx 등)의 IP·CIDR, 쉼표로 구분. 앞단 뒤에서 로그인 시도 제한이 사용자별로 걸리게 `X-Forwarded-For` 를 믿는다. 게이트웨이를 직접 열면 비워 둔다 |

@@ -102,7 +102,7 @@ func (l *Login) startUISession(w http.ResponseWriter, r *http.Request, user User
 		return "", false
 	}
 	// HttpOnly 가 아니다. 대시보드가 document.cookie 로 읽는다(L 3.7)
-	http.SetCookie(w, &http.Cookie{Name: "token", Value: token, Path: "/", SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+	http.SetCookie(w, &http.Cookie{Name: "token", Value: token, Path: "/", SameSite: http.SameSiteLaxMode, Secure: l.proxies.isHTTPS(r)})
 	l.record(r, "login_success", user.UserID, map[string]any{"method": method})
 	return token, true
 }
@@ -141,7 +141,7 @@ func (l *Login) webSignIn(w http.ResponseWriter, r *http.Request) {
 	target, verifier := l.oidc.authorizeURL(state)
 	for name, value := range map[string]string{"litellm_oauth_state": state, "litellm_pkce_verifier": verifier} {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: int(cliFlowTTL.Seconds()),
-			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+			HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: l.proxies.isHTTPS(r)})
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }

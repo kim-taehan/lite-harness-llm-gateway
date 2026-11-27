@@ -38,6 +38,11 @@ services:
       # 앞단 프록시(nginx 등) 뒤에 둘 때만 그 주소를 넣는다. 비우면 X-Forwarded-For 를 믿지 않는다
       GATEWAY_ALLOWED_IPS_DISABLE: ${GATEWAY_ALLOWED_IPS_DISABLE:-}
       GATEWAY_AUDIT_RETENTION_DAYS: ${GATEWAY_AUDIT_RETENTION_DAYS:-}
+      # 직접 TLS 종단: 아래 volumes 주석을 풀고 두 값을 /certs/tls.crt, /certs/tls.key 로 둔다(docs/security/tls.md)
+      GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-}
+      GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-}
+    # volumes:
+    #   - ./certs:/certs:ro
       GATEWAY_LOGIN_METHODS: ${GATEWAY_LOGIN_METHODS:-}
       GATEWAY_COUNTER_STORE: ${GATEWAY_COUNTER_STORE:-memory}
       GATEWAY_REDIS_URL: ${GATEWAY_REDIS_URL:-}
