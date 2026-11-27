@@ -1,0 +1,49 @@
+# 게이트웨이 + PostgreSQL. 값은 같은 폴더의 .env 에서 읽는다(.env.example 을 복사해 채운다. .env 는 커밋하지 않는다).
+#   ./build.sh && docker compose up -d --build        (SSO 없이 쓰면: LOGIN=password ./build.sh)
+# 기본은 시험용 포트(4710)로 띄워 기존 게이트웨이(4701)와 겹치지 않는다. 교체할 때 .env 의 GATEWAY_PORT 를 4701 로 바꾼다.
+# 모델 배포(Ollama 주소)·팀·키는 설정 파일이 아니라 관리 API 나 대시보드로 만든다.
+services:
+  postgres:
+    container_name: llm-gateway-db
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env 에 POSTGRES_PASSWORD 가 필요하다}
+    volumes:
+      - llm_gateway_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # 포트는 밖에 열지 않는다. 게이트웨이만 compose 네트워크 안에서 붙는다
+
+  llm-gateway:
+    container_name: llm-gateway
+    build: .
+    image: llm-gateway:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${GATEWAY_PORT:-4710}:4000"
+    environment:
+      GATEWAY_MASTER_KEY: ${GATEWAY_MASTER_KEY:?.env 에 GATEWAY_MASTER_KEY 가 필요하다}
+      # 비밀번호에 @ : / 같은 문자가 있으면 URL 인코딩해야 한다
+      GATEWAY_DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@postgres:5432/gateway
+      GATEWAY_PUBLIC_URL: ${GATEWAY_PUBLIC_URL:-}
+      GATEWAY_SSO_ISSUER: ${GATEWAY_SSO_ISSUER:-}
+      GATEWAY_SSO_CLIENT_ID: ${GATEWAY_SSO_CLIENT_ID:-}
+      GATEWAY_SSO_CLIENT_SECRET: ${GATEWAY_SSO_CLIENT_SECRET:-}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # SIGTERM 후 진행 중인 요청을 최대 60초 기다리므로(app.go 의 DrainTimeout) 그보다 길게 둔다
+    stop_grace_period: 75s
+
+volumes:
+  # 기존 litellm 의 볼륨(litellm_postgres_data)과 이름이 다르다. 데이터는 옮기지 않는다(설계 1장)
+  llm_gateway_pgdata:

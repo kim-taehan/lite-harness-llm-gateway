@@ -2,6 +2,9 @@
 /dist/
 /dist-check-*/
 
+# 배포 비밀 값(.env.example 만 커밋한다)
+/.env
+
 # 편집기
 .idea/
 .vscode/
