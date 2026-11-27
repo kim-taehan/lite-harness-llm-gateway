@@ -26,8 +26,10 @@ type Team struct {
 	Blocked   bool
 	// 팀 일반 멤버(role=user)가 부를 수 있는 키 라우트. nil 이면 litellm 기본값을 쓴다
 	MemberPermissions []string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// OrganizationID 는 팀이 속한 조직이다(선택)
+	OrganizationID *string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type User struct {
@@ -77,6 +79,8 @@ type NewTeam struct {
 	Metadata  map[string]any
 	Blocked   bool
 	Members   []MemberRef
+	// OrganizationID 는 팀이 속할 조직이다. 조직이 있는지·한도가 조직 상한 안인지는 부르는 쪽이 먼저 검사한다
+	OrganizationID *string
 }
 
 type TeamPatch struct {
@@ -84,6 +88,8 @@ type TeamPatch struct {
 	Models    core.Change[[]string]
 	Metadata  core.Change[map[string]any]
 	Blocked   core.Change[bool]
+	// OrganizationID 를 보내면 조직을 바꾼다(null 이면 조직에서 뺀다)
+	OrganizationID core.Change[string]
 	// MemberPermissions 는 /team/permissions_update 가 바꾼다
 	MemberPermissions core.Change[[]string]
 }

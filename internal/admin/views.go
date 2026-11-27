@@ -30,7 +30,7 @@ func teamRow(t auth.Team, members []auth.TeamMember, p limits.Policy) row {
 	return row{
 		"team_alias":                  t.TeamAlias,
 		"team_id":                     t.TeamID,
-		"organization_id":             nil,
+		"organization_id":             t.OrganizationID,
 		"admins":                      []string{},
 		"members":                     []string{},
 		"members_with_roles":          memberRows,

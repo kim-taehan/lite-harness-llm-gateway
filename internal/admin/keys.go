@@ -359,6 +359,10 @@ func (h *Handlers) checkKeyUpdate(ctx context.Context, p auth.Principal, key aut
 			return authStyle(403, fmt.Sprintf("Non-admin caller is not allowed to rebind the key from user=%s to user=%s", derefOr(key.UserID, "None"), *v)), true
 		}
 	}
+	// 키를 프로젝트에 넣거나 빼는 것은 관리자만이다. 팀원이 자기 키를 프로젝트에서 빼면 프로젝트의 차단·예산을 벗어난다
+	if req.ProjectID.Set && !equalPtr(nonEmpty(req.ProjectID.Value), key.ProjectID) {
+		return authStyle(403, pyDict("error", "Only proxy admins can change the project of a key.")), true
+	}
 	adminDenied := authStyle(403, pyDict("error", fmt.Sprintf("Only proxy admins, team admins, or org admins can call /key/update. user_role=%s, user_id=%s", p.Role, p.UserID)))
 	if key.TeamID != nil {
 		m, member, err := h.membership(ctx, *key.TeamID, p.UserID)

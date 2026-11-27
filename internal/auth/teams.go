@@ -21,11 +21,11 @@ func NewTeams(db *core.DB, users *Users, cache *KeyCache) *Teams {
 	return &Teams{db: db, users: users, cache: cache}
 }
 
-const teamColumns = "team_id, team_alias, models, metadata, blocked, member_permissions, created_at, updated_at"
+const teamColumns = "team_id, team_alias, models, metadata, blocked, member_permissions, created_at, updated_at, organization_id"
 
 func scanTeam(row pgx.Row) (Team, error) {
 	var t Team
-	err := row.Scan(&t.TeamID, &t.TeamAlias, &t.Models, &t.Metadata, &t.Blocked, &t.MemberPermissions, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.TeamID, &t.TeamAlias, &t.Models, &t.Metadata, &t.Blocked, &t.MemberPermissions, &t.CreatedAt, &t.UpdatedAt, &t.OrganizationID)
 	return t, err
 }
 
@@ -46,8 +46,8 @@ func (t *Teams) Create(ctx context.Context, input NewTeam, creatorUserID string)
 			models = []string{}
 		}
 		tag, err := t.db.Q(ctx).Exec(ctx, `
-			INSERT INTO team (team_id, team_alias, models, metadata, blocked) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (team_id) DO NOTHING`, teamID, input.TeamAlias, models, input.Metadata, input.Blocked)
+			INSERT INTO team (team_id, team_alias, models, metadata, blocked, organization_id) VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (team_id) DO NOTHING`, teamID, input.TeamAlias, models, input.Metadata, input.Blocked, input.OrganizationID)
 		if err != nil {
 			return err
 		}
@@ -171,13 +171,16 @@ func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Tea
 	if patch.MemberPermissions.Set {
 		set.Set("member_permissions", patch.MemberPermissions.Value)
 	}
+	if patch.OrganizationID.Set {
+		set.Set("organization_id", patch.OrganizationID.Value)
+	}
 	sql := "UPDATE team SET " + set.Assignments() + " WHERE team_id = $1 RETURNING " + teamColumns
 	team, err := scanTeam(t.db.Q(ctx).QueryRow(ctx, sql, set.Args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrTeamNotFound
 	}
-	if err == nil && (patch.Blocked.Set || patch.Models.Set) {
-		// 막힌 팀의 키는 바로 401 이어야 하고(litellm 도 차단 직후 캐시를 지운다), 팀 허용 모델도 키 검증에 쓰인다
+	if err == nil && (patch.Blocked.Set || patch.Models.Set || patch.OrganizationID.Set) {
+		// 막힌 팀의 키는 바로 401 이어야 하고(litellm 도 차단 직후 캐시를 지운다), 팀 허용 모델과 조직도 키 검증에 쓰인다
 		t.cache.forgetTeam(teamID)
 	}
 	return team, err

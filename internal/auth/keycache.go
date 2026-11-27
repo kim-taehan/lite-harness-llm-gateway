@@ -90,6 +90,8 @@ type resolvedKey struct {
 	// 키가 프로젝트에 속할 때의 프로젝트 차단 여부와 허용 모델
 	projectBlocked bool
 	projectModels  []string
+	// 키의 팀이 속한 조직(없으면 빈 문자열)
+	organizationID string
 }
 
 // KeyCache 는 키 검증 결과 캐시다. 키·팀·사용자를 바꾸는 쪽이 그 자리에서 지운다

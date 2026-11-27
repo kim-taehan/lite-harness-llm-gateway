@@ -29,6 +29,8 @@ type Subject struct {
 	UserID   string
 	// ProjectID 는 키가 속한 프로젝트다. 비면 프로젝트 한도는 보지 않는다
 	ProjectID string
+	// OrganizationID 는 키의 팀이 속한 조직이다. 비면 조직 한도는 보지 않는다
+	OrganizationID string
 	// EndUserID 는 요청이 밝힌 고객(end user)이다. 호출자가 정하는 값이라 속일 수 있다(litellm 도 같다). 비면 고객 한도는 보지 않는다
 	EndUserID string
 	// Tags 는 요청이 붙인 태그다. 등록한 태그에만 한도가 걸리고 호출자가 정하는 값이라 속일 수 있다. 중복과 개수는 부르는 쪽이 줄인다
@@ -98,7 +100,7 @@ func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 // targets 는 이 요청에 한도가 걸릴 수 있는 대상들이다. 검사 순서(키, 팀, 사용자, 팀원, 고객, 태그들)대로이고 빈 id 는 뺀다
 func (s Subject) targets() []target {
 	var result []target
-	for _, t := range []target{{ScopeKey, s.KeyToken}, {ScopeTeam, s.TeamID}, {ScopeProject, s.ProjectID}, {ScopeUser, s.UserID},
+	for _, t := range []target{{ScopeKey, s.KeyToken}, {ScopeTeam, s.TeamID}, {ScopeOrganization, s.OrganizationID}, {ScopeProject, s.ProjectID}, {ScopeUser, s.UserID},
 		{ScopeTeamMember, MemberTarget(s.TeamID, s.UserID)}, {ScopeEndUser, s.EndUserID}} {
 		if t.id != "" {
 			result = append(result, t)
@@ -273,10 +275,10 @@ func counterKey(kind string, scope Scope, id string) string {
 }
 
 // litellm 의 descriptor 이름(parallel_request_limiter_v3.py): 키 api_key, 팀 team, 사용자 user
-var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member", ScopeEndUser: "end_user", ScopeTag: "tag", ScopeProject: "project"}
+var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member", ScopeEndUser: "end_user", ScopeTag: "tag", ScopeProject: "project", ScopeOrganization: "organization"}
 
 // gatedScopes 는 요청마다 검사하는 대상 종류다(소프트 예산 지표가 종류별로 센다)
-var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember, ScopeEndUser, ScopeTag, ScopeProject}
+var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember, ScopeEndUser, ScopeTag, ScopeProject, ScopeOrganization}
 
 // rateLimited 는 litellm v3 리미터의 429 문구와 retry-after 다. 본문 모양(type)은 litellm 원문에서 확인하지 못했다
 func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.ProxyError {
@@ -315,6 +317,8 @@ func subjectLabel(t target, s Subject) string {
 		return "Tag=" + t.id
 	case ScopeProject:
 		return "Project=" + t.id
+	case ScopeOrganization:
+		return "Organization=" + t.id
 	}
 	return map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
 		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID, ScopeEndUser: "End User=" + s.EndUserID}[t.scope]

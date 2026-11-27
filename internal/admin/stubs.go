@@ -132,8 +132,6 @@ func stubs() []stub {
 		stubOK("GET /budget/list", `[]`),
 		stubOK("POST /budget/info", `[]`),
 		stubOK("GET /prompts/list", `{"prompts":[]}`),
-		stubOK("GET /organization/list", `[]`),
-		stubNotFound("Organizations", "GET /organization/info"),
 		stubNotFound(policies, "GET /policy/info/{policy_name}"),
 		stubOK("GET /policies/list", `{"policies":[]}`),
 		stubOK("GET /v2/guardrails/list", `{"guardrails":[]}`),
@@ -447,12 +445,6 @@ func stubs() []stub {
 		stubUnsupported(policies, "POST /policy/templates/test"),
 
 		// organizations·access-groups·projects
-		stubUnsupported("Organizations", "POST /organization/new"),
-		stubUnsupported("Organizations", "PATCH /v2/organization/{organization_id}"),
-		stubUnsupported("Organizations", "DELETE /organization/delete"),
-		stubUnsupported("Organizations", "POST /organization/member_add"),
-		stubUnsupported("Organizations", "DELETE /organization/member_delete"),
-		stubUnsupported("Organizations", "PATCH /organization/member_update"),
 		stubNotFound("Access groups", "GET /v1/access_group/{access_group_id}"),
 		stubUnsupported("Access groups", "PUT /v1/access_group/{access_group_id}"),
 		stubUnsupported("Access groups", "DELETE /v1/access_group/{access_group_id}"),

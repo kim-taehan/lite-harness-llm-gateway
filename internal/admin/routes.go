@@ -22,6 +22,8 @@ type Handlers struct {
 	customers *limits.Customers
 	tags      *limits.Tags
 	projects  *auth.Projects
+	// organizations 는 조직 저장소다(관리자만 쓴다)
+	organizations *auth.Organizations
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
 	usage       *limits.UsageQuery
@@ -35,22 +37,23 @@ type Handlers struct {
 
 // Deps 는 관리 API 가 쓰는 다른 모듈들이다. 인자가 많아 이름을 붙여 넘긴다
 type Deps struct {
-	DB          *core.DB
-	Teams       *auth.Teams
-	Users       *auth.Users
-	Keys        *auth.Keys
-	Projects    *auth.Projects
-	Policies    *limits.Policies
-	Deployments *inference.Deployments
-	Usage       *limits.UsageQuery
-	Settings    *core.Settings
-	IPAllow     *auth.IPAllowlist
-	Now         func() time.Time
-	Logger      *slog.Logger
+	DB            *core.DB
+	Teams         *auth.Teams
+	Users         *auth.Users
+	Keys          *auth.Keys
+	Projects      *auth.Projects
+	Organizations *auth.Organizations
+	Policies      *limits.Policies
+	Deployments   *inference.Deployments
+	Usage         *limits.UsageQuery
+	Settings      *core.Settings
+	IPAllow       *auth.IPAllowlist
+	Now           func() time.Time
+	Logger        *slog.Logger
 }
 
 func NewHandlers(d Deps) *Handlers {
-	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, deployments: d.Deployments, usage: d.Usage,
+	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, organizations: d.Organizations, deployments: d.Deployments, usage: d.Usage,
 		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
 }
 
@@ -160,6 +163,14 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
 		route(http.MethodGet, "/access_group/list", adminOnly, h.listAccessGroups),
 		route(http.MethodGet, "/access_group/{access_group}/info", adminOnly, h.accessGroupInfo),
+		route(http.MethodGet, "/organization/list", handlerDecide, h.listOrganizations),
+		route(http.MethodGet, "/organization/info", handlerDecide, h.organizationInfo),
+		route(http.MethodPost, "/organization/new", adminOnly, h.newOrganization),
+		route(http.MethodPatch, "/v2/organization/{organization_id}", adminOnly, h.updateOrganization),
+		route(http.MethodDelete, "/organization/delete", adminOnly, h.deleteOrganizations),
+		route(http.MethodPost, "/organization/member_add", adminOnly, h.addOrganizationMember),
+		route(http.MethodPatch, "/organization/member_update", adminOnly, h.updateOrganizationMember),
+		route(http.MethodDelete, "/organization/member_delete", adminOnly, h.deleteOrganizationMember),
 		route(http.MethodGet, "/project/list", handlerDecide, h.listProjects),
 		route(http.MethodGet, "/project/info", handlerDecide, h.projectInfo),
 		route(http.MethodPost, "/project/new", adminOnly, h.newProject),

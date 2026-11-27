@@ -60,6 +60,10 @@ func TestTeamAdminEditDenial(t *testing.T) {
 		{"예산 올리기는 raise_max_budget 이 필요", teamUpdate{limitFields: limitFields{MaxBudget: core.To(higher)}}, []string{"max_budget"}, "raise_max_budget"},
 		{"예산 올리기 허용", teamUpdate{limitFields: limitFields{MaxBudget: core.To(higher)}}, []string{"max_budget", "raise_max_budget"}, ""},
 		{"차단은 열 수 없다", teamUpdate{Blocked: core.To(true)}, []string{"tpm_limit", "blocked"}, "'blocked'"},
+		// 나중에 더한 필드도 설정에 열려 있지 않으면 팀 admin 이 바꿀 수 없다(검사에서 빠져 있던 구멍)
+		{"하루 토큰 한도", teamUpdate{limitFields: limitFields{TPDLimit: core.To(int64(9))}}, []string{"tpm_limit"}, "'tpd_limit'"},
+		{"모델별 한도", teamUpdate{limitFields: limitFields{ModelMaxBudget: core.To(map[string]limits.ModelBudget{"m1": {}})}}, []string{"tpm_limit"}, "'model_max_budget'"},
+		{"조직 변경", teamUpdate{OrganizationID: core.To("org-1")}, []string{"tpm_limit"}, "'organization_id'"},
 	}
 	for _, c := range cases {
 		got := teamAdminEditDenial(c.req, team, policy, c.permitted)

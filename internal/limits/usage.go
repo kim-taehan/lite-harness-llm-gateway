@@ -21,6 +21,7 @@ type UsageEvent struct {
 	UserID           string
 	TeamID           string
 	ProjectID        string   // 키가 속한 프로젝트. 프로젝트 사용액에 더한다
+	OrganizationID   string   // 키의 팀이 속한 조직. 조직 사용액에 더한다
 	EndUserID        string   // 요청이 밝힌 고객. 사용액을 고객 한도에 더하는 데만 쓰고 request_log 에는 남기지 않는다
 	Tags             []string // 요청이 붙인 태그. 마찬가지로 등록한 태그의 사용액에만 더한다
 	Provider         string   // 요청을 처리한 배포의 provider. 예산을 정한 프로바이더의 사용액에만 더한다
@@ -132,7 +133,7 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 				e.PromptTokens, e.CompletionTokens, source, e.Cost, e.Status, e.HTTPStatus, nullable(e.ErrorCode), e.LatencyMS, e.TTFTMS}
 			if e.Cost > 0 {
 				for scope, id := range map[Scope]string{ScopeKey: e.KeyToken, ScopeTeam: e.TeamID, ScopeUser: e.UserID,
-					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID), ScopeEndUser: e.EndUserID, ScopeProject: e.ProjectID} {
+					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID), ScopeEndUser: e.EndUserID, ScopeProject: e.ProjectID, ScopeOrganization: e.OrganizationID} {
 					if id != "" {
 						spend[[2]string{string(scope), id}] += e.Cost
 						modelSpend[[3]string{string(scope), id, e.Model}] += e.Cost

@@ -29,6 +29,8 @@ const (
 	ScopeProvider Scope = "provider"
 	// ScopeProject 는 프로젝트다. 키가 프로젝트에 속하면 그 프로젝트의 한도가 요청마다 걸린다
 	ScopeProject Scope = "project"
+	// ScopeOrganization 은 조직이다. 키의 팀이 조직에 속하면 그 조직의 한도가 요청마다 걸린다
+	ScopeOrganization Scope = "organization"
 )
 
 // target 은 한도를 거는 대상 하나다. 요청 하나가 대상 여러 개(태그가 여럿)에 걸릴 수 있어 종류만으로는 가를 수 없다

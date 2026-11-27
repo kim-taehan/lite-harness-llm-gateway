@@ -63,6 +63,7 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		Metadata         map[string]any `json:"metadata"`
 		Blocked          *bool          `json:"blocked"`
 		MembersWithRoles []memberJSON   `json:"members_with_roles"`
+		OrganizationID   *string        `json:"organization_id"`
 		limitFields
 	}
 	if _, ok := requestBody(w, r, &req); !ok {
@@ -79,7 +80,16 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	caller := principal(r.Context())
 	input := auth.NewTeam{TeamID: req.TeamID, TeamAlias: req.TeamAlias, Models: req.Models, Metadata: req.Metadata,
-		Blocked: req.Blocked != nil && *req.Blocked, Members: refs}
+		Blocked: req.Blocked != nil && *req.Blocked, Members: refs, OrganizationID: nonEmpty(req.OrganizationID)}
+	if input.OrganizationID != nil {
+		if msg, err := h.organizationCapError(r.Context(), *input.OrganizationID, req.Models, req.MaxBudget.Value, req.TPMLimit.Value, req.RPMLimit.Value); err != nil {
+			h.internalError(w, r, err)
+			return
+		} else if msg != "" {
+			proxyError(400, msg).Write(w)
+			return
+		}
+	}
 
 	// 팀과 그 한도를 한 트랜잭션에서 만든다. 한도 값이 틀리면 팀도 만들지 않는다
 	var team auth.Team
@@ -117,6 +127,7 @@ type teamUpdate struct {
 	Metadata          core.Change[map[string]any] `json:"metadata"`
 	Blocked           core.Change[bool]           `json:"blocked"`
 	MemberPermissions core.Change[[]string]       `json:"team_member_permissions"`
+	OrganizationID    core.Change[string]         `json:"organization_id"`
 	limitFields
 }
 
@@ -133,11 +144,18 @@ func (h *Handlers) updateTeam(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeTeamUpdate(w, r, req) {
 		return
 	}
+	if msg, err := h.teamOrganizationCheck(r.Context(), req); err != nil {
+		h.internalError(w, r, err)
+		return
+	} else if msg != "" {
+		proxyError(400, msg).Write(w)
+		return
+	}
 	var team auth.Team
 	err := h.db.InTx(r.Context(), func(ctx context.Context) error {
 		var err error
 		patch := auth.TeamPatch{TeamAlias: req.TeamAlias, Models: req.Models, Metadata: req.Metadata, Blocked: req.Blocked,
-			MemberPermissions: req.MemberPermissions}
+			MemberPermissions: req.MemberPermissions, OrganizationID: normalizeOrganizationChange(req.OrganizationID)}
 		if team, err = h.teams.Update(ctx, *req.TeamID, patch); err != nil {
 			return err
 		}

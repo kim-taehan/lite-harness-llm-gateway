@@ -27,6 +27,8 @@ type Principal struct {
 	// 키가 프로젝트에 속하면 그 프로젝트와 허용 모델이다
 	ProjectID     string
 	ProjectModels []string
+	// OrganizationID 는 키의 팀이 속한 조직이다. 조직 한도가 요청마다 걸린다
+	OrganizationID string
 	// 대시보드 세션 키로 들어왔을 때만 있다(litellm login_method). 로그아웃은 이것이 있어야 한다
 	UIMethod string
 	// 관리자가 정한 비밀번호로 대시보드에 들어온 세션이다. 비밀번호를 바꿀 때까지 resetAllowedRoutes 만 부른다
@@ -127,7 +129,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 		return Principal{}, projectBlockedError(deref(k.ProjectID))
 	}
 	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, KeyAlias: deref(k.KeyAlias), TeamID: deref(k.TeamID),
-		KeyModels: k.Models, TeamModels: resolved.teamModels, ProjectID: deref(k.ProjectID), ProjectModels: resolved.projectModels}, nil
+		KeyModels: k.Models, TeamModels: resolved.teamModels, ProjectID: deref(k.ProjectID), ProjectModels: resolved.projectModels,
+		OrganizationID: resolved.organizationID}, nil
 }
 
 // projectBlockedError 는 막힌 프로젝트의 키가 부른 요청의 오류다(litellm auth_checks 의 문구)
@@ -196,7 +199,7 @@ func (a *Authenticator) withLoginTeam(ctx context.Context, p Principal, userID, 
 	if team.Blocked {
 		return Principal{}, teamBlockedError(team.TeamID)
 	}
-	p.TeamID, p.TeamModels = team.TeamID, team.Models
+	p.TeamID, p.TeamModels, p.OrganizationID = team.TeamID, team.Models, deref(team.OrganizationID)
 	return p, nil
 }
 
@@ -233,6 +236,7 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 		}
 		r.teamBlocked = err == nil && team.Blocked
 		r.teamModels = team.Models
+		r.organizationID = deref(team.OrganizationID)
 	}
 	if key.ProjectID != nil {
 		project, err := a.projects.Find(ctx, *key.ProjectID)
