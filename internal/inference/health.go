@@ -87,6 +87,7 @@ func (h *Handlers) testConnection(w http.ResponseWriter, r *http.Request) {
 		LitellmParams struct {
 			Model   string `json:"model"`
 			APIBase string `json:"api_base"`
+			APIKey  string `json:"api_key"`
 		} `json:"litellm_params"`
 		Mode string `json:"mode"`
 	}
@@ -102,7 +103,8 @@ func (h *Handlers) testConnection(w http.ResponseWriter, r *http.Request) {
 		fail("litellm_params.model must look like '<provider>/<model>' and api_base is required")
 		return
 	}
-	d := Deployment{Provider: provider, UpstreamModel: upstream, BaseURL: req.LitellmParams.APIBase}
+	d := Deployment{Provider: provider, UpstreamModel: upstream, BaseURL: req.LitellmParams.APIBase,
+		sealedKey: h.deployments.seal(NewUpstreamKey(req.LitellmParams.APIKey))}
 	if err := h.probe(r.Context(), d, req.Mode); err != nil {
 		fail(err.Error())
 		return

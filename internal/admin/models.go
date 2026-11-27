@@ -22,8 +22,8 @@ import (
 var computedInfoKeys = []string{"id", "db_model", "created_at", "updated_at", "created_by", "updated_by", "litellm_provider",
 	"direct_access", "access_via_team_ids", "max_tokens"}
 
-// secretParamKeys 는 업스트림 자격 증명이다. 우리는 업스트림 인증을 아직 하지 않으므로 저장하지 않는다(평문으로 다시 내보내지 않게)
-var secretParamKeys = []string{"api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token", "vertex_credentials",
+// secretParamKeys 는 저장하지 않는 업스트림 자격 증명이다(평문으로 다시 내보내지 않게). api_key 는 따로 봉해 저장한다
+var secretParamKeys = []string{"aws_access_key_id", "aws_secret_access_key", "aws_session_token", "vertex_credentials",
 	"azure_ad_token", "client_secret"}
 
 // applyModelSpec 은 litellm 모양 값을 배포에 덮어쓴다. 값이 null 인 나머지 키는 지운다.
@@ -76,7 +76,25 @@ func applyModelInfo(d *inference.Deployment, info, extraInfo map[string]any) (er
 	return errs
 }
 
-// applyModelParams 는 litellm_params 를 배포에 덮어쓴다. 자격 증명 키는 저장하지 않는다
+// applyAPIKey 는 litellm_params.api_key 를 배포에 반영한다. 문자열이면 바꾸고, null 이면 지운다.
+// 빈 문자열은 바꾸지 않는다(대시보드가 수정 요청에 빈 칸을 그대로 보낼 수 있다). 응답에는 키를 싣지 않는다
+func applyAPIKey(d *inference.Deployment, v any) (ok bool) {
+	switch key := v.(type) {
+	case nil:
+		cleared := inference.NewUpstreamKey("")
+		d.NewAPIKey = &cleared
+	case string:
+		if key != "" {
+			replaced := inference.NewUpstreamKey(key)
+			d.NewAPIKey = &replaced
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// applyModelParams 는 litellm_params 를 배포에 덮어쓴다. api_key 는 봉해 저장하고, 나머지 자격 증명 키는 저장하지 않는다
 func applyModelParams(d *inference.Deployment, params, extraParams map[string]any) (errs validationError) {
 	for k, v := range params {
 		ok := true
@@ -95,6 +113,8 @@ func applyModelParams(d *inference.Deployment, params, extraParams map[string]an
 		case "api_base":
 			s, isString := v.(string)
 			d.BaseURL, ok = s, isString && s != ""
+		case "api_key":
+			ok = applyAPIKey(d, v)
 		case "weight":
 			n, isInt := intPtr(v)
 			ok = isInt && n != nil
@@ -178,6 +198,7 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) {
 		ID: &id, ModelName: *req.ModelName, Provider: d.Provider, BaseURL: d.BaseURL, UpstreamModel: d.UpstreamModel, Weight: d.Weight,
 		MaxInputTokens: d.MaxInputTokens, MaxOutputTokens: d.MaxOutputTokens, SupportsReasoning: d.SupportsReasoning,
 		InputCostPerToken: d.InputCostPerToken, OutputCostPerToken: d.OutputCostPerToken, ExtraParams: d.ExtraParams, ExtraInfo: d.ExtraInfo,
+		APIKey: d.NewAPIKey,
 	})
 	switch {
 	case err == nil:

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -130,13 +131,20 @@ func requestUsageChunk(body map[string]any, api upstreamAPI, stream bool) (clien
 }
 
 // send 는 업스트림을 부르는 단 하나의 지점이다(추론 중계와 헬스 체크가 같이 쓴다). 주소 조립·헤더·(뒤에 붙일) 업스트림 인증이
-// 여기에만 있다. 클라이언트의 Authorization 은 업스트림에 넘기지 않는다(설계 5장 4번)
+// 여기에만 있다. 클라이언트의 Authorization 은 업스트림에 넘기지 않는다(설계 5장 4번). 배포에 저장한 업스트림 키가 있으면 그것만 붙인다
 func (h *Handlers) send(ctx context.Context, d Deployment, path string, payload []byte) (*http.Response, error) {
+	key, err := h.deployments.upstreamKey(d)
+	if err != nil {
+		return nil, fmt.Errorf("배포 %s 의 업스트림 키: %w", d.ID, err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.endpoint(path), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	return h.upstream.Do(req)
 }
 

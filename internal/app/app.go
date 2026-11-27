@@ -118,7 +118,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	cache, users, teams := p.id.cache, p.id.users, p.id.teams
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
-	deployments := inference.NewDeployments(db)
+	deployments := inference.NewDeployments(db, cfg.MasterKey.UpstreamKeyBox())
 	settings := core.NewSettings(db)
 	return modules{
 		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),

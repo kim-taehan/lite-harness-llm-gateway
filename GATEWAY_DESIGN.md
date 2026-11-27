@@ -413,7 +413,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_DRAIN_TIMEOUT` | `60s` | 정상 종료 시 스트림 대기 |
 | `GATEWAY_REQUEST_LOG_RETENTION` | `90d` | 보관 기간 |
 | `GATEWAY_KEYCLOAK_ISSUER` / `_CLIENT_ID` | 없음 | SSO·JWT |
-| `GATEWAY_SECRETS_ENCRYPTION_KEY` | 없음(필수) | `model_deployment.api_key_encrypted` 암호화 키 |
+| (없음) | | `model_deployment.api_key_encrypted`(업스트림 키)의 암호화 키는 별도 환경 변수 없이 마스터 키에서 용도별로 파생한다(`HMAC(마스터, 용도)`, 로그인 키와 같은 방식). 마스터 키를 바꾸면 저장된 업스트림 키는 풀 수 없고, 그 모델의 추론만 실패하며 모델 편집에서 키를 다시 넣으면 된다 |
 
 설정 키 이름은 우리 것으로 두되, 같은 뜻의 litellm 설정이 있으면 표에 함께 적는다.
 
