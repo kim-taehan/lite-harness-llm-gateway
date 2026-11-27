@@ -5,9 +5,33 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // 팀원별 한도(litellm 팀 멤버십 예산): 저장·집행·사용액·초기화·삭제
+
+// loggedRequests 는 request_log 에 쓰인 그 사용자의 기록 수다
+func loggedRequests(t *testing.T, pool *pgxpool.Pool, userID string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM request_log WHERE user_id = $1", userID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// waitForLoggedRequests 는 비동기 배치가 기록을 쓸 때까지 기다린다(시험의 배치 주기는 20ms)
+func waitForLoggedRequests(t *testing.T, pool *pgxpool.Pool, userID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for loggedRequests(t, pool, userID) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 의 사용량 기록이 %d 건이 되지 않았다", userID, want)
+		}
+		<-time.After(20 * time.Millisecond)
+	}
+}
 
 func TestTeamMemberLimits_EnforcedPerMemberAndClearedWithMembership(t *testing.T) {
 	upstream, _ := fakeOllama(t)
@@ -90,9 +114,12 @@ func TestTeamMemberLimits_EnforcedPerMemberAndClearedWithMembership(t *testing.T
 	if cleared["budget_source"] != "none" || cleared["previous_budget_id"] == nil {
 		t.Errorf("reset_budget = %v", cleared)
 	}
+	loggedBefore := loggedRequests(t, pool, "lee")
 	if rec := chat(leeKey); rec.Code != 200 {
 		t.Errorf("한도를 지운 뒤: %d %s", rec.Code, rec.Body)
 	}
+	// 이 요청의 사용량은 비동기로 쓰인다. 기다리지 않고 팀원을 빼면 늦게 도착한 기록이 한도 행을 되살린다
+	waitForLoggedRequests(t, pool, "lee", loggedBefore+1)
 
 	// 팀원을 빼면 한도·사용액도 지워져 다시 들어와도 물려받지 않는다
 	api.ok("POST", "/team/member_update", map[string]any{"team_id": "t1", "user_id": "lee", "max_budget_in_team": 3})
