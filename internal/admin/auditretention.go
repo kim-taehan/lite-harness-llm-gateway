@@ -45,7 +45,7 @@ func (r *AuditRetention) Purge(ctx context.Context) (int64, error) {
 	if total > 0 {
 		values := map[string]any{"deleted": total, "older_than": cutoff.Format(time.RFC3339)}
 		// 정리 기록은 기준 시각보다 새로우므로 방금 지운 것에 섞이지 않는다
-		if err := r.log.recordAs(context.WithoutCancel(ctx), "system", "", "retention_purged", "audit_log", "retention", values); err != nil {
+		if err := r.log.recordAs(context.WithoutCancel(ctx), "system", "", "retention_purged", "audit_log", "retention", nil, values); err != nil {
 			return total, err
 		}
 	}

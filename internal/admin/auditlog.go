@@ -62,16 +62,17 @@ func (h *Handlers) audited(action, table string, targets auditTargets, next http
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(data))
+		var req, resp map[string]any
+		_ = json.Unmarshal(data, &req) // 본문이 객체가 아니면 핸들러가 이미 거절했다
+		before := h.valuesBefore(r.Context(), action, table, targets(r, req, nil))
 		captured := &capturedResponse{ResponseWriter: w, status: http.StatusOK}
 		next(captured, r)
 		if captured.status >= 300 {
 			return
 		}
-		var req, resp map[string]any
-		_ = json.Unmarshal(data, &req)                   // 본문이 객체가 아니면 핸들러가 이미 거절했다
 		_ = json.Unmarshal(captured.body.Bytes(), &resp) // 응답이 객체가 아니면(목록 등) 대상은 요청에서만 찾는다
 		for _, id := range targets(r, req, resp) {
-			if err := h.audit.record(r.Context(), principal(r.Context()), action, table, id, scrubbed(req)); err != nil {
+			if err := h.audit.record(r.Context(), principal(r.Context()), action, table, id, before[id], scrubbed(req)); err != nil {
 				h.logger.Error("감사 기록 실패", "action", action, "table", table, "object_id", id, "err", err)
 			}
 		}
@@ -223,8 +224,8 @@ type auditLog struct {
 	now func() time.Time
 }
 
-func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, objectID string, values map[string]any) error {
-	return a.recordAs(ctx, cmp.Or(p.UserID, "default_user_id"), p.KeyToken, action, table, objectID, values)
+func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, objectID string, before any, values map[string]any) error {
+	return a.recordAs(ctx, cmp.Or(p.UserID, "default_user_id"), p.KeyToken, action, table, objectID, before, values)
 }
 
 // authAudit 는 로그인·비밀번호 사건(auth.Event)을 감사 기록에 남긴다. 관리 API 를 거치지 않는 사건이라 핸들러 감싸기로는 못 잡는다.
@@ -241,24 +242,32 @@ func NewAuthAudit(db *core.DB, now func() time.Time, logger *slog.Logger) auth.E
 
 func (a authAudit) Record(ctx context.Context, e auth.Event) {
 	// 사용자 테이블의 사건으로 적는다. 대상 id 는 행위자와 같다
-	if err := a.log.recordAs(ctx, cmp.Or(e.UserID, "anonymous"), "", e.Action, auditUserTable, e.UserID, e.Values); err != nil {
+	if err := a.log.recordAs(ctx, cmp.Or(e.UserID, "anonymous"), "", e.Action, auditUserTable, e.UserID, nil, e.Values); err != nil {
 		a.logger.Error("감사 기록 실패", "action", e.Action, "user", e.UserID, "err", err)
 	}
 }
 
-func (a *auditLog) recordAs(ctx context.Context, changedBy, keyToken, action, table, objectID string, values map[string]any) error {
-	var encoded any
+// recordAs 는 감사 기록 한 줄을 넣는다. before 는 바꾸기 전 모습(없으면 nil), values 는 바꾼 값이다. 둘 다 JSON 으로 적는다
+func (a *auditLog) recordAs(ctx context.Context, changedBy, keyToken, action, table, objectID string, before any, values map[string]any) error {
+	var encodedBefore, encodedValues any
+	if before != nil {
+		data, err := json.Marshal(before)
+		if err != nil {
+			return err
+		}
+		encodedBefore = string(data)
+	}
 	if values != nil {
 		data, err := json.Marshal(values)
 		if err != nil {
 			return err
 		}
-		encoded = string(data)
+		encodedValues = string(data)
 	}
 	_, err := a.db.Q(ctx).Exec(ctx, `
-		INSERT INTO audit_log (id, updated_at, changed_by, changed_by_api_key, action, table_name, object_id, updated_values)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
-		core.NewUUID(), a.now().UTC(), changedBy, keyToken, action, table, objectID, encoded)
+		INSERT INTO audit_log (id, updated_at, changed_by, changed_by_api_key, action, table_name, object_id, before_value, updated_values)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)`,
+		core.NewUUID(), a.now().UTC(), changedBy, keyToken, action, table, objectID, encodedBefore, encodedValues)
 	return err
 }
 
