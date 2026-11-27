@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -52,6 +54,37 @@ func newMetrics(usage *limits.UsageRecorder) *metrics {
 			func() float64 { return float64(usage.Dropped()) }),
 	)
 	return m
+}
+
+// softBudgetCollector 는 긁어 갈 때마다 DB 에서 소프트 예산을 넘긴 대상 수를 센다. 외부 알림 대신 사내 Prometheus 알람이 이 값을 보게 한다.
+// 읽지 못하면 이번 긁기에서만 이 지표를 빼고 로그를 남긴다(다른 지표까지 500 으로 만들지 않는다)
+type softBudgetCollector struct {
+	policies *limits.Policies
+	logger   *slog.Logger
+	desc     *prometheus.Desc
+}
+
+const softBudgetQueryTimeout = 2 * time.Second
+
+func (c softBudgetCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+
+func (c softBudgetCollector) Collect(ch chan<- prometheus.Metric) {
+	ctx, cancel := context.WithTimeout(context.Background(), softBudgetQueryTimeout)
+	defer cancel()
+	counts, err := c.policies.SoftBudgetExceeded(ctx)
+	if err != nil {
+		c.logger.Warn("소프트 예산 지표를 읽지 못했다", "err", err)
+		return
+	}
+	for scope, n := range counts {
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(n), string(scope))
+	}
+}
+
+// trackSoftBudgets 는 소프트 예산 초과 지표를 더한다. 키·팀·사용자 id 는 라벨로 쓰지 않고(종류가 많다) 종류별 수만 낸다
+func (m *metrics) trackSoftBudgets(policies *limits.Policies, logger *slog.Logger) {
+	m.registry.MustRegister(softBudgetCollector{policies: policies, logger: logger, desc: prometheus.NewDesc(
+		"gateway_soft_budget_exceeded", "사용액이 소프트 예산 이상인 대상 수(scope=key|team|user|team_member)", []string{"scope"}, nil)})
 }
 
 // route 는 litellm 처럼 인증 없이 연다(설계 11.3 "litellm 기본을 따른다"). 접근을 막으려면 앞단에서 경로를 막는다

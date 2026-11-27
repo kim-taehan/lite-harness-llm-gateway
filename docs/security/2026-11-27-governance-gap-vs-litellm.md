@@ -44,7 +44,7 @@
 | 모델별 예산·모델별 RPM/TPM | **없음** | 같은 이유 |
 | 임시 예산 증액(기한부) | 없음 | |
 | 태그·고객(end-user)·조직·프로바이더 단위 예산 | 없음 | 설계에서 고객·조직 계층을 만들지 않기로 함 |
-| 소프트 예산 알림 | 값만 저장 | `soft_budget` 열은 있으나 알림 기능이 없음(`/alerting/settings` 는 빈 응답) |
+| 소프트 예산 알림 | **일부 구현(2026-11-27)** | Slack·이메일 알림은 없다(폐쇄망). 대신 `/metrics` 의 `gateway_soft_budget_exceeded{scope}` 가 소프트 예산 이상인 대상 수를 알려 사내 Prometheus 알람이 쓴다. 화면 경고는 없다 |
 | Redis 장애 시 요청 거부(fail-closed) 선택 | **구현함(2026-11-27)** | `GATEWAY_LIMITS_FAIL_CLOSED=true`(redis 저장소 전용). 기본은 메모리 카운터로 이어서 처리 |
 
 ## 4. 가드레일·콘텐츠 통제

@@ -242,6 +242,7 @@ const requestLogRetention = 90 * 24 * time.Hour
 // buildHandler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
 func buildHandler(cfg Config, p parts) http.Handler {
 	metrics := newMetrics(p.usage)
+	metrics.trackSoftBudgets(limits.NewPolicies(p.db, time.Now), p.logger)
 	m := assemble(cfg, p, metrics.observing(p.usage))
 	mux := http.NewServeMux()
 	for _, route := range append(m.routes, metrics.route()) {

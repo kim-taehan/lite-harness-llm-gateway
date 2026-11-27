@@ -126,6 +126,29 @@ func (p *Policies) FindSubject(ctx context.Context, ids map[Scope]string) (map[S
 	return result, rows.Err()
 }
 
+// SoftBudgetExceeded 는 사용액이 소프트 예산 이상인 대상 수를 종류별로 센다(litellm 의 소프트 예산 알림 조건과 같다). 없는 종류는 0 이다
+func (p *Policies) SoftBudgetExceeded(ctx context.Context) (map[Scope]int64, error) {
+	counts := map[Scope]int64{}
+	for _, scope := range gatedScopes {
+		counts[scope] = 0
+	}
+	rows, err := p.db.Q(ctx).Query(ctx, `
+		SELECT scope, count(*) FROM limit_policy WHERE soft_budget IS NOT NULL AND spend >= soft_budget GROUP BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var scope Scope
+		var n int64
+		if err := rows.Scan(&scope, &n); err != nil {
+			return nil, err
+		}
+		counts[scope] = n
+	}
+	return counts, rows.Err()
+}
+
 // Apply 는 patch 를 적용해 저장한다. 값이 틀리면 *InvalidError 이고 아무것도 저장하지 않는다
 func (p *Policies) Apply(ctx context.Context, scope Scope, id string, patch Patch) (Policy, error) {
 	found, err := p.Find(ctx, scope, []string{id})
