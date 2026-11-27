@@ -109,7 +109,8 @@ func TestStubs_EveryGETAnswersJSON(t *testing.T) {
 	cfg, _ := LoadConfig(testEnv)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	id := newIdentity(db)
-	routes := assemble(cfg, parts{lifecycle: &core.Lifecycle{}, db: db, id: id, login: testLogin(t, cfg, id), usage: startUsage(t, db, logger), logger: logger}).routes
+	usage := startUsage(t, db, logger)
+	routes := assemble(cfg, parts{lifecycle: &core.Lifecycle{}, db: db, id: id, login: testLogin(t, cfg, id), usage: usage, logger: logger}, usage).routes
 	b := browser{t: t, h: newAPI(t).h}
 	master := map[string]string{"Authorization": "Bearer " + testMasterKey}
 	wildcard := regexp.MustCompile(`\{[^}]+\}`)

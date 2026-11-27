@@ -99,6 +99,12 @@ func (u *UsageRecorder) Run(ctx context.Context) {
 	}
 }
 
+// Queued 는 아직 쓰지 않은 채 채널에 쌓인 건수다(지표용)
+func (u *UsageRecorder) Queued() int { return len(u.events) }
+
+// Dropped 는 채널이 가득 차 버린 누적 건수다(지표용)
+func (u *UsageRecorder) Dropped() int64 { return u.dropped.Load() }
+
 // Close 는 새 기록을 받지 않고 남은 배치를 다 쓸 때까지 기다린다(설계 3.3 정상 종료 3번)
 func (u *UsageRecorder) Close() {
 	u.once.Do(func() { close(u.events) })

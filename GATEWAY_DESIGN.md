@@ -22,7 +22,7 @@ Python litellm 프록시를 내리고, 폐쇄망용 LLM 게이트웨이를 Go �
 |---|---|
 | 서버 | Go 표준 `net/http`(1.22+ 패턴 라우팅). 웹 프레임워크는 쓰지 않는다 |
 | 런타임 | Go(`go.mod` 의 `toolchain go1.26.11` 로 고정). `CGO_ENABLED=0` 단일 실행 파일, 재현 가능한 빌드(`build.sh check`). 배포 서버 `deploy-server` 와 같은 관례 |
-| 의존성 | 표준 라이브러리 우선. 하나 더할 때마다 여기에 이유를 적는다. 지금: `github.com/jackc/pgx/v5`(PostgreSQL 드라이버·커넥션 풀. 표준 `database/sql` 만으로는 드라이버가 없다). 계획: Redis 를 켤 때 Redis 클라이언트 |
+| 의존성 | 표준 라이브러리 우선. 하나 더할 때마다 여기에 이유를 적는다. 지금: `github.com/jackc/pgx/v5`(PostgreSQL 드라이버·커넥션 풀. 표준 `database/sql` 만으로는 드라이버가 없다). `github.com/prometheus/client_golang`(`/metrics` 의 Prometheus 텍스트 형식·히스토그램·Go 런타임 지표를 직접 만들지 않으려고. 지표 이름·라벨 규약을 표준 그대로 따른다). 계획: Redis 를 켤 때 Redis 클라이언트 |
 | DB 접근 | `pgx`(`pgxpool`). 블로킹 모양으로 쓰지만 Go 런타임이 소켓 I/O 를 논블로킹으로 처리한다. 모든 쿼리에 요청 `ctx` 를 넘겨 클라이언트가 끊으면 쿼리도 취소된다. 쓰기는 배치 goroutine 하나가 맡는다 |
 | 사용량 기록 | 요청 후 채널에 넣고 끝낸다. 100건 또는 1초마다 묶어 `request_log` INSERT, `limit_policy.spend` 합산 UPDATE |
 | 예산 확인 | DB 값 + 카운터 누적분(메모리 또는 Redis). 배치 주기만큼 늦게 막혀도 허용 |
@@ -130,10 +130,10 @@ type ClusterBus interface {                     // 인스턴스 사이 알림. �
 | 작업 | 모듈 | 주기 | 여러 대일 때 |
 |---|---|---|---|
 | UsageWriter | limits | 100건 또는 1초 | 인스턴스마다 돈다(각자 자기 채널) |
-| 예산 리셋 | limits | 1분 | PostgreSQL advisory lock 으로 한 대만 |
+| 예산 리셋 | limits | 1분 | `FOR UPDATE SKIP LOCKED` 로 같은 행을 한 대만 잡는다(별도 락 불필요) |
 | 배포 헬스체크·쿨다운 해제 | inference | 설정값 | 인스턴스마다(쿨다운은 인스턴스별로 둬도 된다. litellm 과 같다) |
 | `ClusterBus` 구독 | core | 상시 | 인스턴스마다 |
-| `request_log` 보관 기간 삭제 | limits | 하루 1회 | advisory lock 으로 한 대만 |
+| `request_log` 보관 기간 삭제 | limits | 기동 때와 하루마다(90일 고정) | 같은 조건의 `DELETE` 라 여러 대가 돌아도 결과가 같다(락 불필요). 보관 기간 환경 변수는 필요해질 때 더한다 |
 
 정상 종료 순서:
 1. 새 요청을 받지 않는다(readiness 를 내린다)

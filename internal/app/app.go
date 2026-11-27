@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -111,8 +112,9 @@ type parts struct {
 	logger    *slog.Logger
 }
 
-func assemble(cfg Config, p parts) modules {
-	db, logger, usage := p.db, p.logger, p.usage
+// assemble 의 usage 는 추론 경로가 사용량을 넘기는 곳이다. 운영에서는 지표를 세는 래퍼를 거쳐 p.usage 로 간다
+func assemble(cfg Config, p parts, usage usageSink) modules {
+	db, logger := p.db, p.logger
 	cache, users, teams := p.id.cache, p.id.users, p.id.teams
 	keys := auth.NewKeys(db, cache)
 	policies := limits.NewPolicies(db, time.Now)
@@ -150,16 +152,20 @@ func noProxyTransport() *http.Transport {
 // usageOptions 는 설계 11.1 기본값이다(100건 또는 1초, 채널 1만)
 var usageOptions = limits.UsageOptions{BatchSize: 100, FlushInterval: time.Second, QueueCapacity: 10_000}
 
+// requestLogRetention 은 설계 11.1 기본값(90일)이다. 환경 변수로 바꾸는 건 필요해질 때 더한다
+const requestLogRetention = 90 * 24 * time.Hour
+
 // buildHandler 는 모듈을 조립하고, 모든 라우트를 권한 검사로 감싸 등록한 핸들러다. usage 의 Run 은 부르는 쪽이 띄운다
 func buildHandler(cfg Config, p parts) http.Handler {
-	m := assemble(cfg, p)
+	metrics := newMetrics(p.usage)
+	m := assemble(cfg, p, metrics.observing(p.usage))
 	mux := http.NewServeMux()
-	for _, route := range m.routes {
+	for _, route := range append(m.routes, metrics.route()) {
 		mux.Handle(route.Pattern(), m.authenticator.Guard(route))
 	}
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { core.WriteRouteNotFound(w) })
-	return withCORS(cfg.CORS, mux)
+	return withCORS(cfg.CORS, metrics.instrument(mux))
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다
@@ -193,8 +199,15 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	// 사용량 배치 쓰기. 종료 때 서버를 먼저 멈추고 채널을 비운 다음에야 DB 를 닫는다(설계 3.3 정상 종료 3·4번)
 	usage := limits.NewUsageRecorder(db, logger, usageOptions)
 	background, stopBackground := context.WithCancel(context.WithoutCancel(ctx))
-	defer stopBackground()
+	// 백그라운드 job 은 루트 ctx 아래에서 띄우고, 종료 때 취소한 뒤 끝나길 기다린다. 그래야 DB 를 닫기 전에 멈춘다(설계 3.3)
+	var jobs sync.WaitGroup
+	defer func() {
+		stopBackground()
+		jobs.Wait()
+	}()
 	go usage.Run(background)
+	jobs.Go(func() { limits.NewPolicies(db, time.Now).RunBudgetResets(background, logger) })
+	jobs.Go(func() { limits.NewLogRetention(db, time.Now, requestLogRetention).Run(background, logger) })
 	defer usage.Close()
 
 	id := newIdentity(db)
