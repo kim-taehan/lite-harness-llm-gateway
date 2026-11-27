@@ -416,7 +416,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_LOGIN_METHODS` | 비면 `password`, `GATEWAY_SSO_ISSUER` 가 있으면 `sso,password` | `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. 틀린 값이면 기동 거부. 6장 |
 | `GATEWAY_COUNTER_STORE` | `memory` | `memory`(인스턴스 1개) 또는 `redis`(여러 대). 틀린 값이면 기동 거부 |
 | `GATEWAY_REDIS_URL` | 없음 | `counter-store=redis` 일 때 필수(`redis://[:비밀번호@]호스트:6379/0`, TLS 는 `rediss://`). 기동 때 연결을 확인하고 닿지 않으면 기동하지 않는다. 운영 중 장애는 메모리 카운터로 이어서 처리한다(연속 3번 실패하면 5초간 Redis 를 건너뜀) |
-| `GATEWAY_LIMITS_FAIL_CLOSED` | `false` | Redis 장애 시 요청 거부 여부(litellm `fail_closed_rate_limit_enforcement`). **아직 구현하지 않았다**(지금은 늘 메모리로 이어서 처리) |
+| `GATEWAY_LIMITS_FAIL_CLOSED` | `false` | Redis 장애 시 요청 거부 여부(litellm `fail_closed_rate_limit_enforcement`). 구현함: 서킷 브레이커가 열린 동안 카운터가 필요한 한도(RPM·TPM·TPD·동시성)가 걸린 요청만 503. 브레이커가 열리기 전 연속 실패 3번까지와 열린 시간이 지난 시험 요청은 메모리로 처리된다. `redis` 저장소에서만 쓸 수 있다 |
 | `GATEWAY_USAGE_BATCH_SIZE` / `_FLUSH_INTERVAL` / `_QUEUE_CAPACITY` | `100` / `1s` / `10000` | 사용량 배치 |
 | `GATEWAY_KEY_CACHE_TTL` | `30s` | 키 캐시 |
 | `GATEWAY_UPSTREAM_CONNECT_TIMEOUT` / `_READ_TIMEOUT` | `5s` / `300s` | 업스트림 |

@@ -146,6 +146,34 @@ func TestGate_DailyTokenLimitResetsAtUTCMidnight(t *testing.T) {
 	}
 }
 
+// downCounters 는 장애 중인 카운터 저장소를 흉내 낸다(Redis 의 FailClosed 상태)
+type downCounters struct{ *MemoryCounters }
+
+func (downCounters) Unavailable() bool { return true }
+
+func TestGate_RejectsWith503OnlyRequestsThatNeedCountersWhenStoreIsDown(t *testing.T) {
+	db, _ := dbtest.Open(t)
+	now := time.Date(2026, 11, 21, 9, 0, 30, 0, time.UTC)
+	clock := func() time.Time { return now }
+	policies := NewPolicies(db, clock)
+	gate := NewGate(policies, downCounters{NewMemoryCounters(clock)}, clock)
+	ctx := t.Context()
+	_, _ = policies.Apply(ctx, ScopeKey, "limited", Patch{RPMLimit: core.To(int64(5))})
+	_, _ = policies.Apply(ctx, ScopeKey, "budgeted", Patch{MaxBudget: core.To(100.0)})
+
+	_, err := gate.Admit(ctx, Subject{KeyToken: "limited"})
+	r := rejection(t, err)
+	if r.Status != 503 || r.Headers["retry-after"] != "5" {
+		t.Errorf("RPM 한도가 걸린 키 = %+v, 503 이어야 한다", r)
+	}
+	if _, err := gate.Admit(ctx, Subject{KeyToken: "budgeted"}); err != nil {
+		t.Errorf("예산만 있는 키(카운터가 필요 없음)가 막혔다: %v", err)
+	}
+	if _, err := gate.Admit(ctx, Subject{KeyToken: "nolimit"}); err != nil {
+		t.Errorf("한도가 없는 키가 막혔다: %v", err)
+	}
+}
+
 func TestGate_DailyTokenLimitIsPerScope(t *testing.T) {
 	gate, policies, _ := newGate(t)
 	ctx := t.Context()

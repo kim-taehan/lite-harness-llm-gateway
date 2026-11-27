@@ -44,6 +44,8 @@ type Config struct {
 	CORS         CORSConfig        // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
 	CounterStore string            // GATEWAY_COUNTER_STORE: memory(기본, 인스턴스 1개) 또는 redis(여러 대)
 	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
+	// GATEWAY_LIMITS_FAIL_CLOSED=true: Redis 장애 동안 한도가 걸린 요청을 거부한다. 기본은 메모리 카운터로 이어서 처리
+	LimitsFailClosed bool
 	// GATEWAY_TRUSTED_PROXIES: X-Forwarded-For 를 믿을 앞단 주소. 비면 쓰지 않는다
 	TrustedProxies auth.TrustedProxies
 	// GATEWAY_ALLOWED_IPS_DISABLE=true: IP 허용 목록을 무시한다(목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제)
@@ -74,6 +76,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	failClosed := strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_LIMITS_FAIL_CLOSED")), "true")
+	if failClosed && counterStore != counterStoreRedis {
+		return Config{}, errors.New("GATEWAY_LIMITS_FAIL_CLOSED=true 는 GATEWAY_COUNTER_STORE=redis 일 때만 뜻이 있다(메모리 카운터는 장애가 없다)")
+	}
 	sso := auth.OIDCConfig{Issuer: getenv("GATEWAY_SSO_ISSUER"), ClientID: getenv("GATEWAY_SSO_CLIENT_ID"),
 		ClientSecret: getenv("GATEWAY_SSO_CLIENT_SECRET"), PublicURL: getenv("GATEWAY_PUBLIC_URL")}
 	if sso.PublicURL == "" {
@@ -88,7 +94,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
 		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL,
-		AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
+		LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
 }
 
 // loadLoginMethods 는 GATEWAY_LOGIN_METHODS(password, sso, sso,password)를 읽는다. password 는 litellm 자체 로그인(아이디·비밀번호),
@@ -171,6 +177,7 @@ func openCounters(ctx context.Context, cfg Config, logger *slog.Logger) (limits.
 	if err != nil {
 		return nil, nil, err
 	}
+	redisCounters.FailClosed = cfg.LimitsFailClosed
 	return redisCounters, func() {
 		if err := redisCounters.Close(); err != nil {
 			logger.Warn("Redis 연결 닫기 실패", "err", err)

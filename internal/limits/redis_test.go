@@ -57,6 +57,40 @@ func TestRedisCounters_KeepCountingInMemoryWhenRedisIsDown(t *testing.T) {
 	}
 }
 
+// FailClosed 면 브레이커가 열린 동안 Unavailable 이 참이고, 열린 시간이 지나면 시험 요청을 통과시켜 복구를 알아챌 수 있다.
+// 기본(FailClosed 꺼짐)은 장애여도 늘 거짓이다
+func TestRedisCounters_UnavailableOnlyWhenFailClosedAndBreakerOpen(t *testing.T) {
+	h := newRedisHarness(t)
+	ctx := t.Context()
+	h.store.FailClosed = true
+	if h.store.Unavailable() {
+		t.Fatal("멀쩡한데 거부 상태다")
+	}
+	h.server.Close()
+	for i := 0; i < breakerThreshold-1; i++ {
+		h.store.Get(ctx, "tpm:k", time.Minute)
+	}
+	if h.store.Unavailable() {
+		t.Error("브레이커가 열리기 전(연속 실패 문턱 미만)에는 거부하지 않는다")
+	}
+	h.store.Get(ctx, "tpm:k", time.Minute)
+	if !h.store.Unavailable() {
+		t.Error("브레이커가 열렸는데 거부하지 않는다")
+	}
+	h.advance(breakerOpenFor)
+	if h.store.Unavailable() {
+		t.Error("열린 시간이 지났는데 계속 거부한다. 시험 요청이 통과해야 복구를 알아챈다")
+	}
+
+	h.store.FailClosed = false
+	for i := 0; i < breakerThreshold; i++ {
+		h.store.Get(ctx, "tpm:k", time.Minute)
+	}
+	if h.store.Unavailable() {
+		t.Error("FailClosed 가 꺼져 있으면 장애여도 거부하지 않는다(기본 동작)")
+	}
+}
+
 // 연속으로 실패하면 열린 시간 동안 Redis 를 건드리지 않고, 시간이 지나 돌아오면 다시 Redis 로 센다
 func TestRedisCounters_CircuitBreakerSkipsRedisThenRecovers(t *testing.T) {
 	h := newRedisHarness(t)

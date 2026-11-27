@@ -40,12 +40,12 @@
 
 | 기능 | 상태 | 근거 |
 |---|---|---|
-| 일 단위 토큰 한도(TPD) | **없음** | `limit_policy` 에 `tpm_limit`·`rpm_limit`·`max_parallel_requests` 만 있음 |
+| 일 단위 토큰 한도(TPD) | **구현함(2026-11-27)** | 키·팀·사용자 `tpd_limit`. UTC 자정에 리셋, 넘으면 429. litellm 처럼 이미 쓴 양만 보므로 마지막 요청은 한도를 넘어 통과할 수 있다 |
 | 모델별 예산·모델별 RPM/TPM | **없음** | 같은 이유 |
 | 임시 예산 증액(기한부) | 없음 | |
 | 태그·고객(end-user)·조직·프로바이더 단위 예산 | 없음 | 설계에서 고객·조직 계층을 만들지 않기로 함 |
 | 소프트 예산 알림 | 값만 저장 | `soft_budget` 열은 있으나 알림 기능이 없음(`/alerting/settings` 는 빈 응답) |
-| Redis 장애 시 요청 거부(fail-closed) 선택 | 없음 | `GATEWAY_LIMITS_FAIL_CLOSED` 는 설계에만 있고 미구현. 지금은 늘 메모리 카운터로 이어서 처리 |
+| Redis 장애 시 요청 거부(fail-closed) 선택 | **구현함(2026-11-27)** | `GATEWAY_LIMITS_FAIL_CLOSED=true`(redis 저장소 전용). 기본은 메모리 카운터로 이어서 처리 |
 
 ## 4. 가드레일·콘텐츠 통제
 

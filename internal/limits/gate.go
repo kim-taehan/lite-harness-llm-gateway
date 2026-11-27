@@ -99,6 +99,9 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			return nil, budgetExceeded(scope, s, p)
 		}
 	}
+	if g.countersDown() && usesCounters(policies) {
+		return nil, countersUnavailable()
+	}
 	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}, daily: map[Scope]bool{}}
 	for _, scope := range gatedScopes {
 		p, ok := policies[scope]
@@ -143,6 +146,31 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 		}
 	}
 	return permit, nil
+}
+
+// outageAware 는 장애를 알리는 카운터 저장소(Redis)다. 장애 때 거부하도록 정했으면 Unavailable 이 참이다
+type outageAware interface{ Unavailable() bool }
+
+func (g *Gate) countersDown() bool {
+	store, ok := g.counters.(outageAware)
+	return ok && store.Unavailable()
+}
+
+// usesCounters 는 이 요청의 한도 중 카운터가 필요한 것(RPM·TPM·TPD·동시성)이 있는지다. 예산만 있으면 DB 로 검사하므로 카운터가 필요 없다
+func usesCounters(policies map[Scope]Policy) bool {
+	for _, p := range policies {
+		if p.TPMLimit != nil || p.TPDLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// countersUnavailable 은 한도 카운터를 못 쓸 때(Redis 장애, 거부로 설정) 주는 503 이다. 서킷 브레이커가 5초 뒤 다시 시험하므로 retry-after 도 5초다
+func countersUnavailable() core.ProxyError {
+	return core.ProxyError{Status: http.StatusServiceUnavailable, Type: "service_unavailable", Param: nil,
+		Message: "Rate limit counters are temporarily unavailable. Retry shortly.",
+		Headers: map[string]string{"retry-after": "5"}}
 }
 
 func counterKey(kind string, scope Scope, id string) string {

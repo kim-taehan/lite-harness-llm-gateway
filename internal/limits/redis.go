@@ -55,7 +55,13 @@ type RedisCounters struct {
 	logger   *slog.Logger
 	fallback *MemoryCounters
 	breaker  *breaker
+	// FailClosed 가 참이면 장애 동안 메모리로 잇지 않고 한도가 걸린 요청을 거부한다(Gate 가 Unavailable 로 묻는다). 서비스를 시작하기 전에만 정한다
+	FailClosed bool
 }
+
+// Unavailable 은 FailClosed 이고 장애로 Redis 를 건너뛰는 동안(서킷 브레이커가 열린 동안)이면 참이다.
+// 열린 시간이 지난 첫 요청은 Redis 를 시험해 보도록 통과시킨다(그 요청은 메모리로 처리될 수 있다)
+func (r *RedisCounters) Unavailable() bool { return r.FailClosed && !r.breaker.allow() }
 
 func NewRedisCounters(client *redis.Client, now func() time.Time, logger *slog.Logger) *RedisCounters {
 	return &RedisCounters{client: client, now: now, logger: logger, fallback: NewMemoryCounters(now), breaker: &breaker{now: now}}

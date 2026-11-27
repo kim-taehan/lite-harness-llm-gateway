@@ -61,9 +61,17 @@ func TestLoadConfig_CounterStore(t *testing.T) {
 	if err != nil || cfg.CounterStore != "redis" || cfg.RedisURL != "redis://cache:6379/0" {
 		t.Errorf("redis = %q %q, %v", cfg.CounterStore, cfg.RedisURL, err)
 	}
+	cfg, err = LoadConfig(envWith(map[string]string{"GATEWAY_COUNTER_STORE": "redis", "GATEWAY_REDIS_URL": "redis://cache:6379/0", "GATEWAY_LIMITS_FAIL_CLOSED": "true"}))
+	if err != nil || !cfg.LimitsFailClosed {
+		t.Errorf("fail-closed = %v, %v", cfg.LimitsFailClosed, err)
+	}
+	if cfg, _ = LoadConfig(envWith(nil)); cfg.LimitsFailClosed {
+		t.Error("기본이 fail-closed 다. 기본은 메모리로 이어서 처리해야 한다")
+	}
 	for name, env := range map[string]map[string]string{
-		"redis 인데 주소가 없다": {"GATEWAY_COUNTER_STORE": "redis"},
-		"모르는 저장소":         {"GATEWAY_COUNTER_STORE": "memcached"},
+		"redis 인데 주소가 없다":      {"GATEWAY_COUNTER_STORE": "redis"},
+		"모르는 저장소":              {"GATEWAY_COUNTER_STORE": "memcached"},
+		"메모리 저장소에 fail-closed": {"GATEWAY_LIMITS_FAIL_CLOSED": "true"},
 	} {
 		if _, err := LoadConfig(envWith(env)); err == nil {
 			t.Errorf("%s: 설정이 만들어졌다", name)
