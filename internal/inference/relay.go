@@ -275,6 +275,9 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		Model: x.requested, DeploymentID: x.deployment.ID, Status: x.status, HTTPStatus: x.httpStatus, ErrorCode: x.errorCode,
 		LatencyMS: int(h.now().Sub(x.started).Milliseconds()),
 	}
+	if x.permit != nil {
+		event.EndUserID = x.permit.EndUserID()
+	}
 	if x.usage != nil {
 		event.PromptTokens, event.CompletionTokens = x.usage.tokens()
 	} else if x.chunks > 0 {

@@ -210,7 +210,6 @@ func stubs() []stub {
 		// usage: 부가 지표. 일부 필드만 있는 200 은 렌더 예외라 전체 모양이나 404 로 답한다
 		stubNotFound("Gateway activity", "GET /gateway/daily/activity"),
 		stubOK("GET /gateway/errors/activity", `{"total_successful_requests":0,"total_failed_requests":0,"by_date":[],"by_status_code":[],"by_key":[],"by_team":[],"by_user":[],"by_model":[]}`),
-		stubOK("GET /customer/list", `[]`),
 		stubOK("GET /tag/list", `{}`),
 		stubOK("GET /tag/summary", `{"results":[]}`),
 		stubOK("GET /tag/distinct", `{"results":[]}`),

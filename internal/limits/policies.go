@@ -21,6 +21,8 @@ const (
 	ScopeTeam       Scope = "team"
 	ScopeUser       Scope = "user"
 	ScopeTeamMember Scope = "team_member"
+	// ScopeEndUser 는 고객(end user)이다. 대상 id 는 요청이 보낸 user 값이다
+	ScopeEndUser Scope = "end_user"
 )
 
 // MemberTarget 은 팀원 한도의 대상 id 다("팀id:사용자id", litellm descriptor 와 같다). 팀이나 사용자가 없으면 빈 문자열이다

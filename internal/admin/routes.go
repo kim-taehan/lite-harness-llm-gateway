@@ -18,6 +18,8 @@ type Handlers struct {
 	users  *auth.Users
 	keys   *auth.Keys
 	limits *limits.Policies
+	// customers 는 고객(end user) 저장소다. limits 모듈의 것이라 Deps 로 받지 않고 같은 DB 로 만든다
+	customers *limits.Customers
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
 	usage       *limits.UsageQuery
@@ -45,7 +47,7 @@ type Deps struct {
 }
 
 func NewHandlers(d Deps) *Handlers {
-	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, deployments: d.Deployments, usage: d.Usage,
+	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), deployments: d.Deployments, usage: d.Usage,
 		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
 }
 
@@ -155,6 +157,13 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
 		route(http.MethodGet, "/access_group/list", adminOnly, h.listAccessGroups),
 		route(http.MethodGet, "/access_group/{access_group}/info", adminOnly, h.accessGroupInfo),
+		route(http.MethodPost, "/customer/new", adminOnly, h.newCustomer),
+		route(http.MethodPost, "/customer/update", adminOnly, h.updateCustomer),
+		route(http.MethodPost, "/customer/delete", adminOnly, h.deleteCustomers),
+		route(http.MethodPost, "/customer/block", adminOnly, h.blockCustomers(true)),
+		route(http.MethodPost, "/customer/unblock", adminOnly, h.blockCustomers(false)),
+		route(http.MethodGet, "/customer/info", adminOnly, h.customerInfo),
+		route(http.MethodGet, "/customer/list", adminOnly, h.listCustomers),
 		route(http.MethodGet, "/get/allowed_ips", adminOnly, h.getAllowedIPs),
 		route(http.MethodPost, "/add/allowed_ip", adminOnly, h.audited("updated", auditConfigTable, configTarget, h.addAllowedIP)),
 		route(http.MethodPost, "/delete/allowed_ip", adminOnly, h.audited("deleted", auditConfigTable, configTarget, h.deleteAllowedIP)),

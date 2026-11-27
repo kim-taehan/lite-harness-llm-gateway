@@ -43,7 +43,8 @@
 | 일 단위 토큰 한도(TPD) | **구현함(2026-11-27)** | 키·팀·사용자 `tpd_limit`. UTC 자정에 리셋, 넘으면 429. litellm 처럼 이미 쓴 양만 보므로 마지막 요청은 한도를 넘어 통과할 수 있다 |
 | 모델별 예산·모델별 RPM/TPM | **구현함(2026-11-27)** | 키·팀·사용자의 `model_max_budget`(`{모델: {max_budget, budget_duration, rpm_limit, tpm_limit}}`). 요청한 모델 이름과 정확히 같을 때만 걸리고(패턴·액세스 그룹 이름 없음), 응답 뒤 모델별 사용액이 쌓이며 주기마다 리셋. litellm 의 별도 필드 `model_rpm_limit`·`model_tpm_limit` 는 지원하지 않는다(대시보드가 보내지 않는 API 전용 필드). litellm 에서는 유료 기능인데 우리는 막지 않는다 |
 | 임시 예산 증액(기한부) | 없음 | |
-| 태그·고객(end-user)·조직·프로바이더 단위 예산 | 없음 | 설계에서 고객·조직 계층을 만들지 않기로 함 |
+| 고객(end-user) 단위 예산·한도 | **구현함(2026-11-28)** | 요청의 `user`(또는 `x-litellm-customer-id` 헤더, `metadata.user_id`)로 식별. `/customer/new·update·delete·block·unblock·info·list`(관리자 전용)로 관리하고 예산·RPM·TPM·TPD·모델별 한도는 키·팀과 같은 필드다. `user` 는 호출자가 정하는 값이라 속일 수 있다(litellm 도 같다). 차단·한도는 `user` 를 보낸 요청에만 걸린다 |
+| 태그·조직·프로젝트·프로바이더 단위 예산 | 없음 | 태그·프로바이더는 진행 예정, 조직·프로젝트는 계층 설계 뒤에 |
 | 소프트 예산 알림 | **일부 구현(2026-11-27)** | Slack·이메일 알림은 없다(폐쇄망). 대신 `/metrics` 의 `gateway_soft_budget_exceeded{scope}` 가 소프트 예산 이상인 대상 수를 알려 사내 Prometheus 알람이 쓴다. 화면 경고는 없다 |
 | Redis 장애 시 요청 거부(fail-closed) 선택 | **구현함(2026-11-27)** | `GATEWAY_LIMITS_FAIL_CLOSED=true`(redis 저장소 전용). 기본은 메모리 카운터로 이어서 처리 |
 

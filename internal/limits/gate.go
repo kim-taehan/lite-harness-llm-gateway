@@ -27,7 +27,9 @@ type Subject struct {
 	KeyAlias string
 	TeamID   string
 	UserID   string
-	Model    string // 요청한 모델 이름. 모델별 한도(model_max_budget)를 이 이름으로 찾는다. 비면 모델별 한도는 보지 않는다
+	// EndUserID 는 요청이 밝힌 고객(end user)이다. 호출자가 정하는 값이라 속일 수 있다(litellm 도 같다). 비면 고객 한도는 보지 않는다
+	EndUserID string
+	Model     string // 요청한 모델 이름. 모델별 한도(model_max_budget)를 이 이름으로 찾는다. 비면 모델별 한도는 보지 않는다
 }
 
 // Permit 은 통과한 요청의 슬롯이다. 응답이 끝나거나 끊기면 Release 한다(설계 4.2: defer)
@@ -56,6 +58,9 @@ func (p *Permit) report(scope Scope, kind string, limit, used int64) {
 	p.headers[prefix+"-remaining-"+kind] = strconv.FormatInt(max(0, limit-used), 10)
 }
 
+// EndUserID 는 이 요청이 밝힌 고객이다(사용량 기록에 남긴다). 없으면 비어 있다
+func (p *Permit) EndUserID() string { return p.subject.EndUserID }
+
 // Headers 는 통과한 요청의 응답에 실을 x-ratelimit-* 헤더다. 한도가 없으면 비어 있다
 func (p *Permit) Headers() map[string]string { return p.headers }
 
@@ -82,7 +87,8 @@ func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 
 func (s Subject) ids() map[Scope]string {
 	ids := map[Scope]string{}
-	for scope, id := range map[Scope]string{ScopeKey: s.KeyToken, ScopeTeam: s.TeamID, ScopeUser: s.UserID, ScopeTeamMember: MemberTarget(s.TeamID, s.UserID)} {
+	for scope, id := range map[Scope]string{ScopeKey: s.KeyToken, ScopeTeam: s.TeamID, ScopeUser: s.UserID, ScopeTeamMember: MemberTarget(s.TeamID, s.UserID),
+		ScopeEndUser: s.EndUserID} {
 		if id != "" {
 			ids[scope] = id
 		}
@@ -95,6 +101,15 @@ const slotLease = 10 * time.Minute
 
 // Admit 은 통과하면 Permit, 막으면 litellm 모양 오류(core.ProxyError)다
 func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
+	if s.EndUserID != "" {
+		blocked, err := NewCustomers(g.policies.db).IsBlocked(ctx, s.EndUserID)
+		if err != nil {
+			return nil, err
+		}
+		if blocked {
+			return nil, endUserBlocked(s.EndUserID)
+		}
+	}
 	ids := s.ids()
 	policies, err := g.policies.FindSubject(ctx, ids)
 	if err != nil {
@@ -244,10 +259,10 @@ func counterKey(kind string, scope Scope, id string) string {
 }
 
 // litellm 의 descriptor 이름(parallel_request_limiter_v3.py): 키 api_key, 팀 team, 사용자 user
-var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member"}
+var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member", ScopeEndUser: "end_user"}
 
 // gatedScopes 는 요청마다 검사하는 대상 종류와 그 순서다
-var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember}
+var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember, ScopeEndUser}
 
 // rateLimited 는 litellm v3 리미터의 429 문구와 retry-after 다. 본문 모양(type)은 litellm 원문에서 확인하지 못했다
 func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.ProxyError {
@@ -256,6 +271,12 @@ func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.Proxy
 		Message: fmt.Sprintf("Rate limit exceeded for %s: %s. Limit type: %s. Current limit: %d, Remaining: 0. Limit resets at: %s",
 			descriptorNames[scope], id, kind, limit, reset),
 		Headers: map[string]string{"retry-after": strconv.Itoa(60), "rate_limit_type": kind, "reset_at": reset}}
+}
+
+// endUserBlocked 는 차단한 고객의 요청에 주는 400 이다(litellm blocked_user_list 훅의 문구)
+func endUserBlocked(id string) core.ProxyError {
+	return core.ProxyError{Status: http.StatusBadRequest, Type: "bad_request_error", Param: nil,
+		Message: "User blocked from making LLM API Calls. User=" + id}
 }
 
 // dailyTokensExceeded 는 litellm daily_token_limiter 의 429 다. retry-after 는 다음 UTC 자정까지 남은 초다
@@ -275,7 +296,7 @@ func budgetExceeded(scope Scope, s Subject, p Policy) core.ProxyError {
 
 func subjectLabel(scope Scope, s Subject) string {
 	return map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
-		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID}[scope]
+		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID, ScopeEndUser: "End User=" + s.EndUserID}[scope]
 }
 
 func orDefault(s, def string) string {

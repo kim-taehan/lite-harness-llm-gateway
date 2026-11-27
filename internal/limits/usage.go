@@ -20,6 +20,7 @@ type UsageEvent struct {
 	KeyToken         string
 	UserID           string
 	TeamID           string
+	EndUserID        string // 요청이 밝힌 고객. 사용액을 고객 한도에 더하는 데만 쓰고 request_log 에는 남기지 않는다
 	Model            string
 	DeploymentID     string
 	PromptTokens     int
@@ -128,7 +129,7 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 				e.PromptTokens, e.CompletionTokens, source, e.Cost, e.Status, e.HTTPStatus, nullable(e.ErrorCode), e.LatencyMS, e.TTFTMS}
 			if e.Cost > 0 {
 				for scope, id := range map[Scope]string{ScopeKey: e.KeyToken, ScopeTeam: e.TeamID, ScopeUser: e.UserID,
-					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID)} {
+					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID), ScopeEndUser: e.EndUserID} {
 					if id != "" {
 						spend[[2]string{string(scope), id}] += e.Cost
 						modelSpend[[3]string{string(scope), id, e.Model}] += e.Cost
