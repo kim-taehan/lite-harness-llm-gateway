@@ -20,7 +20,8 @@ type UsageEvent struct {
 	KeyToken         string
 	UserID           string
 	TeamID           string
-	EndUserID        string // 요청이 밝힌 고객. 사용액을 고객 한도에 더하는 데만 쓰고 request_log 에는 남기지 않는다
+	EndUserID        string   // 요청이 밝힌 고객. 사용액을 고객 한도에 더하는 데만 쓰고 request_log 에는 남기지 않는다
+	Tags             []string // 요청이 붙인 태그. 마찬가지로 등록한 태그의 사용액에만 더한다
 	Model            string
 	DeploymentID     string
 	PromptTokens     int
@@ -135,6 +136,10 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 						modelSpend[[3]string{string(scope), id, e.Model}] += e.Cost
 					}
 				}
+				for _, tag := range e.Tags {
+					spend[[2]string{string(ScopeTag), tag}] += e.Cost
+					modelSpend[[3]string{string(ScopeTag), tag, e.Model}] += e.Cost
+				}
 			}
 		}
 		tx, ok := q.(pgx.Tx)
@@ -147,8 +152,12 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 			return fmt.Errorf("request_log: %w", err)
 		}
 		for target, amount := range spend {
+			// 고객과 태그는 호출자가 요청에 적는 값이라, 등록한 것만 행을 만든다(아무 값이나 보내 행을 늘리지 못하게)
 			if _, err := q.Exec(ctx, `
-				INSERT INTO limit_policy (scope, target_id, spend) VALUES ($1, $2, $3)
+				INSERT INTO limit_policy (scope, target_id, spend)
+				SELECT $1::text, $2::text, $3::numeric
+				WHERE ($1::text <> 'end_user' OR EXISTS (SELECT 1 FROM customer WHERE user_id = $2::text))
+				  AND ($1::text <> 'tag' OR EXISTS (SELECT 1 FROM tag WHERE name = $2::text))
 				ON CONFLICT (scope, target_id) DO UPDATE SET spend = limit_policy.spend + EXCLUDED.spend, updated_at = now()`,
 				target[0], target[1], amount); err != nil {
 				return fmt.Errorf("spend: %w", err)

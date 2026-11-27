@@ -29,7 +29,9 @@ type Subject struct {
 	UserID   string
 	// EndUserID 는 요청이 밝힌 고객(end user)이다. 호출자가 정하는 값이라 속일 수 있다(litellm 도 같다). 비면 고객 한도는 보지 않는다
 	EndUserID string
-	Model     string // 요청한 모델 이름. 모델별 한도(model_max_budget)를 이 이름으로 찾는다. 비면 모델별 한도는 보지 않는다
+	// Tags 는 요청이 붙인 태그다. 등록한 태그에만 한도가 걸리고 호출자가 정하는 값이라 속일 수 있다. 중복과 개수는 부르는 쪽이 줄인다
+	Tags  []string
+	Model string // 요청한 모델 이름. 모델별 한도(model_max_budget)를 이 이름으로 찾는다. 비면 모델별 한도는 보지 않는다
 }
 
 // Permit 은 통과한 요청의 슬롯이다. 응답이 끝나거나 끊기면 Release 한다(설계 4.2: defer)
@@ -37,8 +39,8 @@ type Permit struct {
 	release []func()
 	gate    *Gate
 	subject Subject
-	limited map[Scope]bool // TPM 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
-	daily   map[Scope]bool // TPD 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
+	limited map[target]bool // TPM 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
+	daily   map[target]bool // TPD 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
 	// modelTPM 은 모델별 TPM 이 걸린 카운터 키다(응답 뒤 토큰을 더할 곳)
 	modelTPM []string
 	headers  map[string]string
@@ -50,6 +52,9 @@ const dailyWindow = 24 * time.Hour
 // report 는 litellm v3 리미터처럼 x-ratelimit-{api_key|team|user}-{limit|remaining}-{requests|tokens|max_parallel_requests} 헤더를 모은다.
 // 값은 검사 시점의 스냅샷이다(응답 뒤 토큰 정산은 반영하지 않는다)
 func (p *Permit) report(scope Scope, kind string, limit, used int64) {
+	if scope == ScopeTag {
+		return // 태그는 요청 하나에 여럿이라 헤더 이름이 겹친다. litellm 도 태그 헤더는 없다
+	}
 	if p.headers == nil {
 		p.headers = map[string]string{}
 	}
@@ -60,6 +65,9 @@ func (p *Permit) report(scope Scope, kind string, limit, used int64) {
 
 // EndUserID 는 이 요청이 밝힌 고객이다(사용량 기록에 남긴다). 없으면 비어 있다
 func (p *Permit) EndUserID() string { return p.subject.EndUserID }
+
+// Tags 는 이 요청이 붙인 태그다(사용량 기록에 남긴다)
+func (p *Permit) Tags() []string { return p.subject.Tags }
 
 // Headers 는 통과한 요청의 응답에 실을 x-ratelimit-* 헤더다. 한도가 없으면 비어 있다
 func (p *Permit) Headers() map[string]string { return p.headers }
@@ -72,12 +80,12 @@ func (p *Permit) Release() {
 
 // AddTokens 는 응답 뒤 실제 토큰을 TPM·TPD 카운터에 더한다. 요청이 끊긴 뒤에도 불리므로 호출하는 쪽이 취소와 무관한 ctx 를 넘긴다
 func (p *Permit) AddTokens(ctx context.Context, tokens int) {
-	for scope, id := range p.subject.ids() {
-		if p.limited[scope] {
-			p.gate.counters.Add(ctx, counterKey("tpm", scope, id), int64(tokens), time.Minute)
+	for _, t := range p.subject.targets() {
+		if p.limited[t] {
+			p.gate.counters.Add(ctx, counterKey("tpm", t.scope, t.id), int64(tokens), time.Minute)
 		}
-		if p.daily[scope] {
-			p.gate.counters.Add(ctx, counterKey("tpd", scope, id), int64(tokens), dailyWindow)
+		if p.daily[t] {
+			p.gate.counters.Add(ctx, counterKey("tpd", t.scope, t.id), int64(tokens), dailyWindow)
 		}
 	}
 	for _, key := range p.modelTPM {
@@ -85,15 +93,19 @@ func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 	}
 }
 
-func (s Subject) ids() map[Scope]string {
-	ids := map[Scope]string{}
-	for scope, id := range map[Scope]string{ScopeKey: s.KeyToken, ScopeTeam: s.TeamID, ScopeUser: s.UserID, ScopeTeamMember: MemberTarget(s.TeamID, s.UserID),
-		ScopeEndUser: s.EndUserID} {
-		if id != "" {
-			ids[scope] = id
+// targets 는 이 요청에 한도가 걸릴 수 있는 대상들이다. 검사 순서(키, 팀, 사용자, 팀원, 고객, 태그들)대로이고 빈 id 는 뺀다
+func (s Subject) targets() []target {
+	var result []target
+	for _, t := range []target{{ScopeKey, s.KeyToken}, {ScopeTeam, s.TeamID}, {ScopeUser, s.UserID},
+		{ScopeTeamMember, MemberTarget(s.TeamID, s.UserID)}, {ScopeEndUser, s.EndUserID}} {
+		if t.id != "" {
+			result = append(result, t)
 		}
 	}
-	return ids
+	for _, tag := range s.Tags {
+		result = append(result, target{ScopeTag, tag})
+	}
+	return result
 }
 
 // 동시성 슬롯 임대 시간. 긴 스트림이 이보다 오래 가면 슬롯이 먼저 풀린다(연장은 Redis 구현 때 붙인다)
@@ -110,39 +122,39 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			return nil, endUserBlocked(s.EndUserID)
 		}
 	}
-	ids := s.ids()
-	policies, err := g.policies.FindSubject(ctx, ids)
+	wanted := s.targets()
+	policies, err := g.policies.FindSubject(ctx, wanted)
 	if err != nil {
 		return nil, err
 	}
-	for _, scope := range gatedScopes {
-		if p, ok := policies[scope]; ok && p.MaxBudget != nil && p.Spend >= *p.MaxBudget {
-			return nil, budgetExceeded(scope, s, p)
+	for _, t := range wanted {
+		if p, ok := policies[t]; ok && p.MaxBudget != nil && p.Spend >= *p.MaxBudget {
+			return nil, budgetExceeded(t, s, p)
 		}
 	}
-	var models map[Scope]modelState
+	var models map[target]modelState
 	if s.Model != "" {
-		if models, err = g.policies.findModelStates(ctx, ids, s.Model); err != nil {
+		if models, err = g.policies.findModelStates(ctx, wanted, s.Model); err != nil {
 			return nil, err
 		}
 	}
-	for _, scope := range gatedScopes {
-		if m, ok := models[scope]; ok && m.MaxBudget != nil && m.Spend >= *m.MaxBudget {
-			return nil, modelBudgetExceeded(scope, s, m)
+	for _, t := range wanted {
+		if m, ok := models[t]; ok && m.MaxBudget != nil && m.Spend >= *m.MaxBudget {
+			return nil, modelBudgetExceeded(t, s, m)
 		}
 	}
 	if g.countersDown() && (usesCounters(policies) || modelUsesCounters(models)) {
 		return nil, countersUnavailable()
 	}
-	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}, daily: map[Scope]bool{}}
-	for _, scope := range gatedScopes {
-		p, ok := policies[scope]
+	permit := &Permit{gate: g, subject: s, limited: map[target]bool{}, daily: map[target]bool{}}
+	for _, t := range wanted {
+		p, ok := policies[t]
 		if !ok {
 			continue
 		}
-		id := ids[scope]
+		scope, id := t.scope, t.id
 		if p.TPMLimit != nil {
-			permit.limited[scope] = true
+			permit.limited[t] = true
 			used := g.counters.Get(ctx, counterKey("tpm", scope, id), time.Minute)
 			if used >= *p.TPMLimit {
 				permit.Release()
@@ -151,7 +163,7 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			permit.report(scope, "tokens", *p.TPMLimit, used)
 		}
 		if p.TPDLimit != nil {
-			permit.daily[scope] = true
+			permit.daily[t] = true
 			// litellm 과 같게 이미 쓴 양만 본다. 마지막 요청은 한도를 넘어서 통과할 수 있다
 			used := g.counters.Get(ctx, counterKey("tpd", scope, id), dailyWindow)
 			if used >= *p.TPDLimit {
@@ -177,9 +189,9 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			permit.report(scope, "max_parallel_requests", *p.MaxParallelRequests, held)
 		}
 	}
-	for _, scope := range gatedScopes {
-		if m, ok := models[scope]; ok {
-			if err := g.admitModel(ctx, permit, scope, ids[scope], s.Model, m); err != nil {
+	for _, t := range wanted {
+		if m, ok := models[t]; ok {
+			if err := g.admitModel(ctx, permit, t, s.Model, m); err != nil {
 				permit.Release()
 				return nil, err
 			}
@@ -189,18 +201,18 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 }
 
 // admitModel 은 대상이 이 모델에 건 RPM·TPM 을 검사한다. 카운터는 (대상, 모델) 단위이고 한도 값은 요청의 한도와 따로 센다
-func (g *Gate) admitModel(ctx context.Context, permit *Permit, scope Scope, id, model string, m modelState) error {
-	target := id + "|" + model
+func (g *Gate) admitModel(ctx context.Context, permit *Permit, t target, model string, m modelState) error {
+	counterID := t.id + "|" + model
 	if m.TPMLimit != nil {
-		key := counterKey("mtpm", scope, target)
+		key := counterKey("mtpm", t.scope, counterID)
 		permit.modelTPM = append(permit.modelTPM, key)
 		if g.counters.Get(ctx, key, time.Minute) >= *m.TPMLimit {
-			return forModel(g.rateLimited(scope, id, "tokens", *m.TPMLimit), model)
+			return forModel(g.rateLimited(t.scope, t.id, "tokens", *m.TPMLimit), model)
 		}
 	}
 	if m.RPMLimit != nil {
-		if _, ok := g.counters.IncrementIfBelow(ctx, counterKey("mrpm", scope, target), 1, *m.RPMLimit, time.Minute); !ok {
-			return forModel(g.rateLimited(scope, id, "requests", *m.RPMLimit), model)
+		if _, ok := g.counters.IncrementIfBelow(ctx, counterKey("mrpm", t.scope, counterID), 1, *m.RPMLimit, time.Minute); !ok {
+			return forModel(g.rateLimited(t.scope, t.id, "requests", *m.RPMLimit), model)
 		}
 	}
 	return nil
@@ -212,7 +224,7 @@ func forModel(e core.ProxyError, model string) core.ProxyError {
 	return e
 }
 
-func modelUsesCounters(models map[Scope]modelState) bool {
+func modelUsesCounters(models map[target]modelState) bool {
 	for _, m := range models {
 		if m.RPMLimit != nil || m.TPMLimit != nil {
 			return true
@@ -223,10 +235,10 @@ func modelUsesCounters(models map[Scope]modelState) bool {
 
 // modelBudgetExceeded 는 모델별 예산을 넘었을 때의 오류다. 상태 코드와 말머리는 대상 예산(budgetExceeded)과 같다.
 // 모델 예산의 정확한 litellm 문구는 확인하지 못해 모델 이름만 덧붙였다
-func modelBudgetExceeded(scope Scope, s Subject, m modelState) core.ProxyError {
+func modelBudgetExceeded(t target, s Subject, m modelState) core.ProxyError {
 	return core.ProxyError{Status: http.StatusUnprocessableEntity, Type: "budget_exceeded", Param: nil,
 		Message: fmt.Sprintf("Budget has been exceeded! %s Model=%s Current cost: %s, Max budget: %s",
-			subjectLabel(scope, s), s.Model, formatFloat(m.Spend), formatFloat(*m.MaxBudget))}
+			subjectLabel(t, s), s.Model, formatFloat(m.Spend), formatFloat(*m.MaxBudget))}
 }
 
 // outageAware 는 장애를 알리는 카운터 저장소(Redis)다. 장애 때 거부하도록 정했으면 Unavailable 이 참이다
@@ -238,7 +250,7 @@ func (g *Gate) countersDown() bool {
 }
 
 // usesCounters 는 이 요청의 한도 중 카운터가 필요한 것(RPM·TPM·TPD·동시성)이 있는지다. 예산만 있으면 DB 로 검사하므로 카운터가 필요 없다
-func usesCounters(policies map[Scope]Policy) bool {
+func usesCounters(policies map[target]Policy) bool {
 	for _, p := range policies {
 		if p.TPMLimit != nil || p.TPDLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil {
 			return true
@@ -259,10 +271,10 @@ func counterKey(kind string, scope Scope, id string) string {
 }
 
 // litellm 의 descriptor 이름(parallel_request_limiter_v3.py): 키 api_key, 팀 team, 사용자 user
-var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member", ScopeEndUser: "end_user"}
+var descriptorNames = map[Scope]string{ScopeKey: "api_key", ScopeTeam: "team", ScopeUser: "user", ScopeTeamMember: "team_member", ScopeEndUser: "end_user", ScopeTag: "tag"}
 
-// gatedScopes 는 요청마다 검사하는 대상 종류와 그 순서다
-var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember, ScopeEndUser}
+// gatedScopes 는 요청마다 검사하는 대상 종류다(소프트 예산 지표가 종류별로 센다)
+var gatedScopes = []Scope{ScopeKey, ScopeTeam, ScopeUser, ScopeTeamMember, ScopeEndUser, ScopeTag}
 
 // rateLimited 는 litellm v3 리미터의 429 문구와 retry-after 다. 본문 모양(type)은 litellm 원문에서 확인하지 못했다
 func (g *Gate) rateLimited(scope Scope, id, kind string, limit int64) core.ProxyError {
@@ -289,14 +301,18 @@ func (g *Gate) dailyTokensExceeded(scope Scope, used, limit int64) core.ProxyErr
 }
 
 // budgetExceeded 는 litellm BudgetExceededError 다. 이 포크의 기본 상태 코드는 422 다(J 5.3)
-func budgetExceeded(scope Scope, s Subject, p Policy) core.ProxyError {
+func budgetExceeded(t target, s Subject, p Policy) core.ProxyError {
 	return core.ProxyError{Status: http.StatusUnprocessableEntity, Type: "budget_exceeded", Param: nil,
-		Message: fmt.Sprintf("Budget has been exceeded! %s Current cost: %s, Max budget: %s", subjectLabel(scope, s), formatFloat(p.Spend), formatFloat(*p.MaxBudget))}
+		Message: fmt.Sprintf("Budget has been exceeded! %s Current cost: %s, Max budget: %s", subjectLabel(t, s), formatFloat(p.Spend), formatFloat(*p.MaxBudget))}
 }
 
-func subjectLabel(scope Scope, s Subject) string {
+// subjectLabel 은 오류 문구에서 대상을 가리키는 말이다. 태그는 어느 태그인지 알려야 해서 이름을 쓴다
+func subjectLabel(t target, s Subject) string {
+	if t.scope == ScopeTag {
+		return "Tag=" + t.id
+	}
 	return map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
-		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID, ScopeEndUser: "End User=" + s.EndUserID}[scope]
+		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID, ScopeEndUser: "End User=" + s.EndUserID}[t.scope]
 }
 
 func orDefault(s, def string) string {

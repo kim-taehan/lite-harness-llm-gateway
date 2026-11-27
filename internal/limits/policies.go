@@ -23,7 +23,15 @@ const (
 	ScopeTeamMember Scope = "team_member"
 	// ScopeEndUser 는 고객(end user)이다. 대상 id 는 요청이 보낸 user 값이다
 	ScopeEndUser Scope = "end_user"
+	// ScopeTag 는 태그다. 대상 id 는 태그 이름이고, 요청 하나에 여러 개가 붙을 수 있다
+	ScopeTag Scope = "tag"
 )
+
+// target 은 한도를 거는 대상 하나다. 요청 하나가 대상 여러 개(태그가 여럿)에 걸릴 수 있어 종류만으로는 가를 수 없다
+type target struct {
+	scope Scope
+	id    string
+}
 
 // MemberTarget 은 팀원 한도의 대상 id 다("팀id:사용자id", litellm descriptor 와 같다). 팀이나 사용자가 없으면 빈 문자열이다
 func MemberTarget(teamID, userID string) string {
@@ -120,28 +128,28 @@ func (p *Policies) Find(ctx context.Context, scope Scope, ids []string) (map[str
 	return result, nil
 }
 
-// FindSubject 는 대상 종류마다 id 하나씩의 한도를 쿼리 한 번으로 읽는다(요청마다 도는 Gate 용). 한도를 정하지 않은 종류는 결과에 없다
-func (p *Policies) FindSubject(ctx context.Context, ids map[Scope]string) (map[Scope]Policy, error) {
-	scopes, targets := make([]string, 0, len(ids)), make([]string, 0, len(ids))
-	for scope, id := range ids {
-		scopes, targets = append(scopes, string(scope)), append(targets, id)
+// FindSubject 는 대상들의 한도를 쿼리 한 번으로 읽는다(요청마다 도는 Gate 용). 한도를 정하지 않은 대상은 결과에 없다
+func (p *Policies) FindSubject(ctx context.Context, wanted []target) (map[target]Policy, error) {
+	scopes, ids := make([]string, 0, len(wanted)), make([]string, 0, len(wanted))
+	for _, t := range wanted {
+		scopes, ids = append(scopes, string(t.scope)), append(ids, t.id)
 	}
 	rows, err := p.db.Q(ctx).Query(ctx, `
-		SELECT l.scope, l.max_budget, l.soft_budget, l.spend, l.tpm_limit, l.tpd_limit, l.rpm_limit, l.max_parallel_requests, l.budget_duration, l.budget_reset_at
-		FROM limit_policy l JOIN unnest($1::text[], $2::text[]) AS want(scope, target_id) USING (scope, target_id)`, scopes, targets)
+		SELECT l.scope, l.target_id, l.max_budget, l.soft_budget, l.spend, l.tpm_limit, l.tpd_limit, l.rpm_limit, l.max_parallel_requests, l.budget_duration, l.budget_reset_at
+		FROM limit_policy l JOIN unnest($1::text[], $2::text[]) AS want(scope, target_id) USING (scope, target_id)`, scopes, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := map[Scope]Policy{}
+	result := map[target]Policy{}
 	for rows.Next() {
-		var scope Scope
+		var t target
 		var pol Policy
-		if err := rows.Scan(&scope, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.TPDLimit, &pol.RPMLimit,
+		if err := rows.Scan(&t.scope, &t.id, &pol.MaxBudget, &pol.SoftBudget, &pol.Spend, &pol.TPMLimit, &pol.TPDLimit, &pol.RPMLimit,
 			&pol.MaxParallelRequests, &pol.BudgetDuration, &pol.BudgetResetAt); err != nil {
 			return nil, err
 		}
-		result[scope] = pol
+		result[t] = pol
 	}
 	return result, rows.Err()
 }

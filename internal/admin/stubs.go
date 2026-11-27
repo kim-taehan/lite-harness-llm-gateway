@@ -210,7 +210,6 @@ func stubs() []stub {
 		// usage: 부가 지표. 일부 필드만 있는 200 은 렌더 예외라 전체 모양이나 404 로 답한다
 		stubNotFound("Gateway activity", "GET /gateway/daily/activity"),
 		stubOK("GET /gateway/errors/activity", `{"total_successful_requests":0,"total_failed_requests":0,"by_date":[],"by_status_code":[],"by_key":[],"by_team":[],"by_user":[],"by_model":[]}`),
-		stubOK("GET /tag/list", `{}`),
 		stubOK("GET /tag/summary", `{"results":[]}`),
 		stubOK("GET /tag/distinct", `{"results":[]}`),
 		stubOK("GET /tag/dau", `{"results":[]}`),
@@ -265,12 +264,6 @@ func stubs() []stub {
 		stubOK("GET /v1/tool/{tool_name}/logs", `{"logs":[],"total":0}`),
 		stubUnsupported("Tool policies", "POST /v1/tool/policy"),
 		stubUnsupported("Tool policies", "DELETE /v1/tool/{tool_name}/overrides"),
-
-		// tag-management: 태그 목록은 이름→태그 사전이라 객체다
-		stubUnsupported("Tags", "POST /tag/new"),
-		stubUnsupported("Tags", "POST /tag/update"),
-		stubOK("POST /tag/info", `{}`),
-		stubUnsupported("Tags", "POST /tag/delete"),
 
 		// playground: 우리에게 없는 추론 종류
 		stubUnsupported("Anthropic messages", "POST /v1/messages"),

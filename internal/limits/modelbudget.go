@@ -99,27 +99,27 @@ func (p *Policies) saveModelBudgets(ctx context.Context, scope Scope, id string,
 }
 
 // findModelStates 는 요청 하나의 대상들이 이 모델에 건 한도를 쿼리 한 번으로 읽는다(요청마다 도는 Gate 용). 없는 대상은 결과에 없다
-func (p *Policies) findModelStates(ctx context.Context, ids map[Scope]string, model string) (map[Scope]modelState, error) {
-	scopes, targets := make([]string, 0, len(ids)), make([]string, 0, len(ids))
-	for scope, id := range ids {
-		scopes, targets = append(scopes, string(scope)), append(targets, id)
+func (p *Policies) findModelStates(ctx context.Context, wanted []target, model string) (map[target]modelState, error) {
+	scopes, ids := make([]string, 0, len(wanted)), make([]string, 0, len(wanted))
+	for _, t := range wanted {
+		scopes, ids = append(scopes, string(t.scope)), append(ids, t.id)
 	}
 	rows, err := p.db.Q(ctx).Query(ctx, `
-		SELECT m.scope, m.max_budget, m.spend, m.rpm_limit, m.tpm_limit
+		SELECT m.scope, m.target_id, m.max_budget, m.spend, m.rpm_limit, m.tpm_limit
 		FROM limit_model_policy m JOIN unnest($1::text[], $2::text[]) AS want(scope, target_id) USING (scope, target_id)
-		WHERE m.model = $3`, scopes, targets, model)
+		WHERE m.model = $3`, scopes, ids, model)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := map[Scope]modelState{}
+	result := map[target]modelState{}
 	for rows.Next() {
-		var scope Scope
+		var t target
 		var s modelState
-		if err := rows.Scan(&scope, &s.MaxBudget, &s.Spend, &s.RPMLimit, &s.TPMLimit); err != nil {
+		if err := rows.Scan(&t.scope, &t.id, &s.MaxBudget, &s.Spend, &s.RPMLimit, &s.TPMLimit); err != nil {
 			return nil, err
 		}
-		result[scope] = s
+		result[t] = s
 	}
 	return result, rows.Err()
 }

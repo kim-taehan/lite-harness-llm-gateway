@@ -276,7 +276,7 @@ func (h *Handlers) record(r *http.Request, x *exchange) {
 		LatencyMS: int(h.now().Sub(x.started).Milliseconds()),
 	}
 	if x.permit != nil {
-		event.EndUserID = x.permit.EndUserID()
+		event.EndUserID, event.Tags = x.permit.EndUserID(), x.permit.Tags()
 	}
 	if x.usage != nil {
 		event.PromptTokens, event.CompletionTokens = x.usage.tokens()

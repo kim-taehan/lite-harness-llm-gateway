@@ -26,6 +26,38 @@ func endUserID(r *http.Request, body map[string]any) string {
 	return idString(objectOf(body["metadata"])["user_id"])
 }
 
+// 요청 하나가 붙일 수 있는 태그 수와 태그 이름 길이의 상한이다. 등록하지 않은 태그는 한도가 없지만 조회 비용은 있어서 막아 둔다
+const (
+	maxRequestTags = 20
+	maxTagLength   = 200
+)
+
+// requestTags 는 요청이 붙인 태그다. litellm 처럼 헤더 x-litellm-tags(쉼표로 구분), 본문의 tags, metadata.tags, litellm_metadata.tags 를 합친다.
+// 중복·빈 값·너무 긴 값은 빼고 maxRequestTags 개까지만 쓴다
+func requestTags(r *http.Request, body map[string]any) []string {
+	var tags []string
+	seen := map[string]bool{}
+	add := func(v any) {
+		name, ok := v.(string)
+		name = strings.TrimSpace(name)
+		if !ok || name == "" || len(name) > maxTagLength || seen[name] || len(tags) >= maxRequestTags {
+			return
+		}
+		seen[name] = true
+		tags = append(tags, name)
+	}
+	for _, part := range strings.Split(r.Header.Get("x-litellm-tags"), ",") {
+		add(part)
+	}
+	for _, source := range []any{body["tags"], objectOf(body["metadata"])["tags"], objectOf(body["litellm_metadata"])["tags"]} {
+		list, _ := source.([]any)
+		for _, item := range list {
+			add(item)
+		}
+	}
+	return tags
+}
+
 // idString 은 문자열이거나 숫자인 값을 id 문자열로 바꾼다. 그 밖의 값과 빈 문자열은 없는 것으로 본다
 func idString(v any) string {
 	switch id := v.(type) {
