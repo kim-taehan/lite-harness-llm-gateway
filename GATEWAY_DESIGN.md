@@ -256,7 +256,7 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
   - **클라이언트 IP**: 연결 주소를 쓰고, 연결한 상대가 `GATEWAY_TRUSTED_PROXIES` 에 있을 때만 `X-Forwarded-For` 의 오른쪽부터 신뢰 대역을 건너뛴 첫 주소를 쓴다(로그인 시도 제한과 같은 규칙)
   - **잠금 방지**: 같은 서버에서 앞단 헤더(`X-Forwarded-For`·`X-Real-IP`·`Forwarded`) 없이 직접 연결한 로컬(127.0.0.0/8, ::1) 요청은 목록과 무관하게 허용한다. 앞단 헤더가 하나라도 있으면 직접 호출이 아니다(같은 서버의 nginx 를 거친 요청은 연결 주소가 늘 로컬이라, 이 예외를 적용하면 모든 클라이언트가 우회한다). 그래도 잠겼으면 `GATEWAY_ALLOWED_IPS_DISABLE=true` 로 다시 띄워 목록을 무시하고(기동 로그에 경고) 고친 뒤 지운다
   - **캐시와 실패**: 목록은 30초 캐시한다(이 인스턴스가 바꾼 것은 바로, 다른 인스턴스가 바꾼 것은 30초 안에 반영). 목록을 읽지 못하면 마지막으로 읽은 목록을 계속 쓰고, **한 번도 읽지 못했으면 요청을 503 으로 거절한다**(읽지 못해서 허용 목록이 풀리면 안 된다). 두 관리자가 동시에 고쳐도 한쪽이 사라지지 않게 행을 잠가 읽고-고치고-쓴다
-- **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. 조직·고객 계층(`org_admin`, `customer`)은 만들지 않는다
+- **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. `org_admin` 은 만들지 않는다(2026-11-28 결정: 조직은 전체 관리자만 관리한다). 고객(end user)은 역할이 아니라 요청의 `user` 값으로 식별하는 한도 대상이다. 계층은 조직(선택) → 팀 → 프로젝트(선택, 팀 필수) → 키이고, 팀·프로젝트 없는 키도 그대로 만들 수 있다
 - **라우트 권한은 허용 목록**(역할별로 허용 경로를 적는다). litellm 의 viewer 쓰기 차단은 차단 목록이라 새 API 를 빠뜨리면 뚫린다
 - 세션 쿠키는 litellm 과 같이 `token` 쿠키로 둔다. 대시보드가 `document.cookie` 로 읽으므로 HttpOnly 로 할 수 없다(조사 B). SameSite=Lax
 - 미확인: oauth2-proxy 헤더 인증의 유료 여부(쓰지 않으므로 영향 없음)
@@ -314,7 +314,7 @@ type CounterStore interface {
 - `audit_log`: 관리 변경 기록(litellm 은 유료라 쓰지 않았지만 운영자에게 필요하다). 9장에 기록 범위
 - 키 재생성은 `api_key.token` 교체 + 옛 해시 유예 기간(`deprecated_api_key`: `token`, `active_token`, `revoke_at`, auth 소유)
 
-**넣지 않을 것**: 조직·프로젝트·고객, MCP·에이전트·벡터·프롬프트·워크플로 같은 부가 기능 테이블 약 50개, 삭제 사본 테이블(soft delete 로 대체), 일별 롤업(처음에는 `request_log` GROUP BY. 느려지면 추가), 요청·응답 본문 컬럼(litellm 도 기본 꺼짐. 폐쇄망 감사에 본문이 필요하다고 정해지면 추가).
+**넣지 않을 것**: MCP·에이전트·벡터·프롬프트·워크플로 같은 부가 기능 테이블 약 50개, 삭제 사본 테이블(soft delete 로 대체), 일별 롤업(처음에는 `request_log` GROUP BY. 느려지면 추가), 요청·응답 본문 컬럼(litellm 도 기본 꺼짐. 폐쇄망 감사에 본문이 필요하다고 정해지면 추가).
 ### 8.1 테이블 (초안)
 
 | 테이블 | 소유 | 주요 컬럼 |
@@ -346,7 +346,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 1. **대시보드는 코드 수정 없이 그대로 쓴다**(사용자 결정). 서버 설정 `enabled_ui_pages_internal_users` 는 일반 사용자에게만 적용되고(`leftnav.tsx:142` 의 `!isAdmin` 조건) 관리자 메뉴는 그대로 보인다. 그래서 만들지 않는 기능의 엔드포인트는 **화면이 깨지지 않는 빈 응답**(빈 목록·기본값)으로 답한다. 화면은 `ui/litellm-dashboard/src/app/(dashboard)/` 폴더 기준이고, 아래 분류는 "동작을 보장할 화면"과 "빈 응답으로 두는 화면"이다(폴더 이름만 보고 나눈 것이라 각 화면의 실제 동작은 미확인)
    - **동작 보장**: `home`, `api-keys`, `teams`, `users`, `models-and-endpoints`, `model-hub-table`, `usage`, `logs`, `playground`, `change-password`, `ui-theme`, `api-reference`
    - **빈 응답(확정)**: `guardrails`, `guardrails-monitor`, `policies`, `tool-policies`, `workflows` (사용자 결정. 가드레일 엔진과 정책 기능은 1차에 만들지 않는다)
-   - **빈 응답(제안, 미확정)**: `mcp-servers`, `agents`, `skills`, `memory`, `prompts`, `organizations`, `projects`, `tag-management`, `vector-stores`, `lens`, `cost-optimization`, `logging-and-alerts`(외부 SaaS 콜백), `telemetry`(폐쇄망 원칙상 반드시 숨김)
+   - **빈 응답(제안, 미확정)**: `mcp-servers`, `agents`, `skills`, `memory`, `prompts`, `organizations`(조직은 구현 전까지), `vector-stores`, `lens`, `cost-optimization`, `logging-and-alerts`(외부 SaaS 콜백), `telemetry`(폐쇄망 원칙상 반드시 숨김)
    - **쓰는지 확인 필요(그때까지 빈 응답, M5 후보)**: `budgets`(별도 예산 객체 필요), `cost-tracking`, `router-settings`, `caching`, `admin-panel`, `access-groups`, `model-insights`, `old-usage`, `transform-request`, `search-tools`
 2. 동작을 보장할 화면이 부르는 엔드포인트만 구현한다. 나머지 화면의 엔드포인트는 대시보드가 부르는 경로 전부를 빈 응답으로 받아 준다(목록은 대시보드 소스에서 뽑는다). 모양의 근거는 대시보드의 타입 클라이언트(`ui/litellm-dashboard/src/lib/http/schema.d.ts`, OpenAPI 에서 생성)와 litellm OpenAPI 스냅샷(`litellm/proxy/_lazy_openapi_snapshot.json`)이다. 이 둘로 **계약 테스트**를 만든다(요청·응답 필드가 같은지)
 3. 대시보드를 새 게이트웨이에 실제로 붙여 화면마다 브라우저로 확인한다(M3·M4 종료 기준)
@@ -472,7 +472,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 
 **빈 응답 → 실제 기능 교체를 쉽게 하는 구조**: 관리 API 의 경로마다 핸들러를 한 곳(`admin/routes`)에 등록하고, 빈 응답용 핸들러(`StubHandler`)를 실제 핸들러로 바꾸는 것만으로 교체되게 한다. 경로·요청·응답 모양은 대시보드가 이미 기대하는 것이라 바뀌지 않는다. 기능이 늘어도 UI 는 손대지 않는다.
 
-**제외**(조사 A·F·B): files·batches·fine_tuning·assistants·vector_stores·realtime·A2A·MCP(약 5.4만 줄)·프로바이더 패스스루(약 1.8만 줄, 기본 업스트림이 외부 주소)·자동 라우터(약 1.2만 줄)·외부 SaaS 콜백 약 58종·외부 SaaS 가드레일 약 40종·조직·SCIM·알림·청구 내보내기.
+**제외**(조사 A·F·B): files·batches·fine_tuning·assistants·vector_stores·realtime·A2A·MCP(약 5.4만 줄)·프로바이더 패스스루(약 1.8만 줄, 기본 업스트림이 외부 주소)·자동 라우터(약 1.2만 줄)·외부 SaaS 콜백 약 58종·외부 SaaS 가드레일 약 40종·SCIM·알림·청구 내보내기. (조직·프로젝트·고객·태그·프로바이더 예산은 2026-11-27~28 에 제외에서 뺐다. 조직은 구현 전이다.)
 가장 큰 구현 덩어리는 스트리밍 안정성(끊김 과금, 첫 청크 버퍼링, keepalive, 취소). litellm 은 이 로직이 `common_request_processing.py` 4830줄 안에 있다.
 
 ## 13. 아직 정하지 못한 것
