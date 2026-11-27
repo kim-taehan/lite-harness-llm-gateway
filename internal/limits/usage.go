@@ -118,6 +118,7 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 		q := u.db.Q(ctx)
 		rows := make([][]any, len(batch))
 		spend := map[[2]string]float64{}
+		modelSpend := map[[3]string]float64{}
 		for i, e := range batch {
 			source := "provider"
 			if e.Estimated {
@@ -130,6 +131,7 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 					ScopeTeamMember: MemberTarget(e.TeamID, e.UserID)} {
 					if id != "" {
 						spend[[2]string{string(scope), id}] += e.Cost
+						modelSpend[[3]string{string(scope), id, e.Model}] += e.Cost
 					}
 				}
 			}
@@ -149,6 +151,14 @@ func (u *UsageRecorder) write(ctx context.Context, batch []UsageEvent) error {
 				ON CONFLICT (scope, target_id) DO UPDATE SET spend = limit_policy.spend + EXCLUDED.spend, updated_at = now()`,
 				target[0], target[1], amount); err != nil {
 				return fmt.Errorf("spend: %w", err)
+			}
+		}
+		// 모델별 한도가 이미 있는 (대상, 모델)에만 더한다. 없으면 갱신되는 행이 없다
+		for target, amount := range modelSpend {
+			if _, err := q.Exec(ctx, `
+				UPDATE limit_model_policy SET spend = spend + $4, updated_at = now() WHERE scope = $1 AND target_id = $2 AND model = $3`,
+				target[0], target[1], target[2], amount); err != nil {
+				return fmt.Errorf("모델별 spend: %w", err)
 			}
 		}
 		return nil

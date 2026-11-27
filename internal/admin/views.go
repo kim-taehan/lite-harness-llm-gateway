@@ -13,6 +13,14 @@ import (
 
 type row = map[string]any
 
+// modelBudgetsView 는 응답의 model_max_budget 이다. 모델별 한도가 없으면 litellm 처럼 {} 다
+func modelBudgetsView(budgets map[string]limits.ModelBudget) map[string]limits.ModelBudget {
+	if budgets == nil {
+		return map[string]limits.ModelBudget{}
+	}
+	return budgets
+}
+
 // teamRow 는 LiteLLM_TeamTable(litellm/models/team.py) 과 같은 필드다
 func teamRow(t auth.Team, members []auth.TeamMember, p limits.Policy) row {
 	memberRows := make([]row, 0, len(members))
@@ -45,7 +53,7 @@ func teamRow(t auth.Team, members []auth.TeamMember, p limits.Policy) row {
 		"budget_reset_at":             utc(p.BudgetResetAt),
 		"model_id":                    nil,
 		"model_spend":                 map[string]any{},
-		"model_max_budget":            map[string]any{},
+		"model_max_budget":            modelBudgetsView(p.ModelBudgets),
 		"policies":                    nil,
 		"allow_team_guardrail_config": false,
 		"litellm_model_table":         nil,
@@ -119,7 +127,7 @@ func userRow(u auth.User, teamIDs []string, p limits.Policy) row {
 		"allowed_cache_controls":   []string{},
 		"policies":                 []string{},
 		"model_spend":              map[string]any{},
-		"model_max_budget":         map[string]any{},
+		"model_max_budget":         modelBudgetsView(p.ModelBudgets),
 		"created_at":               u.CreatedAt.UTC(),
 		"updated_at":               u.UpdatedAt.UTC(),
 		"organization_memberships": nil,

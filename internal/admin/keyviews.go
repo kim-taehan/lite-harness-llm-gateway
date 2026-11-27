@@ -37,7 +37,7 @@ func keyRow(k auth.Key, p limits.Policy) row {
 		"allowed_cache_controls": []string{},
 		"allowed_routes":         nonNil(k.AllowedRoutes),
 		"model_spend":            map[string]any{},
-		"model_max_budget":       map[string]any{},
+		"model_max_budget":       modelBudgetsView(p.ModelBudgets),
 		"budget_id":              nil,
 		"organization_id":        nil,
 		"project_id":             nil,

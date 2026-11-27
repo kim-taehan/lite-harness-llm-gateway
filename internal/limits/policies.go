@@ -42,11 +42,13 @@ type Policy struct {
 	MaxParallelRequests *int64
 	BudgetDuration      *string
 	BudgetResetAt       *time.Time
+	// ModelBudgets 는 모델별 한도다(litellm model_max_budget). Find 가 채우고 Gate 는 요청의 모델 하나만 따로 읽는다
+	ModelBudgets map[string]ModelBudget
 }
 
 // HasLimits 는 정해 둔 한도(예산·TPM·TPD·RPM·병렬·기간)가 하나라도 있는지다. 사용액만 있으면 아니다
 func (p Policy) HasLimits() bool {
-	return p.MaxBudget != nil || p.SoftBudget != nil || p.TPMLimit != nil || p.TPDLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil || p.BudgetDuration != nil
+	return p.MaxBudget != nil || p.SoftBudget != nil || p.TPMLimit != nil || p.TPDLimit != nil || p.RPMLimit != nil || p.MaxParallelRequests != nil || p.BudgetDuration != nil || len(p.ModelBudgets) > 0
 }
 
 // Patch 는 바꿀 한도 필드다. 보내지 않은 필드는 그대로 둔다
@@ -58,6 +60,8 @@ type Patch struct {
 	RPMLimit            core.Change[int64]
 	MaxParallelRequests core.Change[int64]
 	BudgetDuration      core.Change[string]
+	// ModelBudgets 를 보내면 모델별 한도를 통째로 바꾼다. null 이나 {} 면 모두 지운다
+	ModelBudgets core.Change[map[string]ModelBudget]
 }
 
 // InvalidError 는 litellm 이 400 으로 거절하는 한도 값이다. Message 는 litellm 문구다
@@ -97,7 +101,21 @@ func (p *Policies) Find(ctx context.Context, scope Scope, ids []string) (map[str
 		}
 		result[id] = pol
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close() // 같은 연결로 다음 쿼리를 보내려면 먼저 닫는다
+	budgets, err := p.loadModelBudgets(ctx, scope, ids)
+	if err != nil {
+		return nil, err
+	}
+	for id, byModel := range budgets {
+		if pol, ok := result[id]; ok {
+			pol.ModelBudgets = byModel
+			result[id] = pol
+		}
+	}
+	return result, nil
 }
 
 // FindSubject 는 대상 종류마다 id 하나씩의 한도를 쿼리 한 번으로 읽는다(요청마다 도는 Gate 용). 한도를 정하지 않은 종류는 결과에 없다
@@ -176,6 +194,11 @@ func (p *Policies) Apply(ctx context.Context, scope Scope, id string, patch Patc
 	if err != nil {
 		return Policy{}, fmt.Errorf("한도 저장: %w", err)
 	}
+	if patch.ModelBudgets.Set {
+		if err := p.saveModelBudgets(ctx, scope, id, next.ModelBudgets); err != nil {
+			return Policy{}, err
+		}
+	}
 	return next, nil
 }
 
@@ -198,7 +221,10 @@ func (p *Policies) SetSpend(ctx context.Context, scope Scope, id string, value f
 
 // Retarget 은 대상 id 가 바뀔 때 한도·사용액을 옮긴다(키 재발급은 키 해시가 바뀐다)
 func (p *Policies) Retarget(ctx context.Context, scope Scope, from, to string) error {
-	_, err := p.db.Q(ctx).Exec(ctx, "UPDATE limit_policy SET target_id = $3 WHERE scope = $1 AND target_id = $2", scope, from, to)
+	if _, err := p.db.Q(ctx).Exec(ctx, "UPDATE limit_policy SET target_id = $3 WHERE scope = $1 AND target_id = $2", scope, from, to); err != nil {
+		return err
+	}
+	_, err := p.db.Q(ctx).Exec(ctx, "UPDATE limit_model_policy SET target_id = $3 WHERE scope = $1 AND target_id = $2", scope, from, to)
 	return err
 }
 
@@ -206,7 +232,10 @@ func (p *Policies) Delete(ctx context.Context, scope Scope, ids []string) error 
 	if len(ids) == 0 {
 		return nil
 	}
-	_, err := p.db.Q(ctx).Exec(ctx, "DELETE FROM limit_policy WHERE scope = $1 AND target_id = ANY($2)", scope, ids)
+	if _, err := p.db.Q(ctx).Exec(ctx, "DELETE FROM limit_policy WHERE scope = $1 AND target_id = ANY($2)", scope, ids); err != nil {
+		return err
+	}
+	_, err := p.db.Q(ctx).Exec(ctx, "DELETE FROM limit_model_policy WHERE scope = $1 AND target_id = ANY($2)", scope, ids)
 	return err
 }
 
@@ -218,6 +247,9 @@ func (p *Policies) merge(current Policy, patch Patch) Policy {
 	next.TPDLimit = patch.TPDLimit.Apply(current.TPDLimit)
 	next.RPMLimit = patch.RPMLimit.Apply(current.RPMLimit)
 	next.MaxParallelRequests = patch.MaxParallelRequests.Apply(current.MaxParallelRequests)
+	if patch.ModelBudgets.Set {
+		next.ModelBudgets = patch.ModelBudgets.Or(nil)
+	}
 	if patch.BudgetDuration.Set {
 		next.BudgetDuration = patch.BudgetDuration.Value
 		next.BudgetResetAt = nil
@@ -233,7 +265,7 @@ func (p *Policies) merge(current Policy, patch Patch) Policy {
 
 func (patch Patch) changes() bool {
 	return patch.MaxBudget.Set || patch.SoftBudget.Set || patch.TPMLimit.Set || patch.TPDLimit.Set || patch.RPMLimit.Set ||
-		patch.MaxParallelRequests.Set || patch.BudgetDuration.Set
+		patch.MaxParallelRequests.Set || patch.BudgetDuration.Set || patch.ModelBudgets.Set
 }
 
 func validate(p Policy) string {
@@ -253,7 +285,7 @@ func validate(p Policy) string {
 			return "Invalid budget_duration: " + *p.BudgetDuration
 		}
 	}
-	return ""
+	return validateModelBudgets(p.ModelBudgets)
 }
 
 // litellm 예산 주기 문자열("30s", "10m", "1h", "7d", "1w", "1mo")

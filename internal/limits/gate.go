@@ -27,6 +27,7 @@ type Subject struct {
 	KeyAlias string
 	TeamID   string
 	UserID   string
+	Model    string // 요청한 모델 이름. 모델별 한도(model_max_budget)를 이 이름으로 찾는다. 비면 모델별 한도는 보지 않는다
 }
 
 // Permit 은 통과한 요청의 슬롯이다. 응답이 끝나거나 끊기면 Release 한다(설계 4.2: defer)
@@ -36,7 +37,9 @@ type Permit struct {
 	subject Subject
 	limited map[Scope]bool // TPM 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
 	daily   map[Scope]bool // TPD 한도가 있는 대상(응답 뒤 토큰을 더할 곳)
-	headers map[string]string
+	// modelTPM 은 모델별 TPM 이 걸린 카운터 키다(응답 뒤 토큰을 더할 곳)
+	modelTPM []string
+	headers  map[string]string
 }
 
 // dailyWindow 는 하루 토큰 한도의 창이다. 윈도우가 에포크 기준으로 잘려 UTC 자정에 바뀐다(litellm 도 UTC 날짜 기준)
@@ -72,6 +75,9 @@ func (p *Permit) AddTokens(ctx context.Context, tokens int) {
 			p.gate.counters.Add(ctx, counterKey("tpd", scope, id), int64(tokens), dailyWindow)
 		}
 	}
+	for _, key := range p.modelTPM {
+		p.gate.counters.Add(ctx, key, int64(tokens), time.Minute)
+	}
 }
 
 func (s Subject) ids() map[Scope]string {
@@ -99,7 +105,18 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			return nil, budgetExceeded(scope, s, p)
 		}
 	}
-	if g.countersDown() && usesCounters(policies) {
+	var models map[Scope]modelState
+	if s.Model != "" {
+		if models, err = g.policies.findModelStates(ctx, ids, s.Model); err != nil {
+			return nil, err
+		}
+	}
+	for _, scope := range gatedScopes {
+		if m, ok := models[scope]; ok && m.MaxBudget != nil && m.Spend >= *m.MaxBudget {
+			return nil, modelBudgetExceeded(scope, s, m)
+		}
+	}
+	if g.countersDown() && (usesCounters(policies) || modelUsesCounters(models)) {
 		return nil, countersUnavailable()
 	}
 	permit := &Permit{gate: g, subject: s, limited: map[Scope]bool{}, daily: map[Scope]bool{}}
@@ -145,7 +162,56 @@ func (g *Gate) Admit(ctx context.Context, s Subject) (*Permit, error) {
 			permit.report(scope, "max_parallel_requests", *p.MaxParallelRequests, held)
 		}
 	}
+	for _, scope := range gatedScopes {
+		if m, ok := models[scope]; ok {
+			if err := g.admitModel(ctx, permit, scope, ids[scope], s.Model, m); err != nil {
+				permit.Release()
+				return nil, err
+			}
+		}
+	}
 	return permit, nil
+}
+
+// admitModel 은 대상이 이 모델에 건 RPM·TPM 을 검사한다. 카운터는 (대상, 모델) 단위이고 한도 값은 요청의 한도와 따로 센다
+func (g *Gate) admitModel(ctx context.Context, permit *Permit, scope Scope, id, model string, m modelState) error {
+	target := id + "|" + model
+	if m.TPMLimit != nil {
+		key := counterKey("mtpm", scope, target)
+		permit.modelTPM = append(permit.modelTPM, key)
+		if g.counters.Get(ctx, key, time.Minute) >= *m.TPMLimit {
+			return forModel(g.rateLimited(scope, id, "tokens", *m.TPMLimit), model)
+		}
+	}
+	if m.RPMLimit != nil {
+		if _, ok := g.counters.IncrementIfBelow(ctx, counterKey("mrpm", scope, target), 1, *m.RPMLimit, time.Minute); !ok {
+			return forModel(g.rateLimited(scope, id, "requests", *m.RPMLimit), model)
+		}
+	}
+	return nil
+}
+
+// forModel 은 429 문구에 어느 모델의 한도인지 덧붙인다
+func forModel(e core.ProxyError, model string) core.ProxyError {
+	e.Message += " Model: " + model
+	return e
+}
+
+func modelUsesCounters(models map[Scope]modelState) bool {
+	for _, m := range models {
+		if m.RPMLimit != nil || m.TPMLimit != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// modelBudgetExceeded 는 모델별 예산을 넘었을 때의 오류다. 상태 코드와 말머리는 대상 예산(budgetExceeded)과 같다.
+// 모델 예산의 정확한 litellm 문구는 확인하지 못해 모델 이름만 덧붙였다
+func modelBudgetExceeded(scope Scope, s Subject, m modelState) core.ProxyError {
+	return core.ProxyError{Status: http.StatusUnprocessableEntity, Type: "budget_exceeded", Param: nil,
+		Message: fmt.Sprintf("Budget has been exceeded! %s Model=%s Current cost: %s, Max budget: %s",
+			subjectLabel(scope, s), s.Model, formatFloat(m.Spend), formatFloat(*m.MaxBudget))}
 }
 
 // outageAware 는 장애를 알리는 카운터 저장소(Redis)다. 장애 때 거부하도록 정했으면 Unavailable 이 참이다
@@ -203,10 +269,13 @@ func (g *Gate) dailyTokensExceeded(scope Scope, used, limit int64) core.ProxyErr
 
 // budgetExceeded 는 litellm BudgetExceededError 다. 이 포크의 기본 상태 코드는 422 다(J 5.3)
 func budgetExceeded(scope Scope, s Subject, p Policy) core.ProxyError {
-	who := map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
-		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID}[scope]
 	return core.ProxyError{Status: http.StatusUnprocessableEntity, Type: "budget_exceeded", Param: nil,
-		Message: fmt.Sprintf("Budget has been exceeded! %s Current cost: %s, Max budget: %s", who, formatFloat(p.Spend), formatFloat(*p.MaxBudget))}
+		Message: fmt.Sprintf("Budget has been exceeded! %s Current cost: %s, Max budget: %s", subjectLabel(scope, s), formatFloat(p.Spend), formatFloat(*p.MaxBudget))}
+}
+
+func subjectLabel(scope Scope, s Subject) string {
+	return map[Scope]string{ScopeKey: "Key=" + orDefault(s.KeyAlias, "key"), ScopeTeam: "Team=" + s.TeamID, ScopeUser: "User=" + s.UserID,
+		ScopeTeamMember: "User=" + s.UserID + " in Team=" + s.TeamID}[scope]
 }
 
 func orDefault(s, def string) string {

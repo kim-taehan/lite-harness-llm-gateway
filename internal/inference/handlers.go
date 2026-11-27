@@ -82,7 +82,7 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 		return
 	}
 	// 배포를 고른 뒤 한도를 본다. 동시성 한도가 배포 단위라 어느 배포인지 알아야 하기 때문이다(설계 4.1)
-	permit, err := h.gate.Admit(r.Context(), limits.Subject{KeyToken: p.KeyToken, KeyAlias: p.KeyAlias, TeamID: p.TeamID, UserID: p.UserID})
+	permit, err := h.gate.Admit(r.Context(), limits.Subject{KeyToken: p.KeyToken, KeyAlias: p.KeyAlias, TeamID: p.TeamID, UserID: p.UserID, Model: model})
 	var rejected core.ProxyError
 	switch {
 	case errors.As(err, &rejected):

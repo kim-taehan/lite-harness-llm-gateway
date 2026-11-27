@@ -25,11 +25,13 @@ type limitFields struct {
 	RPMLimit            core.Change[int64]   `json:"rpm_limit"`
 	MaxParallelRequests core.Change[int64]   `json:"max_parallel_requests"`
 	BudgetDuration      core.Change[string]  `json:"budget_duration"`
+	// ModelMaxBudget 는 모델별 예산·RPM·TPM 이다. litellm 에서는 유료 기능이지만 우리는 막지 않는다
+	ModelMaxBudget core.Change[map[string]limits.ModelBudget] `json:"model_max_budget"`
 }
 
 func (l limitFields) patch() limits.Patch {
 	return limits.Patch{MaxBudget: l.MaxBudget, SoftBudget: l.SoftBudget, TPMLimit: l.TPMLimit, TPDLimit: l.TPDLimit, RPMLimit: l.RPMLimit,
-		MaxParallelRequests: l.MaxParallelRequests, BudgetDuration: l.BudgetDuration}
+		MaxParallelRequests: l.MaxParallelRequests, BudgetDuration: l.BudgetDuration, ModelBudgets: l.ModelMaxBudget}
 }
 
 type memberJSON struct {

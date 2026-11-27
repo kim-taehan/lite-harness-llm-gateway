@@ -32,7 +32,9 @@ func (p *Policies) ResetDueBudgets(ctx context.Context) (int, error) {
 			}
 			count++
 		}
-		return nil
+		models, err := p.resetDueModelBudgets(ctx, now)
+		count += models
+		return err
 	})
 	return count, err
 }
