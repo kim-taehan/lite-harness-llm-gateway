@@ -375,9 +375,6 @@ func stubs() []stub {
 		// admin-panel: values 를 옵셔널 없이 읽는 곳이 있어 values 를 꼭 준다
 		stubOK("GET /get/sso_settings", `{"values":{},"field_schema":{}}`),
 		stubUnsupported("SSO settings", "PATCH /update/sso_settings"),
-		stubOK("GET /get/allowed_ips", `{"data":[]}`),
-		stubUnsupported("IP allow list", "POST /add/allowed_ip"),
-		stubUnsupported("IP allow list", "POST /delete/allowed_ip"),
 		stubOK("GET /config_overrides/hashicorp_vault", `{"values":{},"field_schema":{"properties":{}}}`),
 		stubUnsupported("HashiCorp Vault", "POST /config_overrides/hashicorp_vault"),
 		stubUnsupported("HashiCorp Vault", "DELETE /config_overrides/hashicorp_vault"),

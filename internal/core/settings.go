@@ -28,6 +28,26 @@ func (s *Settings) Get(ctx context.Context, name string) (map[string]any, error)
 	return value, err
 }
 
+// Update 는 값을 읽고 change 로 고쳐 저장하는 일을 한 트랜잭션으로 한다. 행을 잠가서 두 관리자가 동시에 목록을 고쳐도
+// 한쪽 변경이 사라지지 않는다. change 가 오류를 돌려주면 아무것도 저장하지 않는다
+func (s *Settings) Update(ctx context.Context, name string, change func(current map[string]any) (map[string]any, error)) error {
+	return s.db.InTx(ctx, func(ctx context.Context) error {
+		if _, err := s.db.Q(ctx).Exec(ctx, "INSERT INTO setting (name, value) VALUES ($1, '{}') ON CONFLICT (name) DO NOTHING", name); err != nil {
+			return err
+		}
+		var current map[string]any
+		if err := s.db.Q(ctx).QueryRow(ctx, "SELECT value FROM setting WHERE name = $1 FOR UPDATE", name).Scan(&current); err != nil {
+			return err
+		}
+		updated, err := change(current)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.Q(ctx).Exec(ctx, "UPDATE setting SET value = $2, updated_at = now() WHERE name = $1", name, updated)
+		return err
+	})
+}
+
 // Merge 는 주어진 키만 덮어쓰고 합친 결과를 돌려준다
 func (s *Settings) Merge(ctx context.Context, name string, values map[string]any) (map[string]any, error) {
 	var merged map[string]any

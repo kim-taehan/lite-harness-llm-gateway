@@ -22,6 +22,7 @@ type Handlers struct {
 	deployments *inference.Deployments
 	usage       *limits.UsageQuery
 	settings    *core.Settings
+	ipAllow     *auth.IPAllowlist
 	rows        rows
 	audit       *auditLog
 	now         func() time.Time
@@ -38,13 +39,14 @@ type Deps struct {
 	Deployments *inference.Deployments
 	Usage       *limits.UsageQuery
 	Settings    *core.Settings
+	IPAllow     *auth.IPAllowlist
 	Now         func() time.Time
 	Logger      *slog.Logger
 }
 
 func NewHandlers(d Deps) *Handlers {
 	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, deployments: d.Deployments, usage: d.Usage,
-		settings: d.Settings, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
+		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
 }
 
 // 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.
@@ -151,6 +153,9 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPatch, "/update/ui_settings", adminOnly, h.updateSettings(uiSettingsForm)),
 		route(http.MethodGet, "/get/ui_theme_settings", core.Public(), h.getSettings(uiThemeForm)),
 		route(http.MethodPatch, "/update/ui_theme_settings", adminOnly, h.updateSettings(uiThemeForm)),
+		route(http.MethodGet, "/get/allowed_ips", adminOnly, h.getAllowedIPs),
+		route(http.MethodPost, "/add/allowed_ip", adminOnly, h.audited("updated", auditConfigTable, configTarget, h.addAllowedIP)),
+		route(http.MethodPost, "/delete/allowed_ip", adminOnly, h.audited("deleted", auditConfigTable, configTarget, h.deleteAllowedIP)),
 		route(http.MethodGet, "/get/default_team_settings", adminOnly, h.getSettings(defaultTeamForm)),
 		route(http.MethodPatch, "/update/default_team_settings", adminOnly, h.updateSettings(defaultTeamForm)),
 		route(http.MethodGet, "/get/internal_user_settings", adminOnly, h.getSettings(internalUserForm)),

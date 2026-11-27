@@ -250,6 +250,12 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
   - 저장: 표준 라이브러리 PBKDF2-SHA256(소금·반복 횟수 포함 문자열). 로그인 시도 제한. 외부 유출 비밀번호 검사(pwnedpasswords)는 하지 않는다(폐쇄망)
   - 로그인 페이지 흐름의 세부(SSO 를 켰을 때 litellm 의 `/sso/key/generate` 동작과의 관계)는 `docs/litellm-inventory/K_sso_cli_contract.md` 를 보고 정한다
   - **어떤 로그인 방식을 둘지는 운영 설정으로 고른다(사용자 결정 2026-11-27. 2026-11-21 의 "빌드 시점에 고정"을 바꿨다).** 환경 변수 `GATEWAY_LOGIN_METHODS` 가 `password`(litellm 자체 로그인: 아이디·비밀번호), `sso`(Keycloak), `sso,password`(둘 다) 중 하나다. 비어 있으면 비밀번호는 늘 켜고 SSO 는 `GATEWAY_SSO_ISSUER` 가 있을 때만 켠다(이전 기본 빌드와 같은 결과). 프로세스를 띄울 때 정해지고 관리 API 로는 바꿀 수 없다. 고르지 않은 방식은 라우트를 등록하지 않는다(404, 로그인 페이지에도 없음). 값이 틀리거나 `sso` 를 골랐는데 Keycloak 설정(`GATEWAY_SSO_ISSUER`·`GATEWAY_SSO_CLIENT_ID`)이 없으면 기동하지 않고, 기동 로그에 로그인 방식을 남긴다. 빌드는 하나라 고객사마다 따로 빌드하지 않는다. 대신 환경 변수 실수로 비밀번호 로그인이 켜질 수 있으므로 SSO 만 쓰는 곳은 `sso` 를 명시한다. Keycloak 주소·client id 같은 연결 정보는 고객사 환경마다 달라 환경 변수로 받는다
+- **전역 IP 허용 목록(사용자 결정 2026-11-27)**: 대시보드(`/get/allowed_ips`·`/add/allowed_ip`·`/delete/allowed_ip`)에서 DB(`setting` 의 `general_settings.allowed_ips`)로 관리한다. litellm 은 설정 파일 항목이고 유료 기능이다. 목록이 비어 있으면 모두 허용하고, 있으면 목록 밖 IP 의 요청을 403(`Access forbidden: IP address … not allowed.`)으로 막는다
+  - **litellm 과 다르게 한 점**: IP 뿐 아니라 **CIDR** 도 받고(`10.1.0.5/16` 은 `10.1.0.0/16` 으로 저장해 같은 대역이 두 번 들어가지 않게 한다), 잘못된 IP 는 400 으로 거절하고, 관리 API 는 **관리자만** 부른다(목록에 내부 대역이 들어 있다). 변경은 감사 로그에 남긴다(`LiteLLM_Config`/`general_settings`)
+  - **적용 범위**: 로그인·SSO 콜백 같은 공개 라우트와 `/metrics` 도 막는다(Prometheus 수집기 IP 는 목록에 넣는다). `/health/liveness`·`/health/liveliness`·`/health/readiness` 만 항상 연다(앞단 프로브)
+  - **클라이언트 IP**: 연결 주소를 쓰고, 연결한 상대가 `GATEWAY_TRUSTED_PROXIES` 에 있을 때만 `X-Forwarded-For` 의 오른쪽부터 신뢰 대역을 건너뛴 첫 주소를 쓴다(로그인 시도 제한과 같은 규칙)
+  - **잠금 방지**: 같은 서버에서 앞단 헤더(`X-Forwarded-For`·`X-Real-IP`·`Forwarded`) 없이 직접 연결한 로컬(127.0.0.0/8, ::1) 요청은 목록과 무관하게 허용한다. 앞단 헤더가 하나라도 있으면 직접 호출이 아니다(같은 서버의 nginx 를 거친 요청은 연결 주소가 늘 로컬이라, 이 예외를 적용하면 모든 클라이언트가 우회한다). 그래도 잠겼으면 `GATEWAY_ALLOWED_IPS_DISABLE=true` 로 다시 띄워 목록을 무시하고(기동 로그에 경고) 고친 뒤 지운다
+  - **캐시와 실패**: 목록은 30초 캐시한다(이 인스턴스가 바꾼 것은 바로, 다른 인스턴스가 바꾼 것은 30초 안에 반영). 목록을 읽지 못하면 마지막으로 읽은 목록을 계속 쓰고, **한 번도 읽지 못했으면 요청을 503 으로 거절한다**(읽지 못해서 허용 목록이 풀리면 안 된다). 두 관리자가 동시에 고쳐도 한쪽이 사라지지 않게 행을 잠가 읽고-고치고-쓴다
 - **역할**: litellm 역할 문자열을 그대로 쓴다(대시보드가 이 값으로 메뉴를 나눈다). `proxy_admin`, `proxy_admin_viewer`, `internal_user`, `internal_user_viewer`, `team`. 조직·고객 계층(`org_admin`, `customer`)은 만들지 않는다
 - **라우트 권한은 허용 목록**(역할별로 허용 경로를 적는다). litellm 의 viewer 쓰기 차단은 차단 목록이라 새 API 를 빠뜨리면 뚫린다
 - 세션 쿠키는 litellm 과 같이 `token` 쿠키로 둔다. 대시보드가 `document.cookie` 로 읽으므로 HttpOnly 로 할 수 없다(조사 B). SameSite=Lax
@@ -406,6 +412,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_TRUSTED_PROXIES` | 없음 | `X-Forwarded-For` 를 믿을 앞단(리버스 프록시)의 IP·CIDR(쉼표). 앞단 뒤에서는 모든 요청의 출발지가 앞단 주소라 이 값 없이는 로그인 시도 제한이 사용자 구분 없이 전체에 걸린다. 직접 연결한 상대가 이 목록에 있을 때만 헤더를 읽고, 오른쪽부터 신뢰 대역을 건너뛴 첫 주소를 쓴다. 비면 헤더를 쓰지 않는다(litellm 의 `use_x_forwarded_for` 와 같은 뜻) |
 | `GATEWAY_DATABASE_URL` | 없음(필수, M1 DB 부터) | PostgreSQL 연결 문자열 |
 | `GATEWAY_MASTER_KEY` | 없음(필수) | 없으면 기동 거부. 환경 변수·시크릿으로만 |
+| `GATEWAY_ALLOWED_IPS_DISABLE` | 없음 | `true` 면 IP 허용 목록(6장)을 무시한다. 목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제이며 기동 로그에 경고를 남긴다. 목록을 고친 뒤 지우고 다시 띄운다 |
 | `GATEWAY_LOGIN_METHODS` | 비면 `password`, `GATEWAY_SSO_ISSUER` 가 있으면 `sso,password` | `password`(litellm 자체 로그인), `sso`(Keycloak), `sso,password`. 틀린 값이면 기동 거부. 6장 |
 | `GATEWAY_COUNTER_STORE` | `memory` | `memory`(인스턴스 1개) 또는 `redis`(여러 대). 틀린 값이면 기동 거부 |
 | `GATEWAY_REDIS_URL` | 없음 | `counter-store=redis` 일 때 필수(`redis://[:비밀번호@]호스트:6379/0`, TLS 는 `rediss://`). 기동 때 연결을 확인하고 닿지 않으면 기동하지 않는다. 운영 중 장애는 메모리 카운터로 이어서 처리한다(연속 3번 실패하면 5초간 Redis 를 건너뜀) |

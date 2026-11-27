@@ -17,12 +17,13 @@ const testPeerAddr = "192.0.2.1"
 // gatewayBehindProxy 는 GATEWAY_TRUSTED_PROXIES 로 앞단을 신뢰하도록 설정한 게이트웨이다
 func gatewayBehindProxy(t *testing.T, trusted string) http.Handler {
 	t.Helper()
-	cfg, err := LoadConfig(func(name string) string {
-		if name == "GATEWAY_TRUSTED_PROXIES" {
-			return trusted
-		}
-		return testEnv(name)
-	})
+	return gatewayWithEnv(t, map[string]string{"GATEWAY_TRUSTED_PROXIES": trusted})
+}
+
+// gatewayWithEnv 는 시험용 기본 환경에 환경 변수를 더해 조립한 게이트웨이다
+func gatewayWithEnv(t *testing.T, extra map[string]string) http.Handler {
+	t.Helper()
+	cfg, err := LoadConfig(envWith(extra))
 	if err != nil {
 		t.Fatal(err)
 	}

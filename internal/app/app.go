@@ -46,6 +46,8 @@ type Config struct {
 	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
 	// GATEWAY_TRUSTED_PROXIES: X-Forwarded-For 를 믿을 앞단 주소. 비면 쓰지 않는다
 	TrustedProxies auth.TrustedProxies
+	// GATEWAY_ALLOWED_IPS_DISABLE=true: IP 허용 목록을 무시한다(목록에서 자기 IP 를 빼고 저장해 잠겼을 때의 비상 해제)
+	AllowedIPsDisabled bool
 }
 
 // ErrNoDatabaseURL 은 DB 주소가 없을 때다. 신원·한도의 진실 원천이 PostgreSQL 이라 없이는 기동하지 않는다
@@ -85,7 +87,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return Config{Listen: listen, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
-		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL}, nil
+		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL,
+		AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
 }
 
 // loadLoginMethods 는 GATEWAY_LOGIN_METHODS(password, sso, sso,password)를 읽는다. password 는 litellm 자체 로그인(아이디·비밀번호),
@@ -125,6 +128,7 @@ const keyCacheTTL = 60 * time.Second
 // modules 는 조립한 모듈이다. 한 번 만들어 권한 검사와 라우트가 함께 쓴다
 type modules struct {
 	authenticator *auth.Authenticator
+	ipAllow       *auth.IPAllowlist // 모든 요청 앞에서 목록 밖 IP 를 막고, 관리 API 가 같은 인스턴스로 목록을 고친다
 	routes        []core.Route
 }
 
@@ -186,15 +190,17 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	}
 	deployments := inference.NewDeployments(db, cfg.MasterKey.UpstreamKeyBox())
 	settings := core.NewSettings(db)
+	ipAllow := auth.NewIPAllowlist(settings, cfg.TrustedProxies, time.Now, cfg.AllowedIPsDisabled, logger)
 	return modules{
 		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
+		ipAllow:       ipAllow,
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(p.lifecycle, db),
 			p.login.Routes(),
 			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Policies: policies, Deployments: deployments,
-				Usage: limits.NewUsageQuery(db), Settings: settings, Now: time.Now, Logger: logger}).Routes(),
+				Usage: limits.NewUsageQuery(db), Settings: settings, IPAllow: ipAllow, Now: time.Now, Logger: logger}).Routes(),
 		),
 	}
 }
@@ -236,7 +242,8 @@ func buildHandler(cfg Config, p parts) http.Handler {
 	}
 	// 선언되지 않은 경로는 litellm(FastAPI) 기본 404 와 같은 본문으로 답한다
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { core.WriteRouteNotFound(w) })
-	return withCORS(cfg.CORS, metrics.instrument(mux))
+	// 허용 목록은 지표 안쪽이라 막힌 요청(403)도 센다
+	return withCORS(cfg.CORS, metrics.instrument(m.ipAllow.Middleware(mux)))
 }
 
 // Run 은 서버를 띄우고 종료 신호를 받으면 정상 종료한다. 종료 코드를 돌려준다
@@ -303,6 +310,9 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String())
+	if cfg.AllowedIPsDisabled {
+		logger.Warn("IP 허용 목록이 비상 해제돼 있다(GATEWAY_ALLOWED_IPS_DISABLE). 목록을 고친 뒤 이 설정을 지우고 다시 띄운다")
+	}
 
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
