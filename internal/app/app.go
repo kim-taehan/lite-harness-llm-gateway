@@ -190,7 +190,7 @@ func newIdentity(db *core.DB) identity {
 // newLogin 은 설정한 로그인 방식으로 로그인을 만든다. SSO 를 골랐으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
 	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
-		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Events: admin.NewAuthAudit(id.db, time.Now, logger), Now: time.Now, Logger: logger})
+		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Events: admin.NewAuthAudit(id.db, time.Now, cfg.MasterKey.AuditChainKey(), logger), Now: time.Now, Logger: logger})
 }
 
 // parts 는 조립에 필요한, 이미 만들어 둔 부품이다
@@ -235,7 +235,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	settings := core.NewSettings(db)
 	ipAllow := auth.NewIPAllowlist(settings, cfg.TrustedProxies, time.Now, cfg.AllowedIPsDisabled, logger)
 	authenticator := auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now)
-	authenticator.RecordDenials(admin.NewAuthAudit(db, time.Now, logger), cfg.TrustedProxies)
+	authenticator.RecordDenials(admin.NewAuthAudit(db, time.Now, cfg.MasterKey.AuditChainKey(), logger), cfg.TrustedProxies)
 	return modules{
 		authenticator: authenticator,
 		ipAllow:       ipAllow,
@@ -245,7 +245,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 			p.login.Routes(),
 			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), time.Now, logger).Routes(),
 			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Projects: auth.NewProjects(db, cache), Organizations: auth.NewOrganizations(db, cache), Policies: policies, Deployments: deployments,
-				Usage: limits.NewUsageQuery(db), Settings: settings, IPAllow: ipAllow, Now: time.Now, Logger: logger}).Routes(),
+				Usage: limits.NewUsageQuery(db), Settings: settings, IPAllow: ipAllow, AuditChainKey: cfg.MasterKey.AuditChainKey(), Now: time.Now, Logger: logger}).Routes(),
 		),
 	}
 }
@@ -338,7 +338,9 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	jobs.Go(func() { limits.NewPolicies(db, time.Now).RunBudgetResets(background, logger) })
 	jobs.Go(func() { limits.NewLogRetention(db, time.Now, requestLogRetention).Run(background, logger) })
 	if cfg.AuditRetention > 0 {
-		jobs.Go(func() { admin.NewAuditRetention(db, time.Now, cfg.AuditRetention).Run(background, logger) })
+		jobs.Go(func() {
+			admin.NewAuditRetention(db, time.Now, cfg.MasterKey.AuditChainKey(), cfg.AuditRetention).Run(background, logger)
+		})
 	} else {
 		logger.Warn("감사 기록을 영구 보관한다(GATEWAY_AUDIT_RETENTION_DAYS=0). 테이블이 계속 커진다")
 	}

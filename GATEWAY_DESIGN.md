@@ -326,7 +326,7 @@ type CounterStore interface {
 | `limit_policy` | limits | `scope`(`key`·`team`), `target_id`, `max_budget`, `spend`, `tpm_limit`, `rpm_limit`, `max_parallel`, `budget_duration`, `budget_reset_at`, `updated_at`, PK(scope, target_id) |
 | `model_deployment` | inference | `id`, `model_name`(클라이언트가 부르는 이름, 그룹), `provider`, `base_url`, `upstream_model`, `api_key_encrypted`, `weight`, `order`, `max_parallel`, `input_cost_per_token`, `output_cost_per_token`, `active`, `created_at`, `updated_at` |
 | `request_log` | limits | `request_id`, `created_at`, `key_id`, `user_id`, `team_id`, `model`, `deployment_id`, `prompt_tokens`, `completion_tokens`, `usage_source`(`provider`·`estimate`), `cost`, `status`(`success`·`error`·`cancelled`), `http_status`, `error_code`, `latency_ms`, `ttft_ms` |
-| `audit_log` | admin | `id`, `updated_at`, `changed_by`, `changed_by_api_key`, `action`, `table_name`, `object_id`, `before_value`, `updated_values`(jsonb, 비밀 값 제외). litellm LiteLLM_AuditLog 와 같은 모양이라 대시보드 감사 화면이 그대로 읽는다 |
+| `audit_log` | admin | `id`, `updated_at`, `changed_by`, `changed_by_api_key`, `action`, `table_name`, `object_id`, `before_value`, `updated_values`(jsonb, 비밀 값 제외). litellm LiteLLM_AuditLog 와 같은 모양이라 대시보드 감사 화면이 그대로 읽는다. 변조 방지로 `seq`·`prev_hash`·`row_hash`(마스터 키 파생 키의 HMAC 해시 체인, advisory lock 으로 한 줄씩 잇는다)를 더했고 `GET /audit/verify` 가 확인한다 |
 
 - 다른 모듈의 id 를 가리키는 컬럼(`request_log.key_id`, `limit_policy.target_id` 등)에는 외래 키를 걸지 않는다. 모듈 경계를 넘는 제약이고, 삭제는 soft delete 라 고아 행이 생기지 않는다. 같은 모듈 안(`api_key.team_id → team`)에는 건다
 - `request_log` 인덱스: (`created_at`), (`key_id`, `created_at`), (`team_id`, `created_at`), (`user_id`, `created_at`). 파티셔닝은 보관 기간 삭제가 느려지면 월 단위로 추가한다

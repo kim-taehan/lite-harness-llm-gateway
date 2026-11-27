@@ -20,6 +20,12 @@ type SecretBox struct {
 
 // UpstreamKeyBox 는 업스트림 키(model_deployment.api_key_encrypted)용 상자다.
 // 키를 마스터 키에서 파생하므로 마스터 키를 바꾸면 저장된 업스트림 키는 풀 수 없다. 그때는 모델의 키를 다시 넣는다
+// purposeAuditChainHMAC 은 감사 기록 해시 체인의 HMAC 키 용도다
+const purposeAuditChainHMAC = "gateway/audit-chain/hmac-sha256"
+
+// AuditChainKey 는 감사 기록 해시 체인을 만들고 검증하는 키다. 마스터 키를 바꾸면 이전 기록은 검증되지 않는다(감사 화면은 그대로 읽힌다)
+func (k MasterKey) AuditChainKey() []byte { return k.derive(purposeAuditChainHMAC) }
+
 func (k MasterKey) UpstreamKeyBox() *SecretBox {
 	block, err := aes.NewCipher(k.derive(purposeUpstreamKeyAES))
 	if err != nil {

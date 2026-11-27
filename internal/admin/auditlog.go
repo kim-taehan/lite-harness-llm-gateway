@@ -224,8 +224,9 @@ func auditStrings(value any) []string {
 
 // auditLog 는 audit_log 테이블이다(admin 소유)
 type auditLog struct {
-	db  *core.DB
-	now func() time.Time
+	db       *core.DB
+	now      func() time.Time
+	chainKey []byte // 해시 체인의 HMAC 키(마스터 키에서 파생, auditchain.go)
 }
 
 func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, objectID string, before any, values map[string]any) error {
@@ -241,8 +242,8 @@ type authAudit struct {
 }
 
 // NewAuthAudit 는 auth 의 사건을 감사 기록(audit_log)에 남기는 EventSink 다. 조립 지점이 로그인과 라우트 권한 검사에 넣는다
-func NewAuthAudit(db *core.DB, now func() time.Time, logger *slog.Logger) auth.EventSink {
-	return authAudit{log: &auditLog{db: db, now: now}, logger: logger, denials: newDeniedThrottle(now)}
+func NewAuthAudit(db *core.DB, now func() time.Time, chainKey []byte, logger *slog.Logger) auth.EventSink {
+	return authAudit{log: &auditLog{db: db, now: now, chainKey: chainKey}, logger: logger, denials: newDeniedThrottle(now)}
 }
 
 func (a authAudit) Record(ctx context.Context, e auth.Event) {
@@ -272,11 +273,7 @@ func (a *auditLog) recordAs(ctx context.Context, changedBy, keyToken, action, ta
 		}
 		encodedValues = string(data)
 	}
-	_, err := a.db.Q(ctx).Exec(ctx, `
-		INSERT INTO audit_log (id, updated_at, changed_by, changed_by_api_key, action, table_name, object_id, before_value, updated_values)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)`,
-		core.NewUUID(), a.now().UTC(), changedBy, keyToken, action, table, objectID, encodedBefore, encodedValues)
-	return err
+	return a.appendChained(ctx, changedBy, keyToken, action, table, objectID, encodedBefore, encodedValues)
 }
 
 // auditFilter 는 GET /audit 의 조건이다. nil 은 거르지 않는다

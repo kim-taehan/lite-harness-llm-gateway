@@ -22,8 +22,8 @@ type AuditRetention struct {
 }
 
 // NewAuditRetention 의 keep 은 0 보다 커야 한다. 영구 보관(0)이면 이 job 을 만들지 않는다
-func NewAuditRetention(db *core.DB, now func() time.Time, keep time.Duration) *AuditRetention {
-	return &AuditRetention{log: &auditLog{db: db, now: now}, keep: keep}
+func NewAuditRetention(db *core.DB, now func() time.Time, chainKey []byte, keep time.Duration) *AuditRetention {
+	return &AuditRetention{log: &auditLog{db: db, now: now, chainKey: chainKey}, keep: keep}
 }
 
 // Purge 는 기준 시각(지금 − 보관 기간)보다 오래된 기록을 지우고 지운 줄 수를 돌려준다. 여러 대가 같이 돌아도 같은 조건의 삭제다.

@@ -14,7 +14,7 @@ func TestAuditRetention_PurgesOnlyOlderRecordsInBatchesAndLeavesATrace(t *testin
 	db, pool := dbtest.Open(t)
 	ctx := t.Context()
 	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
-	retention := admin.NewAuditRetention(db, func() time.Time { return now }, 365*24*time.Hour)
+	retention := admin.NewAuditRetention(db, func() time.Time { return now }, []byte("test-chain-key"), 365*24*time.Hour)
 
 	insert := func(id string, at time.Time) {
 		t.Helper()

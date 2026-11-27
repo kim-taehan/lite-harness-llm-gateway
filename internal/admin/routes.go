@@ -49,13 +49,15 @@ type Deps struct {
 	Usage         *limits.UsageQuery
 	Settings      *core.Settings
 	IPAllow       *auth.IPAllowlist
+	// AuditChainKey 는 감사 기록 해시 체인의 키다(MasterKey.AuditChainKey)
+	AuditChainKey []byte
 	Now           func() time.Time
 	Logger        *slog.Logger
 }
 
 func NewHandlers(d Deps) *Handlers {
 	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, organizations: d.Organizations, deployments: d.Deployments, usage: d.Usage,
-		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, denials: newDeniedThrottle(d.Now), now: d.Now, logger: d.Logger}
+		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now, chainKey: d.AuditChainKey}, denials: newDeniedThrottle(d.Now), now: d.Now, logger: d.Logger}
 }
 
 // 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.
@@ -120,6 +122,8 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodPost, "/key/regenerate", keyManagement, h.audited("rotated", auditKeyTable, keyTargets, h.regenerateKey)),
 		route(http.MethodPost, "/key/service-account/generate", keyManagement, h.audited("created", auditKeyTable, keyTargets, h.generateServiceAccountKey)),
 		route(http.MethodGet, "/audit", auditViewer, h.listAudit),
+		// /audit/{id} 보다 구체적인 패턴이라 Go mux 가 이쪽을 고른다
+		route(http.MethodGet, "/audit/verify", auditViewer, h.verifyAudit),
 		route(http.MethodGet, "/audit/{id}", auditViewer, h.getAudit),
 		route(http.MethodPost, "/model/new", adminOnly, h.audited("created", auditModelTable, nestedID("model_info", "id", "model_name"), h.createModel)),
 		route(http.MethodPost, "/model/delete", adminOnly, h.audited("deleted", auditModelTable, idsFrom("id"), h.deleteModel)),
