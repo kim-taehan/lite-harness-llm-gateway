@@ -13,7 +13,7 @@
 
 인증서의 SAN(Subject Alternative Name)에 **클라이언트가 실제로 여는 주소**(도메인 또는 IP)가 들어가야 한다. CN 만 있는 인증서는 요즘 클라이언트가 거부한다.
 
-사내 CA 가 없으면 시험·소규모 운영용으로 직접 만든다(`openssl` 3.x):
+사내 CA 가 없으면 시험·소규모 운영용으로 직접 만든다(`openssl` 3.x. macOS 기본 `openssl` 은 LibreSSL 이라 일부 옵션이 없다. `brew install openssl@3` 후 `/opt/homebrew/opt/openssl@3/bin/openssl` 을 쓴다):
 
 ```sh
 # 1) 사내 CA(10년). ca.key 는 오프라인에 보관한다
@@ -103,8 +103,9 @@ GATEWAY_PUBLIC_URL=https://gateway.internal
 ```sh
 # 인증서와 버전(배치 A 면 게이트웨이 주소, B 면 앞단 주소)
 openssl s_client -connect gateway.internal:4701 -servername gateway.internal -CAfile ca.crt </dev/null 2>/dev/null | grep -E "Verify return|Protocol"
-# TLS 1.1 은 거절돼야 한다
-openssl s_client -connect gateway.internal:4701 -tls1_1 </dev/null 2>&1 | grep -iE "alert|no protocols"
+# TLS 1.1 은 서버가 거절해야 한다("alert protocol version"). OpenSSL 3 클라이언트는 기본 보안 수준에서 스스로 1.1 을 막으므로
+# (그때는 "no protocols available" 이 나오고 서버까지 가지 않는다) 보안 수준을 낮춰 서버의 거절을 본다
+openssl s_client -connect gateway.internal:4701 -tls1_1 -cipher 'DEFAULT@SECLEVEL=0' </dev/null 2>&1 | grep -iE "alert protocol version"
 # 헬스 체크와 HSTS
 curl --cacert ca.crt -si https://gateway.internal:4701/health/liveliness | grep -iE "^HTTP|strict-transport"
 ```
