@@ -78,6 +78,9 @@ type Authenticator struct {
 	cache     *KeyCache
 	logins    *loginKeys
 	now       func() time.Time
+	// denials·proxies 는 거절된 요청을 감사 기록에 남길 때만 쓴다(RecordDenials). nil 이면 남기지 않는다
+	denials EventSink
+	proxies TrustedProxies
 }
 
 func NewAuthenticator(masterKey MasterKey, keys *Keys, users *Users, teams *Teams, cache *KeyCache, now func() time.Time) *Authenticator {
@@ -285,6 +288,7 @@ func (a *Authenticator) Guard(route core.Route) http.Handler {
 			return
 		}
 		if denial, denied := routeDenied(r, route.Access, principal); denied {
+			a.recordDenial(r, principal, denial.Status)
 			denial.Write(w)
 			return
 		}

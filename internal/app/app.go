@@ -234,8 +234,10 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	deployments := inference.NewDeployments(db, cfg.MasterKey.UpstreamKeyBox())
 	settings := core.NewSettings(db)
 	ipAllow := auth.NewIPAllowlist(settings, cfg.TrustedProxies, time.Now, cfg.AllowedIPsDisabled, logger)
+	authenticator := auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now)
+	authenticator.RecordDenials(admin.NewAuthAudit(db, time.Now, logger), cfg.TrustedProxies)
 	return modules{
-		authenticator: auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now),
+		authenticator: authenticator,
 		ipAllow:       ipAllow,
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(

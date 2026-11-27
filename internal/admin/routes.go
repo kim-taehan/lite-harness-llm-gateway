@@ -31,6 +31,7 @@ type Handlers struct {
 	ipAllow     *auth.IPAllowlist
 	rows        rows
 	audit       *auditLog
+	denials     *deniedThrottle // 핸들러 안에서 거절한 요청을 같은 간격에 한 번만 남긴다
 	now         func() time.Time
 	logger      *slog.Logger
 }
@@ -54,7 +55,7 @@ type Deps struct {
 
 func NewHandlers(d Deps) *Handlers {
 	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, organizations: d.Organizations, deployments: d.Deployments, usage: d.Usage,
-		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, now: d.Now, logger: d.Logger}
+		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now}, denials: newDeniedThrottle(d.Now), now: d.Now, logger: d.Logger}
 }
 
 // 라우트 단계 권한은 litellm 표(docs/litellm-inventory/J_key_contract.md 6.2)를 따른다.

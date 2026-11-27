@@ -67,6 +67,10 @@ func (h *Handlers) audited(action, table string, targets auditTargets, next http
 		before := h.valuesBefore(r.Context(), action, table, targets(r, req, nil))
 		captured := &capturedResponse{ResponseWriter: w, status: http.StatusOK}
 		next(captured, r)
+		if deniedStatus(captured.status) {
+			h.recordHandlerDenial(r, action, table, captured.status, targets(r, req, nil))
+			return
+		}
 		if captured.status >= 300 {
 			return
 		}
@@ -231,18 +235,22 @@ func (a *auditLog) record(ctx context.Context, p auth.Principal, action, table, 
 // authAudit 는 로그인·비밀번호 사건(auth.Event)을 감사 기록에 남긴다. 관리 API 를 거치지 않는 사건이라 핸들러 감싸기로는 못 잡는다.
 // 행위자는 사건의 UserID 이고, 로그인에 실패해 사용자를 모르면 시도한 아이디다. 기록이 실패해도 로그인은 막지 않는다
 type authAudit struct {
-	log    *auditLog
-	logger *slog.Logger
+	log     *auditLog
+	logger  *slog.Logger
+	denials *deniedThrottle
 }
 
-// NewAuthAudit 는 auth 의 사건을 감사 기록(audit_log)에 남기는 EventSink 다. 조립 지점이 로그인에 넣는다
+// NewAuthAudit 는 auth 의 사건을 감사 기록(audit_log)에 남기는 EventSink 다. 조립 지점이 로그인과 라우트 권한 검사에 넣는다
 func NewAuthAudit(db *core.DB, now func() time.Time, logger *slog.Logger) auth.EventSink {
-	return authAudit{log: &auditLog{db: db, now: now}, logger: logger}
+	return authAudit{log: &auditLog{db: db, now: now}, logger: logger, denials: newDeniedThrottle(now)}
 }
 
 func (a authAudit) Record(ctx context.Context, e auth.Event) {
+	if e.Action == "access_denied" && !a.throttledDenial(e) {
+		return
+	}
 	// 사용자 테이블의 사건으로 적는다. 대상 id 는 행위자와 같다
-	if err := a.log.recordAs(ctx, cmp.Or(e.UserID, "anonymous"), "", e.Action, auditUserTable, e.UserID, nil, e.Values); err != nil {
+	if err := a.log.recordAs(ctx, cmp.Or(e.UserID, "anonymous"), e.KeyToken, e.Action, auditUserTable, e.UserID, nil, e.Values); err != nil {
 		a.logger.Error("감사 기록 실패", "action", e.Action, "user", e.UserID, "err", err)
 	}
 }
