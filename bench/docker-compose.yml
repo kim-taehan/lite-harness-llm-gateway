@@ -1,0 +1,97 @@
+# 성능 비교: 같은 가짜 업스트림·같은 PostgreSQL·같은 자원 제한에서 우리 게이트웨이와 litellm 을 잰다.
+# 게이트웨이는 프로파일로 한 번에 하나만 띄운다(run.sh 가 한다). 절대 수치는 이 VM 기준이라 운영 성능이 아니고 상대 비교용이다.
+#   ./run.sh gateway | litellm1 | litellm4
+name: gwbench
+
+x-gateway-limits: &gateway-limits
+  cpus: 4
+  mem_limit: 3g
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: gateway
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/lib/postgresql/data # 디스크 편차를 없앤다. 두 게이트웨이가 같은 조건이다
+    cpus: 2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gateway"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # 응답 시간은 환경 변수로 바꾼다. 기본(50ms)은 게이트웨이 오버헤드를 가려내려는 값이고,
+  # 실제 모델에 가까운 조건은 UPSTREAM_DELAY=1s UPSTREAM_TTFT=300ms UPSTREAM_CHUNK_DELAY=40ms 로 준다
+  fakeupstream:
+    build: ./fakeupstream
+    cpus: 2
+    command:
+      - "-delay=${UPSTREAM_DELAY:-50ms}"
+      - "-ttft=${UPSTREAM_TTFT:-50ms}"
+      - "-chunk-delay=${UPSTREAM_CHUNK_DELAY:-5ms}"
+
+  # 우리 게이트웨이. 먼저 ../build.sh 로 dist/ 를 만든다
+  gateway:
+    profiles: ["gateway"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: llm-gateway:bench
+    <<: *gateway-limits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GATEWAY_MASTER_KEY: sk-bench-master
+      GATEWAY_DATABASE_URL: postgres://postgres:bench@postgres:5432/gateway
+      GATEWAY_LOGIN_METHODS: password
+    ports:
+      - "4710:4000"
+
+  # litellm 1워커: dell 의 4701 과 같은 실행 방식(--port 만 준다)
+  litellm1:
+    profiles: ["litellm1"]
+    image: litellm:airgap
+    <<: *gateway-limits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &litellm-env
+      DATABASE_URL: postgresql://postgres:bench@postgres:5432/litellm
+      LITELLM_MASTER_KEY: sk-bench-master
+      LITELLM_SALT_KEY: sk-bench-salt
+      LITELLM_DISABLE_USAGE_COUNTS: "1"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4721:4000"
+
+  # litellm 4워커: 파이썬 1프로세스 대 Go 전 코어 비교가 불공정하지 않게 워커를 늘린 설정
+  litellm4:
+    profiles: ["litellm4"]
+    image: litellm:airgap
+    <<: *gateway-limits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *litellm-env
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "4"]
+    ports:
+      - "4724:4000"
+
+  # 부하 생성기. 같은 도커 네트워크 안에서 돌려 맥↔VM 포트 포워딩 오버헤드가 끼지 않게 한다
+  k6:
+    profiles: ["k6"]
+    image: grafana/k6:1.0.0
+    cpus: 4
+    volumes:
+      - ./k6:/scripts:ro
+      - ./results:/results
