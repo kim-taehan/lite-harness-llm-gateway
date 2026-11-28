@@ -134,7 +134,6 @@ func stubs() []stub {
 		stubOK("GET /prompts/list", `{"prompts":[]}`),
 		stubNotFound(policies, "GET /policy/info/{policy_name}"),
 		stubOK("GET /policies/list", `{"policies":[]}`),
-		stubOK("GET /v2/guardrails/list", `{"guardrails":[]}`),
 		stubOK("GET /router/settings", `{"fields":[],"routing_strategy_descriptions":{}}`),
 		stubOK("GET /config/pass_through_endpoint", `{"endpoints":[]}`),
 		stubOK("GET /config/pass_through_endpoint/team/{team_id}", `{"endpoints":[]}`),
@@ -202,7 +201,6 @@ func stubs() []stub {
 		stubUnsupported("Skills", "POST /claude-code/plugins/{plugin_name}/enable"),
 		stubUnsupported("Skills", "POST /claude-code/plugins/{plugin_name}/disable"),
 		stubUnsupported("Skills", "DELETE /claude-code/plugins/{plugin_name}"),
-		stubOK("GET /guardrails/ui/add_guardrail_settings", `{"supported_entities":[],"supported_actions":[],"pii_entity_categories":[],"decision_model_providers":[],"supported_modes_by_provider":{},"content_filter_settings":{"content_categories":[]}}`),
 
 		// usage: 부가 지표. 일부 필드만 있는 200 은 렌더 예외라 전체 모양이나 404 로 답한다
 		stubNotFound("Gateway activity", "GET /gateway/daily/activity"),
@@ -412,11 +410,6 @@ func stubs() []stub {
 		stubUnsupported(guardrails, "POST /guardrails/submissions/{guardrail_id}/approve"),
 		stubUnsupported(guardrails, "POST /guardrails/submissions/{guardrail_id}/reject"),
 		stubUnsupported(guardrails, "POST /guardrails/register"),
-		stubOK("GET /guardrails/ui/provider_specific_params", `{}`),
-		stubUnsupported(guardrails, "POST /guardrails"),
-		stubUnsupported(guardrails, "PATCH /guardrails/{guardrail_id}"),
-		stubUnsupported(guardrails, "DELETE /guardrails/{guardrail_id}"),
-		stubNotFound(guardrails, "GET /guardrails/{guardrail_id}/info"),
 		stubUnsupported(guardrails, "POST /guardrails/apply_guardrail"),
 		stubUnsupported(guardrails, "POST /guardrails/test_custom_code"),
 		stubNotFound(guardrails, "GET /guardrails/ui/category_yaml/{category_name}"),

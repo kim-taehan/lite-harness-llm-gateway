@@ -106,6 +106,8 @@ func (h *Handlers) beforeReader(table string) beforeValue {
 			}
 			return deploymentRow(d), nil
 		}
+	case auditGuardrailTable:
+		return h.guardrailBefore
 	case auditOrganizationTable:
 		return func(ctx context.Context, id string) (any, error) {
 			org, err := h.organizations.Find(ctx, id)

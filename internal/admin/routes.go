@@ -26,6 +26,7 @@ type Handlers struct {
 	organizations *auth.Organizations
 	// deployments 는 모델 관리 API 가 inference 의 공개 API 로 다룬다
 	deployments *inference.Deployments
+	guardrails  *inference.Guardrails
 	usage       *limits.UsageQuery
 	settings    *core.Settings
 	ipAllow     *auth.IPAllowlist
@@ -46,6 +47,7 @@ type Deps struct {
 	Organizations *auth.Organizations
 	Policies      *limits.Policies
 	Deployments   *inference.Deployments
+	Guardrails    *inference.Guardrails
 	Usage         *limits.UsageQuery
 	Settings      *core.Settings
 	IPAllow       *auth.IPAllowlist
@@ -56,7 +58,7 @@ type Deps struct {
 }
 
 func NewHandlers(d Deps) *Handlers {
-	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, organizations: d.Organizations, deployments: d.Deployments, usage: d.Usage,
+	return &Handlers{db: d.DB, teams: d.Teams, users: d.Users, keys: d.Keys, limits: d.Policies, customers: limits.NewCustomers(d.DB), tags: limits.NewTags(d.DB), projects: d.Projects, organizations: d.Organizations, deployments: d.Deployments, guardrails: d.Guardrails, usage: d.Usage,
 		settings: d.Settings, ipAllow: d.IPAllow, rows: rows{teams: d.Teams, users: d.Users, limits: d.Policies}, audit: &auditLog{db: d.DB, now: d.Now, chainKey: d.AuditChainKey}, denials: newDeniedThrottle(d.Now), now: d.Now, logger: d.Logger}
 }
 
@@ -158,8 +160,16 @@ func (h *Handlers) Routes() []core.Route {
 		route(http.MethodGet, "/spend/logs/session/ui", spendTracking, h.sessionLogs),
 		route(http.MethodGet, "/management/v1/spend_logs/users", spendTracking, h.spendLogFacet(false)),
 		route(http.MethodGet, "/management/v1/spend_logs/end_users", spendTracking, h.spendLogFacet(true)),
-		// 아직 없는 기능은 빈 목록. litellm 처럼 /guardrails/list 는 internal_user_viewer 에게 401 이다(K 9.1)
-		route(http.MethodGet, "/guardrails/list", core.Roles(core.RoleInternalUser), h.emptyGuardrails),
+		// litellm 처럼 /guardrails/list 는 internal_user_viewer 에게 401 이다(K 9.1). 규칙은 읽기 전용 관리자부터 보인다(핸들러)
+		route(http.MethodGet, "/guardrails/list", core.Roles(core.RoleInternalUser), h.listGuardrails),
+		route(http.MethodGet, "/v2/guardrails/list", handlerDecide, h.listGuardrails),
+		route(http.MethodGet, "/guardrails/{guardrail_id}/info", auditViewer, h.guardrailInfo),
+		route(http.MethodGet, "/guardrails/ui/add_guardrail_settings", auditViewer, h.guardrailUISettings),
+		route(http.MethodGet, "/guardrails/ui/provider_specific_params", auditViewer, h.guardrailProviderParams),
+		route(http.MethodPost, "/guardrails", adminOnly, h.audited("created", auditGuardrailTable, idsFrom("guardrail_id"), h.newGuardrail)),
+		route(http.MethodPut, "/guardrails/{guardrail_id}", adminOnly, h.audited("updated", auditGuardrailTable, pathID("guardrail_id"), h.replaceGuardrail)),
+		route(http.MethodPatch, "/guardrails/{guardrail_id}", adminOnly, h.audited("updated", auditGuardrailTable, pathID("guardrail_id"), h.patchGuardrail)),
+		route(http.MethodDelete, "/guardrails/{guardrail_id}", adminOnly, h.audited("deleted", auditGuardrailTable, pathID("guardrail_id"), h.deleteGuardrail)),
 		route(http.MethodGet, "/v1/mcp/server", handlerDecide, h.emptyMCPServers),
 		// 대시보드 설정. 화면 설정·테마·로고는 로그인 전에도 부른다(litellm 도 공개). 나머지는 litellm 처럼 관리자만(viewer 는 GET 만)
 		route(http.MethodGet, "/get/ui_settings", core.Public(), h.getSettings(uiSettingsForm)),

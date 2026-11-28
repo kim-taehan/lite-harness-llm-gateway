@@ -71,6 +71,8 @@ type relayRequest struct {
 	requested  string
 	stream     bool
 	permit     *limits.Permit
+	// guardrails 는 이 요청에 적용된 가드레일이다. 스트림이 아닌 응답은 이 가운데 post_call 로 검사한다(스트림은 검사하지 않는다)
+	guardrails []*Guardrail
 }
 
 // relay 는 업스트림에 보내고 응답을 그대로 흘려 준다. 클라이언트가 끊으면 r.Context() 가 취소되어 업스트림 요청도 끊긴다(설계 4.2).
@@ -108,7 +110,7 @@ func (h *Handlers) relay(w http.ResponseWriter, r *http.Request, req relayReques
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 || !req.stream || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		h.relayWhole(w, resp, x)
+		h.relayWhole(w, resp, x, api, req.guardrails)
 		return
 	}
 	h.relayStream(w, r, resp, x, clientWantsUsage)
@@ -158,7 +160,7 @@ func (x *exchange) cancel() {
 }
 
 // relayWhole 은 스트림이 아닌 응답이다. 성공이면 model 을 요청한 이름으로 되돌린다(설계 5장 1번)
-func (h *Handlers) relayWhole(w http.ResponseWriter, resp *http.Response, x *exchange) {
+func (h *Handlers) relayWhole(w http.ResponseWriter, resp *http.Response, x *exchange, api upstreamAPI, guardrails []*Guardrail) {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		x.fail(502, "upstream_error")
@@ -177,6 +179,16 @@ func (h *Handlers) relayWhole(w http.ResponseWriter, resp *http.Response, x *exc
 			x.usage = parsed.Usage
 		}
 		data = withModel(data, x.requested)
+		// 토큰은 이미 썼으므로 사용량은 그대로 남기고, 막힌 응답만 400 으로 바꿔 돌려준다
+		checked, err := applyToResponse(guardrails, data, api)
+		var blocked *BlockedError
+		if errors.As(err, &blocked) {
+			x.fail(400, "guardrail_blocked")
+			h.guardrails.blocked(blocked.Guardrail, blocked.Mode)
+			blocked.ProxyError().Write(w)
+			return
+		}
+		data = checked
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)

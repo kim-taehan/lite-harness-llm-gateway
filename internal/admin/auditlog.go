@@ -36,6 +36,7 @@ const (
 	auditOrgMemberTable    = "LiteLLM_OrganizationMembership"
 	auditProjectTable      = "LiteLLM_ProjectTable"
 	auditTagTable          = "LiteLLM_TagTable"
+	auditGuardrailTable    = "LiteLLM_GuardrailsTable"
 	auditCustomerTable     = "LiteLLM_EndUserTable"
 	auditInvitationTable   = "LiteLLM_InvitationLink"
 	auditMembershipTable   = "LiteLLM_TeamMembership"

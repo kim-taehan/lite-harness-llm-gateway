@@ -171,6 +171,7 @@ type modules struct {
 	authenticator *auth.Authenticator
 	ipAllow       *auth.IPAllowlist // 모든 요청 앞에서 목록 밖 IP 를 막고, 관리 API 가 같은 인스턴스로 목록을 고친다
 	routes        []core.Route
+	guardrails    *inference.Guardrails // 막은 횟수를 지표로 세려고 조립 뒤에 부르는 쪽이 관찰자를 건다
 }
 
 // identity 는 auth 의 저장소들이다. 로그인(SSO 설정 읽기에 ctx 가 필요하다)과 나머지 조립이 함께 쓴다
@@ -232,6 +233,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 		counters = limits.NewMemoryCounters(time.Now)
 	}
 	deployments := inference.NewDeployments(db, cfg.MasterKey.UpstreamKeyBox())
+	guardrails := inference.NewGuardrails(db, time.Now)
 	settings := core.NewSettings(db)
 	ipAllow := auth.NewIPAllowlist(settings, cfg.TrustedProxies, time.Now, cfg.AllowedIPsDisabled, logger)
 	authenticator := auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now)
@@ -239,12 +241,13 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	return modules{
 		authenticator: authenticator,
 		ipAllow:       ipAllow,
+		guardrails:    guardrails,
 		// 모듈이 내놓은 라우트 전부다. 새 모듈은 여기에 한 줄을 더한다
 		routes: slices.Concat(
 			core.HealthRoutes(p.lifecycle, db),
 			p.login.Routes(),
-			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), time.Now, logger).Routes(),
-			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Projects: auth.NewProjects(db, cache), Organizations: auth.NewOrganizations(db, cache), Policies: policies, Deployments: deployments,
+			inference.NewHandlers(deployments, upstreamClient(), usage, limits.NewGate(policies, counters, time.Now), guardrails, time.Now, logger).Routes(),
+			admin.NewHandlers(admin.Deps{DB: db, Teams: teams, Users: users, Keys: keys, Projects: auth.NewProjects(db, cache), Organizations: auth.NewOrganizations(db, cache), Policies: policies, Deployments: deployments, Guardrails: guardrails,
 				Usage: limits.NewUsageQuery(db), Settings: settings, IPAllow: ipAllow, AuditChainKey: cfg.MasterKey.AuditChainKey(), Now: time.Now, Logger: logger}).Routes(),
 		),
 	}
@@ -282,6 +285,7 @@ func buildHandler(cfg Config, p parts) http.Handler {
 	metrics := newMetrics(p.usage)
 	metrics.trackSoftBudgets(limits.NewPolicies(p.db, time.Now), p.logger)
 	m := assemble(cfg, p, metrics.observing(p.usage))
+	m.guardrails.OnBlock(metrics.guardrailBlocked)
 	mux := http.NewServeMux()
 	for _, route := range append(m.routes, metrics.route()) {
 		mux.Handle(route.Pattern(), m.authenticator.Guard(route))

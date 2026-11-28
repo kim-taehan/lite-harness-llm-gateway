@@ -19,12 +19,13 @@ type Handlers struct {
 	upstream    *http.Client // 연결·응답 헤더 타임아웃을 정한 클라이언트(설계 4장: connect 5s, read 300s). 스트림 전체 시간은 막지 않는다
 	usage       usageSink
 	gate        *limits.Gate
+	guardrails  *Guardrails
 	now         func() time.Time
 	logger      *slog.Logger
 }
 
-func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, gate *limits.Gate, now func() time.Time, logger *slog.Logger) *Handlers {
-	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, gate: gate, now: now, logger: logger}
+func NewHandlers(deployments *Deployments, upstream *http.Client, usage usageSink, gate *limits.Gate, guardrails *Guardrails, now func() time.Time, logger *slog.Logger) *Handlers {
+	return &Handlers{deployments: deployments, upstream: upstream, usage: usage, gate: gate, guardrails: guardrails, now: now, logger: logger}
 }
 
 // Routes 는 추론 라우트다. litellm 은 LLM API 라우트를 역할과 무관하게 연다(키만 맞으면). 모델 권한은 핸들러가 본다
@@ -106,9 +107,30 @@ func (h *Handlers) handle(w http.ResponseWriter, r *http.Request, api upstreamAP
 		return
 	}
 	defer permit.Release()
+	// 가드레일은 업스트림에 보내기 직전에 본다. 가릴 글은 body 에 바로 반영되고, 막힌 요청은 업스트림에 닿지 않는다
+	chosen, err := h.guardrails.For(r.Context(), guardrailChoice(p, body))
+	if err != nil {
+		h.internalError(w, r, err)
+		return
+	}
+	if err := applyToRequest(chosen, body, api); err != nil {
+		h.guardrailRejected(w, err)
+		return
+	}
 	body["model"] = deployment.UpstreamModel
 	stream, _ := body["stream"].(bool)
-	h.relay(w, r, relayRequest{api: api, deployment: deployment, body: body, requested: model, stream: stream, permit: permit})
+	h.relay(w, r, relayRequest{api: api, deployment: deployment, body: body, requested: model, stream: stream, permit: permit, guardrails: chosen})
+}
+
+// guardrailRejected 는 가드레일이 막은 요청에 litellm 과 같은 400 으로 답한다
+func (h *Handlers) guardrailRejected(w http.ResponseWriter, err error) {
+	var blocked *BlockedError
+	if !errors.As(err, &blocked) {
+		core.ProxyError{Status: 500, Message: "Internal Server Error", Type: "internal_server_error"}.Write(w)
+		return
+	}
+	h.guardrails.blocked(blocked.Guardrail, blocked.Mode)
+	blocked.ProxyError().Write(w)
 }
 
 func choose(all []Deployment, model string) (Deployment, bool) {

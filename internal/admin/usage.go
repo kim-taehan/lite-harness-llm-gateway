@@ -138,10 +138,6 @@ func (h *Handlers) spendLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // 아직 없는 기능의 목록. 화면이 깨지지 않게 빈 목록으로 답한다(설계 9장: 빈 응답)
-func (h *Handlers) emptyGuardrails(w http.ResponseWriter, _ *http.Request) {
-	core.WriteJSON(w, http.StatusOK, row{"guardrails": []any{}})
-}
-
 func (h *Handlers) emptyMCPServers(w http.ResponseWriter, _ *http.Request) {
 	core.WriteJSON(w, http.StatusOK, []any{})
 }

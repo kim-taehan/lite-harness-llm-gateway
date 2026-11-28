@@ -23,6 +23,13 @@ type metrics struct {
 	tokens   *prometheus.CounterVec
 	llm      *prometheus.CounterVec
 	ttft     *prometheus.HistogramVec
+	// guardrail 는 가드레일이 막은 횟수다. 가드레일 이름은 관리자가 만든 것뿐이라 라벨 종류가 늘지 않는다
+	guardrail *prometheus.CounterVec
+}
+
+// guardrailBlocked 는 가드레일이 요청(pre_call)이나 응답(post_call)을 막을 때마다 센다. 걸린 글은 라벨에 넣지 않는다
+func (m *metrics) guardrailBlocked(guardrail, mode string) {
+	m.guardrail.WithLabelValues(guardrail, mode).Inc()
 }
 
 func newMetrics(usage *limits.UsageRecorder) *metrics {
@@ -42,10 +49,12 @@ func newMetrics(usage *limits.UsageRecorder) *metrics {
 		ttft: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "gateway_llm_time_to_first_token_seconds", Help: "스트림에서 첫 토큰까지 걸린 시간",
 			Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 30, 60}}, []string{"model"}),
+		guardrail: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gateway_guardrail_blocked_total", Help: "가드레일이 막은 요청·응답 수(mode=pre_call|post_call)"}, []string{"guardrail", "mode"}),
 	}
 	m.registry.MustRegister(
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.requests, m.duration, m.tokens, m.llm, m.ttft,
+		m.requests, m.duration, m.tokens, m.llm, m.ttft, m.guardrail,
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Name: "gateway_usage_queue_length", Help: "아직 DB 에 쓰지 않은 사용량 기록 수"},
 			func() float64 { return float64(usage.Queued()) }),
