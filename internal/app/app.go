@@ -3,6 +3,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,7 @@ type Config struct {
 	Login        auth.LoginMethods // GATEWAY_LOGIN_METHODS
 	SSO          auth.OIDCConfig   // 로그인 방식에 sso 가 있을 때만 쓴다
 	JWT          auth.JWTConfig    // GATEWAY_JWT_ISSUER 가 있을 때만 켜진다. Keycloak 토큰으로 API 를 직접 부른다
+	Groups       auth.GroupMapping // GATEWAY_GROUP_MAP. Keycloak 그룹 → 팀·관리자. JWT 호출과 SSO 로그인이 같이 쓴다
 	CORS         CORSConfig        // GATEWAY_CORS_ORIGINS, GATEWAY_CORS_ALLOW_CREDENTIALS
 	CounterStore string            // GATEWAY_COUNTER_STORE: memory(기본, 인스턴스 1개) 또는 redis(여러 대)
 	RedisURL     string            // GATEWAY_REDIS_URL: CounterStore 가 redis 일 때만
@@ -116,31 +118,59 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Listen: listen, JWT: jwt, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
+	groups, err := loadGroupMapping(getenv)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Listen: listen, JWT: jwt, Groups: groups, MasterKey: masterKey, DatabaseURL: databaseURL, DrainTimeout: 60 * time.Second, Login: methods, SSO: sso,
 		CORS: loadCORS(getenv), TrustedProxies: proxies, CounterStore: counterStore, RedisURL: redisURL,
 		TLSCertFile: tlsCert, TLSKeyFile: tlsKey, AuditRetention: auditRetention, LimitsFailClosed: failClosed, AllowedIPsDisabled: strings.EqualFold(strings.TrimSpace(getenv("GATEWAY_ALLOWED_IPS_DISABLE")), "true")}, nil
 }
 
-// loadJWT 는 GATEWAY_JWT_* 를 읽는다. GATEWAY_JWT_ISSUER 가 없으면 JWT 직접 인증은 꺼진다.
-// 그룹 매핑(GATEWAY_JWT_GROUP_MAP)은 {"그룹": {"team_id": "...", "admin": true}} 모양의 JSON 이고, 모르는 필드·깨진 JSON 은 기동을 멈춘다
-// (조용히 건너뛰면 의도한 권한과 다르게 동작한다)
+// loadJWT 는 GATEWAY_JWT_* 를 읽는다. GATEWAY_JWT_ISSUER 가 없으면 JWT 직접 인증은 꺼진다
 func loadJWT(getenv func(string) string) (auth.JWTConfig, error) {
 	cfg := auth.JWTConfig{Issuer: strings.TrimSpace(getenv("GATEWAY_JWT_ISSUER")), Audience: strings.TrimSpace(getenv("GATEWAY_JWT_AUDIENCE")),
-		JWKSURL: strings.TrimSpace(getenv("GATEWAY_JWT_JWKS_URL")), GroupsClaim: strings.TrimSpace(getenv("GATEWAY_JWT_GROUPS_CLAIM"))}
-	if raw := strings.TrimSpace(getenv("GATEWAY_JWT_GROUP_MAP")); raw != "" {
-		decoder := json.NewDecoder(strings.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&cfg.Groups); err != nil {
-			return auth.JWTConfig{}, fmt.Errorf("GATEWAY_JWT_GROUP_MAP: %w", err)
-		}
-	}
-	if !cfg.Enabled() && (cfg.Audience != "" || cfg.JWKSURL != "" || len(cfg.Groups) > 0) {
+		JWKSURL: strings.TrimSpace(getenv("GATEWAY_JWT_JWKS_URL"))}
+	if !cfg.Enabled() && (cfg.Audience != "" || cfg.JWKSURL != "") {
 		return auth.JWTConfig{}, errors.New("GATEWAY_JWT_ISSUER 없이 다른 GATEWAY_JWT_* 만 있다. JWT 인증을 켜려면 발급자를 정한다")
 	}
 	if err := cfg.Validate(); err != nil {
 		return auth.JWTConfig{}, fmt.Errorf("GATEWAY_JWT_*: %w", err)
 	}
 	return cfg, nil
+}
+
+// loadGroupMapping 은 Keycloak 그룹 → 팀·관리자 표를 읽는다. GATEWAY_GROUP_MAP 은 {"그룹": {"team_id": "...", "admin": true}} 모양의 JSON 이고,
+// GATEWAY_GROUPS_CLAIM 은 그룹 목록이 든 클레임(기본 groups)이다. 모르는 필드·깨진 JSON 은 기동을 멈춘다(조용히 건너뛰면 의도한 권한과 다르게 동작한다).
+// 처음 JWT 직접 호출에 붙였던 GATEWAY_JWT_GROUP_MAP·GATEWAY_JWT_GROUPS_CLAIM 도 읽는다(같은 값을 둘 다 적으면 어느 쪽인지 헷갈려 기동을 멈춘다)
+func loadGroupMapping(getenv func(string) string) (auth.GroupMapping, error) {
+	value := func(name, legacy string) (string, error) {
+		current, old := strings.TrimSpace(getenv(name)), strings.TrimSpace(getenv(legacy))
+		if current != "" && old != "" {
+			return "", fmt.Errorf("%s 와 %s 가 둘 다 있다. %s 만 남긴다", name, legacy, name)
+		}
+		return cmp.Or(current, old), nil
+	}
+	rawMap, err := value("GATEWAY_GROUP_MAP", "GATEWAY_JWT_GROUP_MAP")
+	if err != nil {
+		return auth.GroupMapping{}, err
+	}
+	claim, err := value("GATEWAY_GROUPS_CLAIM", "GATEWAY_JWT_GROUPS_CLAIM")
+	if err != nil {
+		return auth.GroupMapping{}, err
+	}
+	mapping := auth.GroupMapping{Claim: claim}
+	if rawMap != "" {
+		decoder := json.NewDecoder(strings.NewReader(rawMap))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&mapping.Groups); err != nil {
+			return auth.GroupMapping{}, fmt.Errorf("GATEWAY_GROUP_MAP: %w", err)
+		}
+	}
+	if err := mapping.Validate(); err != nil {
+		return auth.GroupMapping{}, fmt.Errorf("GATEWAY_GROUP_MAP: %w", err)
+	}
+	return mapping, nil
 }
 
 // defaultAuditRetentionDays 는 감사 기록의 기본 보관 기간이다. 사용량 기록(90일)보다 길게 둔다: 점검·사고 조사는 몇 달 뒤에 오기도 한다
@@ -218,7 +248,7 @@ func newIdentity(db *core.DB) identity {
 
 // newLogin 은 설정한 로그인 방식으로 로그인을 만든다. SSO 를 골랐으면 Keycloak 설정을 읽는다
 func newLogin(ctx context.Context, cfg Config, id identity, logger *slog.Logger) (*auth.Login, error) {
-	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Users: id.users, Teams: id.teams,
+	return auth.NewLogin(ctx, auth.LoginDeps{Methods: cfg.Login, Master: cfg.MasterKey, OIDC: cfg.SSO, Groups: cfg.Groups, Users: id.users, Teams: id.teams,
 		Client: &http.Client{Timeout: 10 * time.Second, Transport: noProxyTransport()}, Proxies: cfg.TrustedProxies, Events: admin.NewAuthAudit(id.db, time.Now, cfg.MasterKey.AuditChainKey(), logger), Now: time.Now, Logger: logger})
 }
 
@@ -266,7 +296,7 @@ func assemble(cfg Config, p parts, usage usageSink) modules {
 	ipAllow := auth.NewIPAllowlist(settings, cfg.TrustedProxies, time.Now, cfg.AllowedIPsDisabled, logger)
 	authenticator := auth.NewAuthenticator(cfg.MasterKey, keys, users, teams, cache, time.Now)
 	if cfg.JWT.Enabled() {
-		authenticator.EnableJWT(cfg.JWT, &http.Client{Timeout: 5 * time.Second, Transport: noProxyTransport()}, logger)
+		authenticator.EnableJWT(cfg.JWT, cfg.Groups, &http.Client{Timeout: 5 * time.Second, Transport: noProxyTransport()}, logger)
 	}
 	authenticator.RecordDenials(admin.NewAuthAudit(db, time.Now, cfg.MasterKey.AuditChainKey(), logger), cfg.TrustedProxies)
 	return modules{

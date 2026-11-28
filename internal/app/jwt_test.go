@@ -91,8 +91,8 @@ func jwtGateway(t *testing.T, keycloak *fakeKeycloak) (http.Handler, *pgxpool.Po
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.JWT = auth.JWTConfig{Issuer: jwtTestIssuer, Audience: jwtTestAudience, JWKSURL: keycloak.srv.URL,
-		Groups: map[string]auth.GroupGrant{"eng": {TeamID: "research"}, "ops": {Admin: true}}}
+	cfg.JWT = auth.JWTConfig{Issuer: jwtTestIssuer, Audience: jwtTestAudience, JWKSURL: keycloak.srv.URL}
+	cfg.Groups = auth.GroupMapping{Groups: map[string]auth.GroupGrant{"eng": {TeamID: "research"}, "ops": {Admin: true}}}
 	db, pool := dbtest.Open(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	id := newIdentity(db)
@@ -275,27 +275,51 @@ func TestJWT_IsOffUnlessConfigured(t *testing.T) {
 	}
 }
 
+func envOf(pairs map[string]string) func(string) string {
+	return func(name string) string { return pairs[name] }
+}
+
 func TestLoadJWT_RefusesMisconfiguration(t *testing.T) {
-	env := func(pairs map[string]string) func(string) string {
-		return func(name string) string { return pairs[name] }
-	}
 	for name, vars := range map[string]map[string]string{
-		"대상 없음":           {"GATEWAY_JWT_ISSUER": "http://kc/realms/corp"},
-		"발급자 없이 대상만":      {"GATEWAY_JWT_AUDIENCE": "gw"},
-		"깨진 그룹 표":         {"GATEWAY_JWT_ISSUER": "http://kc/realms/corp", "GATEWAY_JWT_AUDIENCE": "gw", "GATEWAY_JWT_GROUP_MAP": `{"eng":`},
-		"모르는 필드가 있는 그룹 표": {"GATEWAY_JWT_ISSUER": "http://kc/realms/corp", "GATEWAY_JWT_AUDIENCE": "gw", "GATEWAY_JWT_GROUP_MAP": `{"eng":{"team":"x"}}`},
-		"아무것도 주지 않는 그룹":   {"GATEWAY_JWT_ISSUER": "http://kc/realms/corp", "GATEWAY_JWT_AUDIENCE": "gw", "GATEWAY_JWT_GROUP_MAP": `{"eng":{}}`},
+		"대상 없음":      {"GATEWAY_JWT_ISSUER": "http://kc/realms/corp"},
+		"발급자 없이 대상만": {"GATEWAY_JWT_AUDIENCE": "gw"},
 	} {
-		if _, err := loadJWT(env(vars)); err == nil {
+		if _, err := loadJWT(envOf(vars)); err == nil {
 			t.Errorf("%s: 기동을 멈춰야 한다", name)
 		}
 	}
-	cfg, err := loadJWT(env(map[string]string{"GATEWAY_JWT_ISSUER": "http://kc/realms/corp", "GATEWAY_JWT_AUDIENCE": "gw",
-		"GATEWAY_JWT_GROUP_MAP": `{"eng":{"team_id":"research"},"ops":{"admin":true}}`}))
-	if err != nil || !cfg.Enabled() || cfg.Groups["eng"].TeamID != "research" || !cfg.Groups["ops"].Admin {
+	cfg, err := loadJWT(envOf(map[string]string{"GATEWAY_JWT_ISSUER": "http://kc/realms/corp", "GATEWAY_JWT_AUDIENCE": "gw"}))
+	if err != nil || !cfg.Enabled() {
 		t.Errorf("정상 설정 = %+v %v", cfg, err)
 	}
-	if cfg, err := loadJWT(env(nil)); err != nil || cfg.Enabled() {
+	if cfg, err := loadJWT(envOf(nil)); err != nil || cfg.Enabled() {
 		t.Errorf("설정이 없으면 꺼져 있어야 한다: %+v %v", cfg, err)
+	}
+}
+
+func TestLoadGroupMapping_ReadsBothNamesAndRefusesMistakes(t *testing.T) {
+	const table = `{"eng":{"team_id":"research"},"ops":{"admin":true}}`
+	for name, vars := range map[string]map[string]string{
+		"깨진 그룹 표":         {"GATEWAY_GROUP_MAP": `{"eng":`},
+		"모르는 필드가 있는 그룹 표": {"GATEWAY_GROUP_MAP": `{"eng":{"team":"x"}}`},
+		"아무것도 주지 않는 그룹":   {"GATEWAY_GROUP_MAP": `{"eng":{}}`},
+		"새 이름과 옛 이름이 둘 다": {"GATEWAY_GROUP_MAP": table, "GATEWAY_JWT_GROUP_MAP": table},
+		"클레임 이름이 둘 다":     {"GATEWAY_GROUPS_CLAIM": "groups", "GATEWAY_JWT_GROUPS_CLAIM": "roles"},
+	} {
+		if _, err := loadGroupMapping(envOf(vars)); err == nil {
+			t.Errorf("%s: 기동을 멈춰야 한다", name)
+		}
+	}
+	for name, vars := range map[string]map[string]string{
+		"새 이름": {"GATEWAY_GROUP_MAP": table, "GATEWAY_GROUPS_CLAIM": "realm_access.roles"},
+		"옛 이름": {"GATEWAY_JWT_GROUP_MAP": table, "GATEWAY_JWT_GROUPS_CLAIM": "realm_access.roles"},
+	} {
+		mapping, err := loadGroupMapping(envOf(vars))
+		if err != nil || !mapping.Enabled() || mapping.Groups["eng"].TeamID != "research" || !mapping.Groups["ops"].Admin || mapping.Claim != "realm_access.roles" {
+			t.Errorf("%s: %+v %v", name, mapping, err)
+		}
+	}
+	if mapping, err := loadGroupMapping(envOf(nil)); err != nil || mapping.Enabled() {
+		t.Errorf("설정이 없으면 표가 비어 있어야 한다: %+v %v", mapping, err)
 	}
 }

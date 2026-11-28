@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,18 +17,9 @@ import (
 // JWTConfig 는 Keycloak 토큰(JWT)으로 API 를 직접 부르는 설정이다(환경 변수 GATEWAY_JWT_*). 고객사 환경마다 달라 환경 변수로 받는다.
 // Issuer 가 비어 있으면 꺼져 있고, JWT 모양 토큰은 가상 키 형식 오류(401)로 거절한다
 type JWTConfig struct {
-	Issuer      string // GATEWAY_JWT_ISSUER, 토큰의 iss 와 정확히 같아야 한다. 예: http://keycloak:8080/realms/corp
-	Audience    string // GATEWAY_JWT_AUDIENCE, 토큰의 aud 에 있어야 한다(Keycloak 은 audience 매퍼가 필요하다)
-	JWKSURL     string // GATEWAY_JWT_JWKS_URL, 비우면 발급자의 openid-configuration 에서 찾는다
-	GroupsClaim string // GATEWAY_JWT_GROUPS_CLAIM, 그룹 목록이 든 클레임(점으로 중첩 경로). 기본 groups
-	// Groups 는 그룹 이름 → 팀·관리자 매핑이다(GATEWAY_JWT_GROUP_MAP). 표에 없는 그룹은 무시한다
-	Groups map[string]GroupGrant
-}
-
-// GroupGrant 는 그룹 하나가 주는 것이다. 팀에 들어가거나(TeamID) 관리자가 된다(Admin)
-type GroupGrant struct {
-	TeamID string `json:"team_id"`
-	Admin  bool   `json:"admin"`
+	Issuer   string // GATEWAY_JWT_ISSUER, 토큰의 iss 와 정확히 같아야 한다. 예: http://keycloak:8080/realms/corp
+	Audience string // GATEWAY_JWT_AUDIENCE, 토큰의 aud 에 있어야 한다(Keycloak 은 audience 매퍼가 필요하다)
+	JWKSURL  string // GATEWAY_JWT_JWKS_URL, 비우면 발급자의 openid-configuration 에서 찾는다
 }
 
 func (c JWTConfig) Enabled() bool { return c.Issuer != "" }
@@ -50,11 +40,6 @@ func (c JWTConfig) Validate() error {
 			return fmt.Errorf("주소 %q 는 http(s) 주소여야 한다", raw)
 		}
 	}
-	for group, grant := range c.Groups {
-		if group == "" || (grant.TeamID == "" && !grant.Admin) {
-			return fmt.Errorf("GATEWAY_JWT_GROUP_MAP: 그룹 %q 는 team_id 나 admin 이 있어야 한다", group)
-		}
-	}
 	return nil
 }
 
@@ -62,7 +47,7 @@ func (c JWTConfig) Validate() error {
 type jwtAuth struct {
 	cfg      JWTConfig
 	verifier *jwtVerifier
-	groups   []string // 매핑에 있는 그룹 이름(정렬). 여러 팀이 걸리면 앞선 그룹의 팀이 이 요청의 팀이다
+	mapping  GroupMapping // 여러 팀이 걸리면 앞선 그룹(이름 순)의 팀이 이 요청의 팀이다
 
 	memberMu   sync.Mutex
 	memberSeen map[string]time.Time // 사용자·팀 쌍을 팀원으로 넣은 시각. 요청마다 쓰지 않으려는 캐시다
@@ -72,16 +57,8 @@ type jwtAuth struct {
 const jwtMembershipRefresh = 5 * time.Minute
 
 // EnableJWT 는 JWT 직접 인증을 켠다. cfg 는 Validate 를 통과해야 한다
-func (a *Authenticator) EnableJWT(cfg JWTConfig, client *http.Client, logger *slog.Logger) {
-	if cfg.GroupsClaim == "" {
-		cfg.GroupsClaim = "groups"
-	}
-	groups := make([]string, 0, len(cfg.Groups))
-	for name := range cfg.Groups {
-		groups = append(groups, name)
-	}
-	slices.Sort(groups)
-	a.jwt = &jwtAuth{cfg: cfg, verifier: newJWTVerifier(cfg, client, a.now, logger), groups: groups, memberSeen: map[string]time.Time{}}
+func (a *Authenticator) EnableJWT(cfg JWTConfig, mapping GroupMapping, client *http.Client, logger *slog.Logger) {
+	a.jwt = &jwtAuth{cfg: cfg, verifier: newJWTVerifier(cfg, client, a.now, logger), mapping: mapping, memberSeen: map[string]time.Time{}}
 }
 
 // looksLikeJWT 는 가상 키·로그인 키가 아니고 JWT 모양(점 둘, eyJ 로 시작)인 값이다
@@ -108,7 +85,8 @@ func (a *Authenticator) authenticateJWT(ctx context.Context, token string) (Prin
 	if err != nil {
 		return Principal{}, err
 	}
-	teamIDs, admin := a.jwt.granted(groupsOf(claims.raw, a.jwt.cfg.GroupsClaim))
+	tokenGroups, _ := groupsIn(claims.raw, a.jwt.mapping.claim())
+	teamIDs, admin := a.jwt.mapping.granted(tokenGroups)
 	p := Principal{UserID: user.UserID, Role: user.EffectiveRole()}
 	if admin {
 		p.Role = core.RoleProxyAdmin // 매핑에 명시한 그룹으로만 관리자가 된다. 사용자 행의 역할은 바꾸지 않는다
@@ -182,47 +160,5 @@ func (a *Authenticator) ensureJWTMember(ctx context.Context, teamID, userID stri
 	a.jwt.memberMu.Lock()
 	a.jwt.memberSeen[teamID+"\x00"+userID] = now
 	a.jwt.memberMu.Unlock()
-	return nil
-}
-
-// granted 는 토큰의 그룹 중 매핑에 있는 것이 주는 팀(그룹 이름 순)과 관리자 여부다
-func (j *jwtAuth) granted(tokenGroups []string) ([]string, bool) {
-	var teams []string
-	admin := false
-	for _, name := range j.groups {
-		if !slices.Contains(tokenGroups, name) {
-			continue
-		}
-		grant := j.cfg.Groups[name]
-		admin = admin || grant.Admin
-		if grant.TeamID != "" && !slices.Contains(teams, grant.TeamID) {
-			teams = append(teams, grant.TeamID)
-		}
-	}
-	return teams, admin
-}
-
-// groupsOf 는 클레임 경로(a.b.c)의 문자열 목록이다. 문자열 하나만 있어도 목록으로 본다
-func groupsOf(payload map[string]any, path string) []string {
-	var current any = payload
-	for _, key := range strings.Split(path, ".") {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current = object[key]
-	}
-	switch v := current.(type) {
-	case string:
-		return []string{v}
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
 	return nil
 }

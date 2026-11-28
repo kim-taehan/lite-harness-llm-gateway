@@ -55,6 +55,7 @@ type Login struct {
 	keys      *loginKeys
 	master    MasterKey   // 대시보드 관리자 로그인과 token JWT 서명
 	oidc      *oidcClient // 로그인 방식에 sso 를 고르지 않았으면 nil
+	groups    GroupMapping
 	users     *Users
 	teams     *Teams
 	publicURL string
@@ -69,6 +70,8 @@ type LoginDeps struct {
 	Methods LoginMethods
 	Master  MasterKey
 	OIDC    OIDCConfig
+	// Groups 는 Keycloak 그룹 → 팀·관리자 표다. 비어 있으면 SSO 로그인 때 소속을 맞추지 않는다
+	Groups  GroupMapping
 	Users   *Users
 	Teams   *Teams
 	Client  *http.Client
@@ -81,7 +84,7 @@ type LoginDeps struct {
 
 // NewLogin 은 로그인 방식에 sso 를 골랐으면 Keycloak 설정을 읽는다. 설정이 없거나 닿지 않으면 기동을 멈춘다
 func NewLogin(ctx context.Context, d LoginDeps) (*Login, error) {
-	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, users: d.Users, teams: d.Teams,
+	l := &Login{methods: d.Methods, flows: newCLIFlows(d.Now), gate: passwordGate{users: d.Users, attempts: newLoginAttempts(d.Now)}, keys: newLoginKeys(d.Master), master: d.Master, groups: d.Groups, users: d.Users, teams: d.Teams,
 		publicURL: strings.TrimRight(d.OIDC.PublicURL, "/"), proxies: d.Proxies, events: d.Events, now: d.Now, logger: d.Logger}
 	if d.Methods.SSO {
 		if d.OIDC.Issuer == "" || d.OIDC.ClientID == "" || d.OIDC.PublicURL == "" {

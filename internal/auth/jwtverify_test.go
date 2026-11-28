@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -349,14 +350,13 @@ func TestJWT_FindsTheJWKSThroughTheIssuerDiscoveryDocument(t *testing.T) {
 }
 
 func TestJWTConfig_Validate(t *testing.T) {
-	ok := JWTConfig{Issuer: "http://kc/realms/corp", Audience: "gw", Groups: map[string]GroupGrant{"eng": {TeamID: "t1"}, "ops": {Admin: true}}}
+	ok := JWTConfig{Issuer: "http://kc/realms/corp", Audience: "gw"}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("정상 설정이 거절됐다: %v", err)
 	}
 	for name, cfg := range map[string]JWTConfig{
-		"대상 없음":         {Issuer: "http://kc/realms/corp"},
-		"발급자가 주소가 아님":   {Issuer: "not a url", Audience: "gw"},
-		"아무것도 주지 않는 그룹": {Issuer: "http://kc/realms/corp", Audience: "gw", Groups: map[string]GroupGrant{"eng": {}}},
+		"대상 없음":       {Issuer: "http://kc/realms/corp"},
+		"발급자가 주소가 아님": {Issuer: "not a url", Audience: "gw"},
 	} {
 		if cfg.Validate() == nil {
 			t.Errorf("%s: 거절돼야 한다", name)
@@ -367,18 +367,41 @@ func TestJWTConfig_Validate(t *testing.T) {
 	}
 }
 
-func TestGroupsOf_ReadsNestedClaimPaths(t *testing.T) {
-	payload := map[string]any{"groups": []any{"a", "b"}, "realm_access": map[string]any{"roles": []any{"r1"}}, "single": "x"}
-	for path, want := range map[string]string{"groups": "a,b", "realm_access.roles": "r1", "single": "x", "missing": "", "groups.deep": ""} {
-		got := ""
-		for i, g := range groupsOf(payload, path) {
-			if i > 0 {
-				got += ","
-			}
-			got += g
+func TestGroupsIn_ReadsNestedClaimPathsAndTellsMissingFromEmpty(t *testing.T) {
+	payload := map[string]any{"groups": []any{"a", "b"}, "empty": []any{}, "realm_access": map[string]any{"roles": []any{"r1"}}, "single": "x", "nothing": nil}
+	for path, want := range map[string]struct {
+		groups  string
+		present bool
+	}{
+		"groups": {"a,b", true}, "realm_access.roles": {"r1", true}, "single": {"x", true},
+		"empty":   {"", true},                                                      // 어떤 그룹에도 없다: 클레임은 있다
+		"missing": {"", false}, "groups.deep": {"", false}, "nothing": {"", false}, // 클레임이 없다: 그룹 매퍼를 빼먹었을 수 있다
+	} {
+		groups, present := groupsIn(payload, path)
+		if strings.Join(groups, ",") != want.groups || present != want.present {
+			t.Errorf("%s = %v %v, want %q %v", path, groups, present, want.groups, want.present)
 		}
-		if got != want {
-			t.Errorf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func TestGroupMapping_GrantedOrdersTeamsByGroupNameAndOnlyUsesMappedGroups(t *testing.T) {
+	mapping := GroupMapping{Groups: map[string]GroupGrant{"b-team": {TeamID: "tb"}, "a-team": {TeamID: "ta"}, "ops": {Admin: true}, "dup": {TeamID: "ta"}}}
+	teams, admin := mapping.granted([]string{"ops", "b-team", "a-team", "dup", "unmapped"})
+	if strings.Join(teams, ",") != "ta,tb" || !admin {
+		t.Errorf("granted = %v %v, 그룹 이름 순·중복 없이 ta,tb 와 관리자여야 한다", teams, admin)
+	}
+	if teams, admin := mapping.granted([]string{"unmapped"}); len(teams) != 0 || admin {
+		t.Errorf("표에 없는 그룹이 권한을 줬다: %v %v", teams, admin)
+	}
+	if got := strings.Join(mapping.managedTeams(), ","); got != "ta,tb" {
+		t.Errorf("그룹이 기준인 팀 = %q", got)
+	}
+	for name, bad := range map[string]GroupMapping{
+		"아무것도 주지 않는 그룹": {Groups: map[string]GroupGrant{"eng": {}}},
+		"이름이 빈 그룹":      {Groups: map[string]GroupGrant{"": {TeamID: "t"}}},
+	} {
+		if bad.Validate() == nil {
+			t.Errorf("%s: 거절돼야 한다", name)
 		}
 	}
 }
