@@ -18,6 +18,8 @@ type ProxyError struct {
 	Param   any // litellm 은 null 또는 문자열 "None" 등을 쓴다
 	// Headers 는 오류와 함께 보낼 응답 헤더다(예: 429 의 retry-after)
 	Headers map[string]string
+	// Fields 는 litellm 의 provider_specific_fields 다(가드레일 차단의 패턴 이름 등). 비면 싣지 않는다
+	Fields map[string]any
 }
 
 // AuthError 는 인증 실패다. litellm 은 관리 라우트 역할 거부도 같은 401 auth_error 로 돌려준다
@@ -31,12 +33,16 @@ func (e ProxyError) Write(w http.ResponseWriter) {
 	for k, v := range e.Headers {
 		w.Header().Set(k, v)
 	}
-	WriteJSON(w, e.Status, map[string]any{"error": map[string]any{
+	body := map[string]any{
 		"message": e.Message,
 		"type":    e.Type,
 		"param":   e.Param,
 		"code":    strconv.Itoa(e.Status),
-	}})
+	}
+	if len(e.Fields) > 0 {
+		body["provider_specific_fields"] = e.Fields
+	}
+	WriteJSON(w, e.Status, map[string]any{"error": body})
 }
 
 // DetailError 는 FastAPI HTTPException 기본 모양 {"detail": …} 이다
