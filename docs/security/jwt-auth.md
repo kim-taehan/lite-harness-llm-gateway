@@ -11,10 +11,9 @@
 | `GATEWAY_JWT_ISSUER` | 토큰의 `iss` 와 **정확히** 같아야 한다. 예: `http://keycloak:8080/realms/corp` |
 | `GATEWAY_JWT_AUDIENCE` | 필수. 토큰의 `aud` 에 이 값이 있어야 한다 |
 | `GATEWAY_JWT_JWKS_URL` | 선택. 비우면 발급자의 `/.well-known/openid-configuration` 의 `jwks_uri` 를 쓴다 |
-| `GATEWAY_JWT_GROUPS_CLAIM` | 그룹 목록이 든 클레임. 기본 `groups`. 점으로 중첩 경로를 쓸 수 있다(`realm_access.roles`) |
-| `GATEWAY_JWT_GROUP_MAP` | 그룹 → 팀·관리자 매핑(JSON). 예: `{"eng":{"team_id":"research"},"gateway-admins":{"admin":true}}` |
+| `GATEWAY_GROUP_MAP`·`GATEWAY_GROUPS_CLAIM` | 그룹 → 팀·관리자 표와 그룹 클레임 이름. SSO 로그인과 같이 쓴다(`docs/security/group-mapping.md`). 처음 쓰던 `GATEWAY_JWT_GROUP_MAP`·`GATEWAY_JWT_GROUPS_CLAIM` 도 읽는다 |
 
-설정이 틀리면 기동하지 않는다: 대상 없음, 발급자 없이 다른 JWT 값만 있음, 깨진 JSON·모르는 필드, 아무것도 주지 않는 그룹. 기동 로그에 `jwt: true` 가 남는다. Keycloak 이 느리거나 죽어 있어도 기동은 막지 않는다(공개키는 처음 쓸 때 가져온다).
+설정이 틀리면 기동하지 않는다: 대상 없음, 발급자 없이 다른 JWT 값만 있음(그룹 표 오류는 `docs/security/group-mapping.md`). 기동 로그에 `jwt: true` 가 남는다. Keycloak 이 느리거나 죽어 있어도 기동은 막지 않는다(공개키는 처음 쓸 때 가져온다).
 
 ### Keycloak 쪽 설정
 - 클라이언트에 **audience 매퍼**를 둬서 액세스 토큰의 `aud` 에 `GATEWAY_JWT_AUDIENCE` 값이 들어가게 한다. 기본 설정은 `aud` 에 `account` 만 넣는다.
@@ -35,7 +34,7 @@
 | 항목 | 동작 |
 |---|---|
 | 사용자 | 토큰의 이메일(없으면 `preferred_username`)이 사용자 아이디다. 처음 온 사용자는 **SSO 로그인과 같은 규칙으로 자동 생성**한다(기본 역할·모델은 대시보드 Default User Settings). 이미 다른 SSO 주체(`sub`)에 묶인 이메일은 403, 관리자가 미리 만든 계정은 Keycloak 이 이메일을 확인하지 않았으면(`email_verified=false`) 403 이다 |
-| 팀 | 토큰의 그룹 중 매핑에 있는 것이 주는 팀 가운데 **그룹 이름 순으로 처음 있는 팀**이 이 요청의 팀이다. 팀의 허용 모델·예산·한도·조직 한도·가드레일 설정을 그대로 받는다. 매핑된 팀이 아직 없으면 건너뛴다(로그 경고). 막힌 팀이면 요청을 거절한다. 사용자는 그 팀의 팀원(role `user`)으로 추가된다(대시보드·사용량에 보이도록) |
+| 팀 | 토큰의 그룹 중 표에 있는 것이 주는 팀 가운데 **그룹 이름 순으로 처음 있는 팀**이 이 요청의 팀이다. 팀의 허용 모델·예산·한도·조직 한도·가드레일 설정을 그대로 받는다. 매핑된 팀이 아직 없으면 건너뛴다(로그 경고). 막힌 팀이면 요청을 거절한다. 사용자는 그 팀의 팀원(role `user`)으로 추가된다(대시보드·사용량에 보이도록) |
 | 팀이 없을 때 | 사용자의 허용 모델을 쓴다(로그인 키와 같다) |
 | 관리자 | **매핑에 `admin: true` 로 적은 그룹이 토큰에 있을 때만** 이 요청이 `proxy_admin` 이다. 사용자 행의 역할은 바뀌지 않는다. 그룹이 빠진 다음 토큰부터 바로 관리자가 아니다 |
 | 한도 | 가상 키가 없어 **키 단위 한도는 걸리지 않는다**. 사용자·팀·조직·프로젝트 한도(예산·RPM·TPM)가 걸린다. 사용량 기록에는 사용자·팀이 남는다 |
