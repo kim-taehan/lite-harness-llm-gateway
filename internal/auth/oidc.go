@@ -97,6 +97,8 @@ type oidcClaims struct {
 	EmailVerified     *bool  `json:"email_verified"` // IdP 가 안 주면 nil
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
+	// Raw 는 userinfo 응답 전체다. 그룹 같은, 설정으로 이름을 정하는 클레임을 읽는 데 쓴다
+	Raw map[string]any `json:"-"`
 }
 
 // tokenExchangeError 는 IdP 가 코드 교환을 거절한 것이다. 문구는 litellm 그대로 클라이언트에 보여 준다.
@@ -153,8 +155,15 @@ func (o *oidcClient) readUserinfo(ctx context.Context, accessToken string) (oidc
 	if resp.StatusCode != http.StatusOK {
 		return oidcClaims{}, fmt.Errorf("userinfo: %s", resp.Status)
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return oidcClaims{}, err
+	}
 	var claims oidcClaims
-	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+	if err := json.Unmarshal(body, &claims); err != nil {
+		return oidcClaims{}, err
+	}
+	if err := json.Unmarshal(body, &claims.Raw); err != nil {
 		return oidcClaims{}, err
 	}
 	return claims, nil

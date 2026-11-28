@@ -219,6 +219,9 @@ func (l *Login) ssoUser(w http.ResponseWriter, r *http.Request, verifier string)
 		return User{}, false
 	}
 	user, err := l.users.upsertSSOUser(r.Context(), claims)
+	if err == nil {
+		user, err = l.syncGroups(r, user, claims)
+	}
 	switch {
 	case errors.Is(err, errSSOSubjectMismatch):
 		core.ProxyError{Status: 403, Type: "auth_error", Param: "None",

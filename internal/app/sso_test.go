@@ -61,7 +61,14 @@ func (i *fakeIdP) setClaims(claims map[string]any) {
 // ssoApp 은 SSO 와 비밀번호 로그인을 모두 넣은 빌드다
 func ssoApp(t *testing.T, idp *fakeIdP) (browser, apiClient) {
 	t.Helper()
+	return ssoAppWith(t, idp, func(*Config) {})
+}
+
+// ssoAppWith 는 설정을 시험이 고쳐 쓸 수 있는 ssoApp 이다
+func ssoAppWith(t *testing.T, idp *fakeIdP, adjust func(*Config)) (browser, apiClient) {
+	t.Helper()
 	cfg, _ := LoadConfig(testEnv)
+	adjust(&cfg)
 	cfg.Login = auth.LoginMethods{SSO: true, Password: true}
 	cfg.SSO = auth.OIDCConfig{Issuer: idp.URL, ClientID: "gateway", PublicURL: "http://gw.test"}
 	db, _ := dbtest.Open(t)
