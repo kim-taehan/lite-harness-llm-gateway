@@ -81,6 +81,7 @@ type Authenticator struct {
 	projects  *Projects
 	cache     *KeyCache
 	logins    *loginKeys
+	jwt       *jwtAuth // nil 이면 JWT 직접 인증이 꺼져 있다(EnableJWT)
 	now       func() time.Time
 	// denials·proxies 는 거절된 요청을 감사 기록에 남길 때만 쓴다(RecordDenials). nil 이면 남기지 않는다
 	denials EventSink
@@ -103,6 +104,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 		return Principal{}, core.AuthError(reasonMalformedKey)
 	case a.masterKey.Matches(key):
 		return masterPrincipal, nil
+	case a.jwt != nil && looksLikeJWT(key):
+		return a.authenticateJWT(ctx, key)
 	case strings.HasPrefix(key, loginKeyPrefix):
 		principal, err := a.authenticateLogin(ctx, key)
 		if !errors.Is(err, errBadLoginKey) {
