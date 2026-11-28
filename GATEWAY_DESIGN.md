@@ -356,7 +356,7 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 위험(확인 필요):
 - **유료(premium) 기능은 라이선스로 잠그지 않는다.** 대시보드에 주는 `premium_user` 같은 플래그는 항상 켜진 값으로 줘서 화면이 잠기거나 업셀 문구가 뜨지 않게 한다. 유료 기능이 필요해지면 우리가 직접 만든다(그 전까지는 빈 응답)
 - 안 만드는 기능의 화면이 관리자 메뉴에 그대로 남는다. 빈 응답이 화면을 깨뜨리지 않는지 **화면마다 브라우저로 확인**해야 하고, 깨지는 화면은 그 엔드포인트 응답의 모양을 조정한다(UI 는 고치지 않는다). 확인 전에는 몇 개가 깨질지 알 수 없다
-- **이번에는 백엔드만 바꾼다**(사용자 결정). 대시보드는 지금 소스(`ui/litellm-dashboard`)와 지금 배포 방식(`ui/Dockerfile` 의 nginx 컨테이너가 정적 파일을 서빙)을 그대로 쓰고, nginx 의 백엔드 주소만 새 게이트웨이로 바꾼다. 코드는 수정하지 않고, upstream 대시보드 업데이트는 따라가지 않고 고정한다. 프런트를 어떻게 할지는 나중에 정한다
+- **이번에는 백엔드만 바꾼다**(사용자 결정). 대시보드는 지금 소스(`ui/litellm-dashboard`)와 지금 배포 방식(`ui/Dockerfile` 의 nginx 컨테이너가 정적 파일을 서빙)을 그대로 쓰고, nginx 의 백엔드 주소만 새 게이트웨이로 바꾼다. 코드는 수정하지 않고, upstream 대시보드 업데이트는 따라가지 않고 고정한다. 전달 방식은 **실행 파일에 포함**으로 정했다(사용자 결정 2026-11-28, `docs/dashboard.md`): 게이트웨이가 `/ui`·`/_next` 를 직접 내준다. 아래 11장의 nginx 배치는 `DASHBOARD_DIR=none` 으로 빌드하는 경우의 대안이다
 - litellm 의 모양을 따르므로 응답에 litellm 의 유료 기능 빈자리 필드가 남을 수 있다. 계약 테스트에서 필요한 필드만 본다
 
 **litellm 과 다르게 하는 것(버그라서 따르지 않는다, 사용자 결정)** — 근거는 `docs/litellm-inventory/H_team_user_contract.md`
@@ -438,7 +438,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | 작은 사이트 | 게이트웨이 1대 + PostgreSQL (+ Ollama, Keycloak) | 기본. `counter-store=memory` |
 | 확장 | 게이트웨이 N대(로드밸런서 뒤) + PostgreSQL + Redis (+ Ollama, Keycloak) | `counter-store=redis` |
 
-- 대시보드는 지금 nginx 컨테이너(`ui/Dockerfile`)를 그대로 쓴다. 이 nginx 는 정적 파일만 내고 API 를 넘기지 않는다. 배치는 litellm helm 과 같은 두 가지다
+- **대시보드는 게이트웨이 실행 파일에 들어 있다**(2026-11-28, `docs/dashboard.md`). `http(s)://게이트웨이/ui/` 로 열고 같은 출처라 웹 SSO 가 된다. 아래는 대시보드를 따로 내려야 하는 경우(`DASHBOARD_DIR=none` 빌드)의 배치다. 이 nginx 컨테이너(`ui/Dockerfile`)는 정적 파일만 내고 API 를 넘기지 않으며, 배치는 litellm helm 과 같은 두 가지다
   - **한 호스트**: 앞단(ingress·nginx)이 `/ui`·`/_next`·`/litellm-asset-prefix` 는 대시보드로, 나머지는 게이트웨이로 넘긴다. 같은 출처라 CORS 가 필요 없고 웹 SSO 도 된다(권장)
   - **호스트 분리**: 대시보드 컨테이너에 `LITELLM_BACKEND_URL=<게이트웨이 주소>` 를 주면 브라우저가 게이트웨이를 직접 부른다. 게이트웨이는 litellm 과 같은 CORS 기본값(모든 출처)으로 받는다(`GATEWAY_CORS_ORIGINS` 로 좁힌다). 이 배치에서 웹 SSO 는 토큰 쿠키가 게이트웨이 호스트에 생겨 대시보드가 읽지 못하므로 되지 않는다(아이디·비밀번호 로그인은 된다)
 - 컨테이너 이미지는 폐쇄망 반입용으로 만든다. 런타임에 아무것도 내려받지 않는다
