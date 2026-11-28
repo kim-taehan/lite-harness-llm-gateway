@@ -344,8 +344,8 @@ spend 는 `numeric` 으로 저장한다(litellm 은 Float). 스키마 변경은 
 
 진행 방식:
 1. **대시보드는 코드 수정 없이 그대로 쓴다**(사용자 결정). 서버 설정 `enabled_ui_pages_internal_users` 는 일반 사용자에게만 적용되고(`leftnav.tsx:142` 의 `!isAdmin` 조건) 관리자 메뉴는 그대로 보인다. 그래서 만들지 않는 기능의 엔드포인트는 **화면이 깨지지 않는 빈 응답**(빈 목록·기본값)으로 답한다. 화면은 `ui/litellm-dashboard/src/app/(dashboard)/` 폴더 기준이고, 아래 분류는 "동작을 보장할 화면"과 "빈 응답으로 두는 화면"이다(폴더 이름만 보고 나눈 것이라 각 화면의 실제 동작은 미확인)
-   - **동작 보장**: `home`, `api-keys`, `teams`, `users`, `models-and-endpoints`, `model-hub-table`, `usage`, `logs`, `playground`, `change-password`, `ui-theme`, `api-reference`
-   - **빈 응답(확정)**: `guardrails`, `guardrails-monitor`, `policies`, `tool-policies`, `workflows` (사용자 결정. 가드레일 엔진과 정책 기능은 1차에 만들지 않는다)
+   - **동작 보장**: `home`, `api-keys`, `teams`, `users`, `models-and-endpoints`, `model-hub-table`, `usage`, `logs`, `playground`, `change-password`, `ui-theme`, `api-reference`, `guardrails`(2026-11-28 에 로컬 내용 필터를 만들면서 빈 응답에서 옮김. `docs/security/guardrails.md`)
+   - **빈 응답(확정)**: `guardrails-monitor`, `policies`, `tool-policies`, `workflows` (사용자 결정. 정책 기능은 만들지 않는다. 가드레일 목록·생성은 위처럼 실제 기능이고, 사용 현황·로그 화면만 빈 응답이다)
    - **빈 응답(제안, 미확정)**: `mcp-servers`, `agents`, `skills`, `memory`, `prompts`, `vector-stores`, `lens`, `cost-optimization`, `logging-and-alerts`(외부 SaaS 콜백), `telemetry`(폐쇄망 원칙상 반드시 숨김)
    - **쓰는지 확인 필요(그때까지 빈 응답, M5 후보)**: `budgets`(별도 예산 객체 필요), `cost-tracking`, `router-settings`, `caching`, `admin-panel`, `access-groups`, `model-insights`, `old-usage`, `transform-request`, `search-tools`
 2. 동작을 보장할 화면이 부르는 엔드포인트만 구현한다. 나머지 화면의 엔드포인트는 대시보드가 부르는 경로 전부를 빈 응답으로 받아 준다(목록은 대시보드 소스에서 뽑는다). 모양의 근거는 대시보드의 타입 클라이언트(`ui/litellm-dashboard/src/lib/http/schema.d.ts`, OpenAPI 에서 생성)와 litellm OpenAPI 스냅샷(`litellm/proxy/_lazy_openapi_snapshot.json`)이다. 이 둘로 **계약 테스트**를 만든다(요청·응답 필드가 같은지)
@@ -484,7 +484,7 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 정한 것: **CI·린트는 `check.sh` 하나**다(배포 서버와 같다). gofmt · `go vet` · `go test`(모듈 경계 테스트 포함) · govulncheck · 다른 OS vet · 재현 가능한 빌드 · 하네스 훅 테스트. 별도 린터(golangci-lint 등)는 들이지 않는다. 이전 저장소 규칙 중 제품 원칙(`docs/legacy/gateway-rules/product.md`)은 이어 가고 fork·upstream 규칙은 버린다
 
 litellm 과 같게 하기로 정리한 것(1장 원칙):
-- 가드레일이 차단하면 HTTP 200 + `finish_reason=content_filter`(가드레일을 만들 때 적용)
+- 내용 필터(`litellm_content_filter`)가 막으면 litellm 처럼 **HTTP 400**(`error.message` = "Content blocked: …", `provider_specific_fields` 에 패턴·가드레일 이름). 조사 문서의 "200 + `finish_reason=content_filter`" 는 litellm 의 passthrough 모드에서만 나오는 동작이라 따르지 않는다(2026-11-28 확인)
 - `/v1/models` 의 응답 형식과 클라이언트별 변형은 litellm 과 같게 한다
 - 요청·응답 본문 저장은 기본으로 끄고 설정으로 켤 수 있게 한다
 - Redis 장애 시: 기본은 인스턴스 자기 메모리 카운터로 이어서 처리하고 경고 로그를 남긴다. 설정(`fail_closed_rate_limit_enforcement` 와 같은 뜻)을 켜면 요청을 거부한다. Redis 호출은 서킷 브레이커로 감싼다(litellm `parallel_request_limiter_v3.py`, `dual_cache.py`)
