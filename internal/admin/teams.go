@@ -64,10 +64,22 @@ func (h *Handlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		Blocked          *bool          `json:"blocked"`
 		MembersWithRoles []memberJSON   `json:"members_with_roles"`
 		OrganizationID   *string        `json:"organization_id"`
+		// 대시보드가 본문 맨 위로 보내는 가드레일 설정이다. metadata 에 합쳐 저장한다(guardrailsettings.go)
+		Guardrails              core.Change[[]string] `json:"guardrails"`
+		DisableGlobalGuardrails core.Change[bool]     `json:"disable_global_guardrails"`
 		limitFields
 	}
 	if _, ok := requestBody(w, r, &req); !ok {
 		return
+	}
+	meta, denial := prepareGuardrailMetadata(principal(r.Context()), nil, core.Change[map[string]any]{Set: req.Metadata != nil, Value: &req.Metadata},
+		req.Guardrails, req.DisableGlobalGuardrails)
+	if denial != "" {
+		plainProxyError(403, denial).Write(w)
+		return
+	}
+	if meta.Set {
+		req.Metadata = *meta.Value
 	}
 	var errs validationError
 	refs := make([]auth.MemberRef, 0, len(req.MembersWithRoles))

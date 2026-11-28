@@ -132,6 +132,10 @@ func (h *Handlers) authorizeTeamUpdate(w http.ResponseWriter, r *http.Request, r
 	if message := teamAdminEditDenial(req, team, policies[team.TeamID], permitted); message != "" {
 		return deny(message)
 	}
+	// metadata 를 고칠 수 있는 팀 admin 도 전사 가드레일을 끄는 설정은 못 정한다
+	if _, message := prepareGuardrailMetadata(p, team.Metadata, req.Metadata, core.Change[[]string]{}, core.Change[bool]{}); message != "" {
+		return deny(message)
+	}
 	return true
 }
 

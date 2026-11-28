@@ -29,6 +29,10 @@ type Principal struct {
 	ProjectModels []string
 	// OrganizationID 는 키의 팀이 속한 조직이다. 조직 한도가 요청마다 걸린다
 	OrganizationID string
+	// 키·팀의 metadata 에서 온 가드레일 설정이다(guardrails.go). 마스터 키는 모두 비어 있다
+	Guardrails              []string
+	DisableGlobalGuardrails bool
+	OptedOutGuardrails      []string
 	// 대시보드 세션 키로 들어왔을 때만 있다(litellm login_method). 로그아웃은 이것이 있어야 한다
 	UIMethod string
 	// 관리자가 정한 비밀번호로 대시보드에 들어온 세션이다. 비밀번호를 바꿀 때까지 resetAllowedRoutes 만 부른다
@@ -131,9 +135,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, header http.Header) (P
 	if resolved.projectBlocked {
 		return Principal{}, projectBlockedError(deref(k.ProjectID))
 	}
-	return Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, KeyAlias: deref(k.KeyAlias), TeamID: deref(k.TeamID),
+	p := Principal{UserID: deref(k.UserID), Role: resolved.role, KeyToken: k.Token, KeyAlias: deref(k.KeyAlias), TeamID: deref(k.TeamID),
 		KeyModels: k.Models, TeamModels: resolved.teamModels, ProjectID: deref(k.ProjectID), ProjectModels: resolved.projectModels,
-		OrganizationID: resolved.organizationID}, nil
+		OrganizationID: resolved.organizationID}
+	return withGuardrailSettings(p, k.Metadata, resolved.teamMetadata), nil
 }
 
 // projectBlockedError 는 막힌 프로젝트의 키가 부른 요청의 오류다(litellm auth_checks 의 문구)
@@ -203,7 +208,7 @@ func (a *Authenticator) withLoginTeam(ctx context.Context, p Principal, userID, 
 		return Principal{}, teamBlockedError(team.TeamID)
 	}
 	p.TeamID, p.TeamModels, p.OrganizationID = team.TeamID, team.Models, deref(team.OrganizationID)
-	return p, nil
+	return withGuardrailSettings(p, nil, team.Metadata), nil
 }
 
 // resolve 는 키와 그 소유자 역할·팀 차단 여부를 캐시나 DB 에서 읽는다
@@ -239,6 +244,7 @@ func (a *Authenticator) resolve(ctx context.Context, token string) (resolvedKey,
 		}
 		r.teamBlocked = err == nil && team.Blocked
 		r.teamModels = team.Models
+		r.teamMetadata = team.Metadata
 		r.organizationID = deref(team.OrganizationID)
 	}
 	if key.ProjectID != nil {

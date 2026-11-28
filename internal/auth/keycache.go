@@ -87,6 +87,8 @@ type resolvedKey struct {
 	role        core.Role // 키 소유자의 역할. 사용자 행이 없으면 빈 문자열(litellm 의 role=None)
 	teamBlocked bool
 	teamModels  []string
+	// 팀의 metadata. 가드레일 설정(guardrails.go)을 읽는다
+	teamMetadata map[string]any
 	// 키가 프로젝트에 속할 때의 프로젝트 차단 여부와 허용 모델
 	projectBlocked bool
 	projectModels  []string

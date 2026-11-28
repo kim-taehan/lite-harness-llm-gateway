@@ -179,8 +179,8 @@ func (t *Teams) Update(ctx context.Context, teamID string, patch TeamPatch) (Tea
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Team{}, ErrTeamNotFound
 	}
-	if err == nil && (patch.Blocked.Set || patch.Models.Set || patch.OrganizationID.Set) {
-		// 막힌 팀의 키는 바로 401 이어야 하고(litellm 도 차단 직후 캐시를 지운다), 팀 허용 모델과 조직도 키 검증에 쓰인다
+	if err == nil && (patch.Blocked.Set || patch.Models.Set || patch.OrganizationID.Set || patch.Metadata.Set) {
+		// 막힌 팀의 키는 바로 401 이어야 하고(litellm 도 차단 직후 캐시를 지운다), 팀 허용 모델·조직·가드레일 설정도 키 검증에 쓰인다
 		t.cache.forgetTeam(teamID)
 	}
 	return team, err

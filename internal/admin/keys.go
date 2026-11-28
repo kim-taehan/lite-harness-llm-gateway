@@ -52,6 +52,9 @@ type keyFields struct {
 	Blocked       core.Change[bool]           `json:"blocked"`
 	KeyType       *string                     `json:"key_type"`
 	AllowedRoutes []string                    `json:"allowed_routes"`
+	// 대시보드가 본문 맨 위로 보내는 가드레일 설정이다. metadata 에 합쳐 저장한다(guardrailsettings.go)
+	Guardrails              core.Change[[]string] `json:"guardrails"`
+	DisableGlobalGuardrails core.Change[bool]     `json:"disable_global_guardrails"`
 	limitFields
 }
 
@@ -99,6 +102,12 @@ func (h *Handlers) issueKey(w http.ResponseWriter, r *http.Request, route string
 			return
 		}
 	}
+	meta, denial := prepareGuardrailMetadata(p, nil, req.Metadata, req.Guardrails, req.DisableGlobalGuardrails)
+	if denial != "" {
+		authStyle(403, denial).Write(w)
+		return
+	}
+	req.keyFields.Metadata = meta
 	input, err := h.newKeyInput(req.Key, req.keyFields, p.UserID, teamID, userID, serviceAccount)
 	if err != nil {
 		plainProxyError(500, err.Error()).Write(w)
@@ -242,6 +251,12 @@ func (h *Handlers) updateKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	meta, denial := prepareGuardrailMetadata(p, key.Metadata, req.Metadata, req.Guardrails, req.DisableGlobalGuardrails)
+	if denial != "" {
+		authStyle(403, denial).Write(w)
+		return
+	}
+	req.keyFields.Metadata = meta
 	patch, err := h.keyPatch(req.keyFields, req.Key == nil, p.UserID)
 	if err != nil {
 		authStyle(400, "Authentication Error, "+err.Error()).Write(w)
