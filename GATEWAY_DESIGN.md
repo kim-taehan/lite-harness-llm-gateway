@@ -241,7 +241,7 @@ litellm 의 `frequency_penalty → repeat_penalty` 이름 바꾸기는 의미가
 
 - **가상 키**: `sk-` 형식, SHA-256 해시만 저장, 원문은 발급 응답에서 1회만 반환
 - **마스터 키**: 환경 변수·시크릿으로만 주입. 없으면 **기동을 거부한다**(litellm 은 override 로 풀 수 있다)
-- **Keycloak JWT**: API 를 JWT 로 직접 호출할 수 있게 한다. 서명은 Keycloak JWKS(내부 주소)로 검증하고 캐시한다. litellm 에서 유료로 막힌 핵심 기능이다
+- **Keycloak JWT**(구현함 2026-11-28, `docs/security/jwt-auth.md`): API 를 JWT 로 직접 호출할 수 있게 한다. 서명은 Keycloak JWKS(내부 주소)로 검증하고 캐시한다. litellm 에서 유료로 막힌 핵심 기능이다. 결정(2026-11-28): 처음 온 사용자는 SSO 와 같은 규칙으로 자동 생성, 한도는 사용자·팀·조직·프로젝트 그대로(키 단위 없음), 취소는 짧은 토큰 수명 + 팀 차단 즉시 반영(Keycloak 에 매번 묻지 않음), 그룹 매핑은 환경 변수 표
 - **SSO(OIDC, PKCE)**: Keycloak 전용. 그룹 → 팀·역할 매핑. 신규 사용자 기본값. **사용자 수 제한 없음**
 - **아이디·비밀번호 로그인(사용자 결정 2026-11-21)**: SSO 와 함께, **모든 사용자**가 게이트웨이 계정(app_user)의 아이디·비밀번호로도 로그인한다(이전의 "비상 관리자 하나만"을 넓힘)
   - 데스크탑: CLI SSO 흐름의 브라우저 단계(`/sso/key/generate`)에서 로그인 페이지를 보이고 "회사 계정(SSO)"·"아이디·비밀번호" 중 고른다. 어느 쪽이든 같은 방식으로 키를 발급해 `/sso/cli/poll` 로 넘긴다. 데스크탑 코드는 바꾸지 않는다
@@ -424,7 +424,8 @@ litellm 에서 **기본으로 외부에 나가는 것**(조사 B·D·E·F): 모�
 | `GATEWAY_UPSTREAM_CONNECT_TIMEOUT` / `_READ_TIMEOUT` | `5s` / `300s` | 업스트림 |
 | `GATEWAY_DRAIN_TIMEOUT` | `60s` | 정상 종료 시 스트림 대기 |
 | `GATEWAY_REQUEST_LOG_RETENTION` | `90d` | 보관 기간 |
-| `GATEWAY_KEYCLOAK_ISSUER` / `_CLIENT_ID` | 없음 | SSO·JWT |
+| `GATEWAY_KEYCLOAK_ISSUER` / `_CLIENT_ID` | 없음 | SSO(실제 이름은 `GATEWAY_SSO_ISSUER`·`GATEWAY_SSO_CLIENT_ID`) |
+| `GATEWAY_JWT_ISSUER` / `_AUDIENCE` / `_JWKS_URL` / `_GROUPS_CLAIM` / `_GROUP_MAP` | 없음(꺼짐) | Keycloak 토큰으로 API 직접 호출. 발급자가 있어야 켜지고 대상은 필수 |
 | (없음) | | `model_deployment.api_key_encrypted`(업스트림 키)의 암호화 키는 별도 환경 변수 없이 마스터 키에서 용도별로 파생한다(`HMAC(마스터, 용도)`, 로그인 키와 같은 방식). 마스터 키를 바꾸면 저장된 업스트림 키는 풀 수 없고, 그 모델의 추론만 실패하며 모델 편집에서 키를 다시 넣으면 된다 |
 
 설정 키 이름은 우리 것으로 두되, 같은 뜻의 litellm 설정이 있으면 표에 함께 적는다.
