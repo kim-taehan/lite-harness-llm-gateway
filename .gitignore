@@ -2,6 +2,10 @@
 /dist/
 /dist-check-*/
 
+# 빌드할 때 복사하는 대시보드 파일(build.sh). 자리 안내(README.md)만 커밋한다
+/internal/admin/uiassets/*
+!/internal/admin/uiassets/README.md
+
 # 배포 비밀 값(.env.example 만 커밋한다)
 /.env
 

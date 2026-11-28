@@ -427,7 +427,7 @@ func serve(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String(), "jwt", cfg.JWT.Enabled(), "tls", cfg.TLSCertFile != "")
+	logger.Info("기동", "version", core.Version, "listen", listener.Addr().String(), "login", cfg.Login.String(), "jwt", cfg.JWT.Enabled(), "dashboard", admin.DashboardEmbedded(), "tls", cfg.TLSCertFile != "")
 	if cfg.AllowedIPsDisabled {
 		logger.Warn("IP 허용 목록이 비상 해제돼 있다(GATEWAY_ALLOWED_IPS_DISABLE). 목록을 고친 뒤 이 설정을 지우고 다시 띄운다")
 	}

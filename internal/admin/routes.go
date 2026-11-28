@@ -3,6 +3,7 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"llm-gateway/internal/auth"
@@ -79,7 +80,7 @@ func (h *Handlers) Routes() []core.Route {
 	route := func(method, path string, access core.Access, handler http.HandlerFunc) core.Route {
 		return core.Route{Method: method, Path: path, Access: access, Handler: handler}
 	}
-	return append(h.stubRoutes(),
+	return append(slices.Concat(dashboardRoutes(dashboardAssets()), h.stubRoutes()),
 		route(http.MethodPost, "/team/new", adminOnly, h.audited("created", auditTeamTable, idsFrom("team_id"), h.createTeam)),
 		route(http.MethodPost, "/team/update", handlerDecide, h.audited("updated", auditTeamTable, idsFrom("team_id"), h.updateTeam)),
 		route(http.MethodPost, "/team/delete", adminOnly, h.audited("deleted", auditTeamTable, idsFrom("team_ids"), h.deleteTeams)),

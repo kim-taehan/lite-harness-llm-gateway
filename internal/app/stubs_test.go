@@ -103,7 +103,7 @@ func TestStubs_PublicWithoutAuth(t *testing.T) {
 	}
 }
 
-// 모든 GET 라우트(빈 응답 라우트 포함)는 JSON 으로 답한다. 이미지·SSO 브라우저 흐름·CSV 내보내기만 뺀다
+// 모든 GET 라우트(빈 응답 라우트 포함)는 JSON 으로 답한다. 이미지·SSO 브라우저 흐름·CSV 내보내기·대시보드 파일만 뺀다
 func TestStubs_EveryGETAnswersJSON(t *testing.T) {
 	db, _ := dbtest.Open(t)
 	cfg, _ := LoadConfig(testEnv)
@@ -129,7 +129,13 @@ func TestStubs_EveryGETAnswersJSON(t *testing.T) {
 
 func nonJSONRoute(path string) bool {
 	return path == "/get_image" || path == "/get_favicon" || strings.HasPrefix(path, "/sso/") ||
-		path == "/user/daily/activity/export" || path == "/team/daily/activity/export"
+		path == "/user/daily/activity/export" || path == "/team/daily/activity/export" || isDashboardFile(path)
+}
+
+// isDashboardFile 은 실행 파일에 든 대시보드를 내주는 경로다(빌드에 대시보드를 넣었을 때만 등록된다)
+func isDashboardFile(path string) bool {
+	return path == "/ui" || path == "/favicon.ico" || strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/_next/") ||
+		strings.HasPrefix(path, "/litellm-asset-prefix/") || strings.HasPrefix(path, "/assets/")
 }
 
 // containsShape 는 got 이 want 의 키를 모두 같은 모양으로 담는지다. 배열은 통째로 비교한다
